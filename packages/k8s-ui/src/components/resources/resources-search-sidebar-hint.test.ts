@@ -11,8 +11,10 @@ function sidebarHint(
   counts: Record<string, number>,
   selectedKind: SelectedKindInfo,
   searchTerm: string,
+  hideSidebar = false,
 ): string | null {
   if (!searchTerm) return null
+  if (hideSidebar) return null
   const key = selectedKind.group ? `${selectedKind.group}/${selectedKind.kind}` : selectedKind.kind
   const totalForKind = counts[key] ?? 0
   if (totalForKind === 0) return null
@@ -34,6 +36,10 @@ describe('ResourcesView empty-search sidebar hint (SKY-828 bug 46)', () => {
   //      "NetworkPolicy" → "NetworkPolicies" (regression of the
   //      naive `${kind}s` Cursor Bugbot caught in 80eb64b).
   //   5. Singular for n===1: "1 Pod", not "1 Pods".
+  //   6. Suppress when the consumer has hidden the sidebar
+  //      (radar-hub-web's Fleet SearchPage embeds ResourcesView
+  //      with hideSidebar=true — the hint refers to a sidebar the
+  //      user can't see). (SKY-855)
 
   const pod: SelectedKindInfo = { name: 'pods', kind: 'Pod', group: '' }
 
@@ -81,5 +87,12 @@ describe('ResourcesView empty-search sidebar hint (SKY-828 bug 46)', () => {
     expect(sidebarHint({ 'networking.k8s.io/NetworkPolicy': 2 }, np, 'xyz')).toBe(
       'The sidebar shows 2 NetworkPolicies in the cluster — the count is unfiltered.',
     )
+  })
+
+  it('returns null when the consumer hides the sidebar (SKY-855)', () => {
+    // radar-hub-web's Fleet SearchPage embeds ResourcesView with
+    // hideSidebar=true. The "the sidebar shows N…" sentence refers
+    // to a sidebar that isn't visible — suppress it.
+    expect(sidebarHint({ Pod: 232 }, pod, 'xyz', /* hideSidebar */ true)).toBeNull()
   })
 })

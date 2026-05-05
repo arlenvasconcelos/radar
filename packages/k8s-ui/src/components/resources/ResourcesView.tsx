@@ -3585,8 +3585,14 @@ export function ResourcesView({
                 zero results the user can think the badge is lying.
                 Spell out that the badge is the cluster total, not
                 the filtered count.
+
+                Skip when the consumer has hidden the sidebar
+                (e.g. radar-hub-web's Fleet SearchPage embeds
+                ResourcesView with hideSidebar=true). The hint refers
+                to a sidebar the user can't see — confusing rather
+                than helpful.
               */}
-              {searchTerm && (() => {
+              {searchTerm && !hideSidebar && (() => {
                 const totalForKind = counts[selectedKind.group ? `${selectedKind.group}/${selectedKind.kind}` : selectedKind.kind] ?? 0
                 if (totalForKind === 0) return null
                 return (
