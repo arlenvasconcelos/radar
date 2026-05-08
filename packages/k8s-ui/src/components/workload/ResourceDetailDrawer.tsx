@@ -115,7 +115,7 @@ export function ResourceDetailDrawer({ resource, onClose, onNavigate, initialTab
   return (
     <div
       className={clsx(
-        'fixed right-0 bg-theme-surface border-l border-theme-border flex flex-col shadow-drawer z-40',
+        'absolute right-0 bg-theme-surface border-l border-theme-border flex flex-col shadow-drawer z-40',
         TRANSITION_DRAWER,
         isOpen
           ? 'translate-x-0 opacity-100'
@@ -123,9 +123,9 @@ export function ResourceDetailDrawer({ resource, onClose, onNavigate, initialTab
         expanded && '!border-l-0',
       )}
       style={{
-        width: expanded ? `calc(100vw - ${leftOffset}px)` : drawerWidth,
+        width: expanded ? `calc(100% - ${leftOffset}px)` : drawerWidth,
         top: headerHeight,
-        height: `calc(100vh - ${headerHeight}px)`,
+        height: `calc(100% - ${headerHeight}px)`,
         // Collapse is instant — no animation, content and width snap together.
         // Expand + slide-in/out animate via TRANSITION_DRAWER class.
         ...(isCollapsing && { transition: 'none' }),
