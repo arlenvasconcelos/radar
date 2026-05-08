@@ -105,11 +105,11 @@ export function BottomDock({ renderTabContent, renderTabHeaderExtra, leftOffset:
     return null
   }
 
-  const effectiveHeight = !isExpanded ? 36 : isMaximized ? `calc(100vh - ${MAXIMIZED_TOP_OFFSET}px)` : height
+  const effectiveHeight = !isExpanded ? 36 : isMaximized ? `calc(100% - ${MAXIMIZED_TOP_OFFSET}px)` : height
 
   return (
     <div
-      className="fixed bottom-0 right-0 bg-theme-base border-t border-theme-border flex flex-col z-40 overflow-hidden"
+      className="absolute bottom-0 right-0 bg-theme-base border-t border-theme-border flex flex-col z-40 overflow-hidden"
       style={{ height: effectiveHeight, left: leftOffset, transition: `height ${DURATION_DOCK}ms cubic-bezier(0.4, 0, 0.2, 1), left ${DURATION_DOCK}ms ease-out` }}
     >
       {isExpanded && !isMaximized && (

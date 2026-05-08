@@ -828,7 +828,7 @@ function AppInner() {
 
   return (
     <PortForwardProvider>
-    <div className="flex flex-col h-screen bg-theme-base min-w-[800px]">
+    <div className="relative flex flex-col h-screen bg-theme-base min-w-[800px]">
       {/* Header */}
       <header className="relative z-50 flex items-center justify-between px-4 py-2 bg-theme-base/90 backdrop-blur-sm border-b border-theme-border/50">
         {/* Left: Logo + Cluster info */}
