@@ -187,9 +187,26 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
     refetchInterval: 120_000,
   })
 
+  // Row mutations invalidate granular keys (['resource', …], ['gitops-tree', …])
+  // that don't match the table's aggregate gitops-rows-main / counts queries,
+  // so refetch those explicitly — otherwise a row keeps showing the pre-action
+  // state (e.g. "Suspend" after a successful suspend) until the 120s poll,
+  // inviting a duplicate request. Radar serves reads from an informer cache that
+  // lags the write by the watch-propagation delay, so refetch once now (covers
+  // an already-current cache) and once shortly after to catch the propagated
+  // update; refetch() forces a fetch regardless of staleTime.
+  const refetchTable = () => {
+    rowsQuery.refetch()
+    countsQuery.refetch()
+  }
+  const refetchTableAfterMutation = () => {
+    refetchTable()
+    window.setTimeout(refetchTable, 1200)
+  }
+
   const handleRowAction = (row: GitOpsRow, action: GitOpsRowAction) => {
     const { kindName: kind, namespace, name, id } = row
-    const settle = { onSettled: () => markAction(id, action, false) }
+    const settle = { onSuccess: refetchTableAfterMutation, onSettled: () => markAction(id, action, false) }
     markAction(id, action, true)
     switch (action) {
       case 'sync':
@@ -258,7 +275,7 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
             // onSettled so the dialog closes on both success and error —
             // otherwise the error toast surfaces behind the still-open
             // modal and the user can't read it.
-            { onSettled: () => setSyncDialogRow(null) },
+            { onSuccess: refetchTableAfterMutation, onSettled: () => setSyncDialogRow(null) },
           )
         }}
       />

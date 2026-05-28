@@ -1232,13 +1232,14 @@ function buildRowActionItems(
       disabledReason: terminating ? terminatingReason : suspended ? suspendedReason : undefined,
       pending: isPending('sync'),
     })
+    // Refresh / Hard refresh are read-style verbs — they re-read Git and
+    // recompute status without mutating the cluster, so they stay enabled
+    // during termination (matches the detail page + the backend carve-out).
     items.push({
       key: 'refresh',
       label: 'Refresh',
       icon: RefreshCw,
       onClick: () => onAction(row, 'refresh'),
-      disabled: terminating,
-      disabledReason: terminating ? terminatingReason : undefined,
       pending: isPending('refresh'),
     })
     items.push({
@@ -1246,8 +1247,6 @@ function buildRowActionItems(
       label: 'Hard refresh',
       icon: Zap,
       onClick: () => onAction(row, 'hard-refresh'),
-      disabled: terminating,
-      disabledReason: terminating ? terminatingReason : undefined,
       pending: isPending('hard-refresh'),
     })
     if (suspended) {
