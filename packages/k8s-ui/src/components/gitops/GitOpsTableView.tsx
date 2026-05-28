@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import { clsx } from 'clsx'
 import {
   AlertTriangle,
@@ -117,6 +117,17 @@ export interface GitOpsRow {
 
 export type DestinationFilter = 'all' | 'this-cluster' | 'cross-cluster' | 'unmatched'
 
+type SummaryTone = 'neutral' | 'warning' | 'error' | 'info'
+
+interface SummaryTileSpec {
+  key: string
+  label: string
+  value: number
+  tone: SummaryTone
+  active: boolean
+  apply?: () => void
+}
+
 // ----- Component props -------------------------------------------------------
 
 export interface GitOpsTableViewProps {
@@ -186,6 +197,7 @@ export function GitOpsTableView({
   const [labelSearch, setLabelSearch] = useState('')
   const [automationFilter, setAutomationFilter] = useState<'all' | 'auto' | 'manual' | 'suspended'>('all')
   const [lifecycleFilter, setLifecycleFilter] = useState<'all' | 'terminating' | 'active'>('all')
+  const [reconcilingOnly, setReconcilingOnly] = useState(false)
   const [sortKey, setSortKey] = useState<SortKey>('health')
 
   // Optional '/' keyboard shortcut to focus search. Avoided as a default to
@@ -260,6 +272,7 @@ export function GitOpsTableView({
       if (automationFilter === 'suspended' && !row.suspended) return false
       if (lifecycleFilter === 'terminating' && !row.terminating) return false
       if (lifecycleFilter === 'active' && row.terminating) return false
+      if (reconcilingOnly && row.sync !== 'Reconciling' && row.health !== 'Progressing') return false
       if (destinationFilter && destinationFilter !== 'all') {
         const match = row._destination?.match
         if (destinationFilter === 'this-cluster' && match !== 'in_cluster') return false
@@ -273,9 +286,52 @@ export function GitOpsTableView({
       return true
     })
     return [...rows].sort((a, b) => compareRows(a, b, sortKey))
-  }, [allRows, automationFilter, healthFilters, labelFilters, lifecycleFilter, mode, namespaceFilters, projectFilters, search, sortKey, syncFilters, destinationFilter])
+  }, [allRows, automationFilter, healthFilters, labelFilters, lifecycleFilter, mode, namespaceFilters, projectFilters, search, sortKey, syncFilters, destinationFilter, reconcilingOnly])
 
   const terminatingCount = useMemo(() => allRows.filter((row) => row.terminating).length, [allRows])
+
+  const clearAllFilters = useCallback(() => {
+    setSearch('')
+    setSyncFilters(new Set())
+    setHealthFilters(new Set())
+    setProjectFilters(new Set())
+    setNamespaceFilters(new Set())
+    setLabelFilters(new Set())
+    setAutomationFilter('all')
+    setLifecycleFilter('all')
+    setReconcilingOnly(false)
+    onDestinationFilterChange?.('all')
+  }, [onDestinationFilterChange])
+
+  const noOtherFiltersActive = useCallback(
+    (
+      exclude: 'sync' | 'health' | 'automation' | 'destination' | 'reconciling' | null = null,
+    ) => {
+      if (search !== '') return false
+      if (exclude !== 'sync' && syncFilters.size > 0) return false
+      if (exclude !== 'health' && healthFilters.size > 0) return false
+      if (projectFilters.size > 0) return false
+      if (namespaceFilters.size > 0) return false
+      if (labelFilters.size > 0) return false
+      if (exclude !== 'automation' && automationFilter !== 'all') return false
+      if (lifecycleFilter !== 'all') return false
+      if (exclude !== 'destination' && destinationFilter && destinationFilter !== 'all') return false
+      if (exclude !== 'reconciling' && reconcilingOnly) return false
+      return true
+    },
+    [
+      search,
+      syncFilters,
+      healthFilters,
+      projectFilters,
+      namespaceFilters,
+      labelFilters,
+      automationFilter,
+      lifecycleFilter,
+      destinationFilter,
+      reconcilingOnly,
+    ],
+  )
 
   // Empty-state — when there's truly nothing to show across all kinds.
   if (totalGitOps === 0 && !loading) {
@@ -295,6 +351,62 @@ export function GitOpsTableView({
   }
 
   const showCrossClusterTile = typeof crossClusterCount === 'number' && mode === 'applications'
+
+  const summaryTiles: SummaryTileSpec[] = [
+    {
+      key: 'total',
+      label: 'Total Applications',
+      value: allRows.length,
+      tone: 'neutral',
+      active: noOtherFiltersActive(),
+    },
+    {
+      key: 'outOfSync',
+      label: 'Out of sync',
+      value: statusSummary.outOfSync,
+      tone: 'warning',
+      active:
+        syncFilters.size === 1 && syncFilters.has('OutOfSync') && noOtherFiltersActive('sync'),
+      apply: () => setSyncFilters(new Set(['OutOfSync'])),
+    },
+    {
+      key: 'degraded',
+      label: 'Degraded',
+      value: statusSummary.degraded,
+      tone: 'error',
+      active:
+        healthFilters.size === 1 && healthFilters.has('Degraded') && noOtherFiltersActive('health'),
+      apply: () => setHealthFilters(new Set(['Degraded'])),
+    },
+    {
+      key: 'suspended',
+      label: 'Suspended',
+      value: statusSummary.suspended,
+      tone: 'warning',
+      active: automationFilter === 'suspended' && noOtherFiltersActive('automation'),
+      apply: () => setAutomationFilter('suspended'),
+    },
+    {
+      key: 'reconciling',
+      label: 'Reconciling',
+      value: statusSummary.reconciling,
+      tone: 'info',
+      active: reconcilingOnly && noOtherFiltersActive('reconciling'),
+      apply: () => setReconcilingOnly(true),
+    },
+    ...(showCrossClusterTile
+      ? [
+          {
+            key: 'crossCluster',
+            label: 'Cross-cluster',
+            value: crossClusterCount!,
+            tone: 'info' as const,
+            active: destinationFilter === 'cross-cluster' && noOtherFiltersActive('destination'),
+            apply: () => onDestinationFilterChange?.('cross-cluster'),
+          },
+        ]
+      : []),
+  ]
 
   return (
     <div className="flex h-full min-w-0 flex-1 overflow-hidden bg-theme-base max-lg:flex-col">
@@ -319,16 +431,7 @@ export function GitOpsTableView({
         namespaces={rowNamespaces}
         namespaceFilters={namespaceFilters}
         onToggleNamespace={(value) => toggleSet(namespaceFilters, setNamespaceFilters, value)}
-        onClear={() => {
-          setSearch('')
-          setSyncFilters(new Set())
-          setHealthFilters(new Set())
-          setProjectFilters(new Set())
-          setNamespaceFilters(new Set())
-          setLabelFilters(new Set())
-          setAutomationFilter('all')
-          setLifecycleFilter('all')
-        }}
+        onClear={clearAllFilters}
       />
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -341,14 +444,19 @@ export function GitOpsTableView({
               </p>
             </div>
             <div className="flex shrink-0 flex-wrap justify-end gap-2">
-              <SummaryTile label="Applications" value={allRows.length} />
-              <SummaryTile label="Out of sync" value={statusSummary.outOfSync} tone="warning" />
-              <SummaryTile label="Degraded" value={statusSummary.degraded} tone="error" />
-              <SummaryTile label="Suspended" value={statusSummary.suspended} tone="warning" />
-              <SummaryTile label="Reconciling" value={statusSummary.reconciling} tone="info" />
-              {showCrossClusterTile && (
-                <SummaryTile label="Cross-cluster" value={crossClusterCount!} tone="info" />
-              )}
+              {summaryTiles.map((tile) => (
+                <SummaryTile
+                  key={tile.key}
+                  label={tile.label}
+                  value={tile.value}
+                  tone={tile.tone}
+                  active={tile.active}
+                  onClick={() => {
+                    clearAllFilters()
+                    if (!tile.active && tile.apply) tile.apply()
+                  }}
+                />
+              ))}
             </div>
           </div>
         </div>
@@ -1021,18 +1129,54 @@ function GitOpsTile({
   )
 }
 
-function SummaryTile({ label, value, tone = 'neutral' }: { label: string; value: number; tone?: 'neutral' | 'warning' | 'error' | 'info' }) {
+function SummaryTile({
+  label,
+  value,
+  tone = 'neutral',
+  onClick,
+  active = false,
+}: {
+  label: string
+  value: number
+  tone?: SummaryTone
+  onClick?: () => void
+  active?: boolean
+}) {
   const toneClass = {
     neutral: 'text-theme-text-primary',
     warning: 'text-amber-600 dark:text-amber-300',
     error: 'text-red-600 dark:text-red-300',
     info: 'text-sky-600 dark:text-sky-300',
   }[tone]
+  const activeBorderClass = {
+    neutral: 'border-skyhook-500',
+    warning: 'border-amber-500',
+    error: 'border-red-500',
+    info: 'border-sky-500',
+  }[tone]
+  const value$ = <div className={`text-sm font-semibold ${toneClass}`}>{value}</div>
+  const label$ = <div className="text-xs text-theme-text-tertiary">{label}</div>
+  if (!onClick) {
+    return (
+      <div className="rounded-md border border-theme-border bg-theme-base px-3 py-2">
+        {value$}
+        {label$}
+      </div>
+    )
+  }
   return (
-    <div className="rounded-md border border-theme-border bg-theme-base px-3 py-2">
-      <div className={`text-sm font-semibold ${toneClass}`}>{value}</div>
-      <div className="text-xs text-theme-text-tertiary">{label}</div>
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={clsx(
+        'cursor-pointer rounded-md border bg-theme-base px-3 py-2 text-left transition-colors hover:bg-theme-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-skyhook-500',
+        active ? activeBorderClass : 'border-theme-border',
+      )}
+    >
+      {value$}
+      {label$}
+    </button>
   )
 }
 
