@@ -10,15 +10,21 @@ import {
   LayoutGrid,
   List,
   Loader2,
+  Pause,
+  Play,
   RefreshCw,
   RotateCcw,
+  RotateCw,
   Search,
+  Square,
   Tag,
   Trash2,
+  Zap,
 } from 'lucide-react'
 
 import { HealthStatusBadge, SyncStatusBadge } from './GitOpsStatusBadge'
 import { Tooltip } from '../ui/Tooltip'
+import { RowActionMenu, type RowActionItem } from '../ui/RowActionMenu'
 import { getGitOpsResourceStatus } from './detail-helpers'
 import { toggleSet } from './GitOpsGraphFilterRail'
 import { parseContextName } from '../../utils/context-name'
@@ -53,6 +59,21 @@ import { parseContextName } from '../../utils/context-name'
 export type GitOpsMode = 'applications' | 'sources' | 'projects' | 'alerts'
 export type GitOpsViewMode = 'table' | 'tiles'
 export type SortKey = 'name' | 'health' | 'sync' | 'lastSync' | 'project'
+
+// Row-level actions surfaced from the table's three-dot menu. The set
+// mirrors what the detail page exposes today; callers wire the mutations
+// + dialogs and dispatch via `onRowAction`. Argo-only actions (refresh,
+// hard-refresh, terminate) and Flux-only actions (reconcile,
+// sync-with-source) are filtered per-tool inside the table.
+export type GitOpsRowAction =
+  | 'sync'
+  | 'refresh'
+  | 'hard-refresh'
+  | 'terminate'
+  | 'suspend'
+  | 'resume'
+  | 'reconcile'
+  | 'sync-with-source'
 
 // FleetClusterStamp + FleetDestinationStamp — optional fields the hub-side
 // `_cluster` / `_destination` stamping projects into. Keep the types here so
@@ -190,6 +211,17 @@ export interface GitOpsTableViewProps {
    * button drops it alongside view-local filter state.
    */
   onClearNamespaces?: () => void
+
+  // Row-level action dispatcher. When provided, the table renders a
+  // right-most three-dot menu per row with Sync / Refresh / Suspend / etc.
+  // Caller owns the mutation hooks + any options dialogs (e.g. Argo
+  // SyncOptionsDialog). When undefined the actions column is omitted
+  // entirely — keeps Hub and other consumers' layout unchanged until they
+  // opt in.
+  onRowAction?: (row: GitOpsRow, action: GitOpsRowAction) => void
+  // In-flight action state, keyed by `row.id`. Drives the per-item
+  // spinner so the user can tell which Sync/Refresh is still running.
+  pendingRowActions?: Map<string, Set<GitOpsRowAction>>
 }
 
 // ----- Main component --------------------------------------------------------
@@ -213,6 +245,8 @@ export function GitOpsTableView({
   emptyStateBody,
   globalNamespaces,
   onClearNamespaces,
+  onRowAction,
+  pendingRowActions,
 }: GitOpsTableViewProps) {
   const searchInputRef = useRef<HTMLInputElement>(null)
   const [mode, setMode] = useState<GitOpsMode>('applications')
@@ -644,7 +678,15 @@ export function GitOpsTableView({
           ) : viewMode === 'tiles' ? (
             <GitOpsTiles rows={filteredRows} onOpen={onRowClick} hrefFor={rowHrefFor} />
           ) : (
-            <GitOpsTable rows={filteredRows} onOpen={onRowClick} hrefFor={rowHrefFor} onDestinationClick={onDestinationClick} destinationHrefFor={destinationHrefFor} />
+            <GitOpsTable
+              rows={filteredRows}
+              onOpen={onRowClick}
+              hrefFor={rowHrefFor}
+              onDestinationClick={onDestinationClick}
+              destinationHrefFor={destinationHrefFor}
+              onRowAction={onRowAction}
+              pendingRowActions={pendingRowActions}
+            />
           )}
         </div>
       </div>
@@ -1035,24 +1077,34 @@ function GitOpsTable({
   hrefFor,
   onDestinationClick,
   destinationHrefFor,
+  onRowAction,
+  pendingRowActions,
 }: {
   rows: GitOpsRow[]
   onOpen: (row: GitOpsRow, event?: ReactMouseEvent) => void
   hrefFor?: (row: GitOpsRow) => string
   onDestinationClick?: (row: GitOpsRow, destination: FleetDestinationStamp) => void
   destinationHrefFor?: (row: GitOpsRow, destination: FleetDestinationStamp) => string
+  onRowAction?: (row: GitOpsRow, action: GitOpsRowAction) => void
+  pendingRowActions?: Map<string, Set<GitOpsRowAction>>
 }) {
+  const showActions = !!onRowAction
   return (
     <table className="w-full min-w-[1040px] table-fixed border-separate border-spacing-0 text-sm">
       <thead className="sticky top-0 z-10 bg-theme-surface">
         <tr className="text-left text-[11px] uppercase tracking-wide text-theme-text-tertiary">
-          <TableHead className="w-[22%]">Application</TableHead>
+          <TableHead className={showActions ? 'w-[16%]' : 'w-[22%]'}>Application</TableHead>
           <TableHead className="w-[9%]">Project</TableHead>
           <TableHead className="w-[9%]">Sync</TableHead>
           <TableHead className="w-[9%]">Health</TableHead>
           <TableHead className="w-[20%]">Source</TableHead>
           <TableHead className="w-[14%]">Destination</TableHead>
           <TableHead className="w-[10%]">Last Sync</TableHead>
+          {showActions && (
+            <TableHead className="w-[6%] text-right">
+              <span className="sr-only">Actions</span>
+            </TableHead>
+          )}
         </tr>
       </thead>
       <tbody>
@@ -1129,12 +1181,152 @@ function GitOpsTable({
                   ? <span className="text-orange-400/80">Pending {formatRelativeAge(row.terminationStartedAt ?? '') || 'now'}</span>
                   : formatRelativeAge(row.lastSync || row.createdAt)}
               </TableCell>
+              {showActions && onRowAction && (
+                <td
+                  className="overflow-visible border-b border-theme-border px-2 py-2 text-right align-middle"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <RowActionMenu items={buildRowActionItems(row, onRowAction, pendingRowActions)} />
+                </td>
+              )}
             </tr>
           )
         })}
       </tbody>
     </table>
   )
+}
+
+// buildRowActionItems composes the per-row three-dot menu entries based on
+// the row's tool (Argo vs Flux), current suspend state, terminating state,
+// and Argo's operationState.phase (used to gate the Terminate entry — only
+// shown while a sync is mid-flight, mirroring the detail-page condition).
+function buildRowActionItems(
+  row: GitOpsRow,
+  onAction: (row: GitOpsRow, action: GitOpsRowAction) => void,
+  pending?: Map<string, Set<GitOpsRowAction>>,
+): RowActionItem[] {
+  const inFlight = pending?.get(row.id)
+  const isPending = (action: GitOpsRowAction) => inFlight?.has(action) ?? false
+  const terminating = row.terminating
+  const suspended = row.suspended
+  // Disabled-reason copy matches what the detail page already shows so
+  // operators see consistent language whichever surface they use.
+  const terminatingReason = 'Resource is terminating; mutating actions are gated until finalizers complete.'
+  const suspendedReason = 'Cannot sync while suspended. Resume first.'
+  const items: RowActionItem[] = []
+
+  if (row.tool === 'argo') {
+    items.push({
+      key: 'sync',
+      label: 'Sync...',
+      icon: RefreshCw,
+      onClick: () => onAction(row, 'sync'),
+      disabled: suspended || terminating,
+      disabledReason: terminating ? terminatingReason : suspended ? suspendedReason : undefined,
+      pending: isPending('sync'),
+    })
+    items.push({
+      key: 'refresh',
+      label: 'Refresh',
+      icon: RefreshCw,
+      onClick: () => onAction(row, 'refresh'),
+      disabled: terminating,
+      disabledReason: terminating ? terminatingReason : undefined,
+      pending: isPending('refresh'),
+    })
+    items.push({
+      key: 'hard-refresh',
+      label: 'Hard refresh',
+      icon: Zap,
+      onClick: () => onAction(row, 'hard-refresh'),
+      disabled: terminating,
+      disabledReason: terminating ? terminatingReason : undefined,
+      pending: isPending('hard-refresh'),
+    })
+    if (suspended) {
+      items.push({
+        key: 'resume',
+        label: 'Resume',
+        icon: Play,
+        onClick: () => onAction(row, 'resume'),
+        disabled: terminating,
+        disabledReason: terminating ? terminatingReason : undefined,
+        pending: isPending('resume'),
+        divider: true,
+      })
+    } else {
+      items.push({
+        key: 'suspend',
+        label: 'Suspend',
+        icon: Pause,
+        onClick: () => onAction(row, 'suspend'),
+        disabled: terminating,
+        disabledReason: terminating ? terminatingReason : undefined,
+        pending: isPending('suspend'),
+        divider: true,
+      })
+    }
+    // Argo Terminate only makes sense while a sync is Running — gating
+    // here matches the detail-page conditional (gitops detail mounts the
+    // shortcut only when `isRunning`). For non-running rows we just omit
+    // the entry rather than disabling it, to keep the menu tight.
+    if (row.raw?.status?.operationState?.phase === 'Running') {
+      items.push({
+        key: 'terminate',
+        label: 'Terminate sync',
+        icon: Square,
+        onClick: () => onAction(row, 'terminate'),
+        pending: isPending('terminate'),
+        danger: true,
+      })
+    }
+    return items
+  }
+
+  // Flux (Kustomization / HelmRelease)
+  items.push({
+    key: 'reconcile',
+    label: 'Reconcile',
+    icon: RefreshCw,
+    onClick: () => onAction(row, 'reconcile'),
+    disabled: suspended || terminating,
+    disabledReason: terminating ? terminatingReason : suspended ? suspendedReason : undefined,
+    pending: isPending('reconcile'),
+  })
+  items.push({
+    key: 'sync-with-source',
+    label: 'Reconcile with source',
+    icon: RotateCw,
+    onClick: () => onAction(row, 'sync-with-source'),
+    disabled: suspended || terminating,
+    disabledReason: terminating ? terminatingReason : suspended ? suspendedReason : undefined,
+    pending: isPending('sync-with-source'),
+  })
+  if (suspended) {
+    items.push({
+      key: 'resume',
+      label: 'Resume',
+      icon: Play,
+      onClick: () => onAction(row, 'resume'),
+      disabled: terminating,
+      disabledReason: terminating ? terminatingReason : undefined,
+      pending: isPending('resume'),
+      divider: true,
+    })
+  } else {
+    items.push({
+      key: 'suspend',
+      label: 'Suspend',
+      icon: Pause,
+      onClick: () => onAction(row, 'suspend'),
+      disabled: terminating,
+      disabledReason: terminating ? terminatingReason : undefined,
+      pending: isPending('suspend'),
+      divider: true,
+    })
+  }
+  return items
 }
 
 function GitOpsTiles({
