@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, 
 import { clsx } from 'clsx'
 import {
   AlertTriangle,
+  ArrowDownUp,
   CheckCircle2,
   CircleAlert,
   CircleDot,
@@ -26,6 +27,7 @@ import { HealthStatusBadge, SyncStatusBadge } from './GitOpsStatusBadge'
 import { Tooltip } from '../ui/Tooltip'
 import { RowActionMenu, type RowActionItem } from '../ui/RowActionMenu'
 import { getGitOpsResourceStatus } from './detail-helpers'
+import { isArgoSuspendedByRadar } from '../resources/resource-utils-argo'
 import { toggleSet } from './GitOpsGraphFilterRail'
 import { parseContextName } from '../../utils/context-name'
 
@@ -645,7 +647,11 @@ export function GitOpsTableView({
           </div>
         </div>
 
-        <div className="min-h-0 min-w-0 flex-1 overflow-auto bg-theme-base">
+        {/* pb-20 keeps the last row (and its three-dot menu) scrollable clear
+            of the app's fixed bottom-right overlay buttons; without the slack
+            the bottom row's action trigger sits under them and can't be clicked
+            once the list fills the viewport. */}
+        <div className="min-h-0 min-w-0 flex-1 overflow-auto bg-theme-base pb-20">
           {mode !== 'applications' ? (
             <div className="flex h-full items-center justify-center text-sm text-theme-text-secondary">
               {modeLabel(mode)} view is queued behind the application list.
@@ -1220,7 +1226,7 @@ function buildRowActionItems(
     items.push({
       key: 'sync',
       label: 'Sync...',
-      icon: RefreshCw,
+      icon: ArrowDownUp,
       onClick: () => onAction(row, 'sync'),
       disabled: suspended || terminating,
       disabledReason: terminating ? terminatingReason : suspended ? suspendedReason : undefined,
@@ -1786,7 +1792,7 @@ export function normalizeArgoApplication(resource: any): GitOpsRow {
     labels: (resource.metadata?.labels ?? {}) as Record<string, string>,
     sync: status?.sync ?? 'Unknown',
     health: status?.health ?? 'Unknown',
-    suspended: status?.suspended ?? false,
+    suspended: (status?.suspended ?? false) || isArgoSuspendedByRadar(resource),
     repository: resource.spec?.source?.repoURL ?? '',
     targetRevision: resource.spec?.source?.targetRevision ?? '',
     path: resource.spec?.source?.path ?? '',

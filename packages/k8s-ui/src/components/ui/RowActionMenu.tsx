@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type ComponentType } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ComponentType } from 'react'
 import { Loader2, MoreVertical } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Tooltip } from './Tooltip'
@@ -25,7 +25,28 @@ interface RowActionMenuProps {
 
 export function RowActionMenu({ items, ariaLabel = 'Row actions', compact = true }: RowActionMenuProps) {
   const [open, setOpen] = useState(false)
+  // Flip the menu above the trigger when it would otherwise spill past the
+  // viewport bottom. The GitOps table's bottom rows sit at the end of a scroll
+  // container with the app's fixed overlay buttons below them, so a
+  // downward-opening menu there clips its lowest items with no way to scroll
+  // them into view. Measured after open (useLayoutEffect, pre-paint, no flicker).
+  const [openUp, setOpenUp] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setOpenUp(false)
+      return
+    }
+    const trigger = ref.current?.getBoundingClientRect()
+    const menuH = menuRef.current?.offsetHeight ?? 0
+    if (!trigger) return
+    const spaceBelow = window.innerHeight - trigger.bottom
+    // Flip up only when there's not enough room below AND enough room above,
+    // so a tall menu near the top doesn't get clipped at the other end.
+    setOpenUp(menuH + 8 > spaceBelow && trigger.top > menuH + 8)
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -66,8 +87,12 @@ export function RowActionMenu({ items, ariaLabel = 'Row actions', compact = true
       </button>
       {open && (
         <div
+          ref={menuRef}
           role="menu"
-          className="absolute right-0 top-full z-50 mt-1 min-w-[180px] rounded-lg border border-theme-border bg-theme-surface py-1 shadow-xl"
+          className={clsx(
+            'absolute right-0 z-50 min-w-[180px] rounded-lg border border-theme-border bg-theme-surface py-1 shadow-xl',
+            openUp ? 'bottom-full mb-1' : 'top-full mt-1',
+          )}
           onClick={(e) => e.stopPropagation()}
         >
           {items.map((item) => {
@@ -104,7 +129,11 @@ export function RowActionMenu({ items, ariaLabel = 'Row actions', compact = true
               <Fragment key={item.key}>
                 {item.divider && <div className="my-1 h-px bg-theme-border" />}
                 {item.disabled && item.disabledReason ? (
-                  <Tooltip content={item.disabledReason} position="left">
+                  // wrapperClassName=w-full so the disabled item fills the menu
+                  // like enabled items — the Tooltip wrapper is inline-flex and
+                  // would otherwise shrink-wrap, and the menu inherits text-right
+                  // from the table's actions cell, shoving the item to the edge.
+                  <Tooltip content={item.disabledReason} position="left" wrapperClassName="w-full">
                     {content}
                   </Tooltip>
                 ) : (

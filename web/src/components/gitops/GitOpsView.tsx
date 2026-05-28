@@ -18,6 +18,7 @@ import {
   formatGitOpsSourceUrl,
   getGitOpsResourceStatus,
   getGitOpsTool,
+  isArgoSuspendedByRadar,
   gitOpsInsightChangeKey,
   initNavigationMap,
   kindToPlural,
@@ -307,15 +308,9 @@ function GitOpsDetailView({ namespaces, onOpenResource }: GitOpsViewProps) {
   // pre-suspend prune/selfHeal state for restoration on resume. When present,
   // the app is in a deliberately-paused state (vs. Manual mode, which is a
   // normal operational choice) and should surface a Suspended chip alongside
-  // the other status indicators.
-  const argoSuspendedByRadar =
-    kind === 'applications' &&
-    Boolean(
-      resourceQ.data?.metadata?.annotations?.['radarhq.io/suspended-prune'] ||
-        resourceQ.data?.metadata?.annotations?.['radarhq.io/suspended-selfheal'] ||
-        resourceQ.data?.metadata?.annotations?.['skyhook.io/suspended-prune'] ||
-        resourceQ.data?.metadata?.annotations?.['skyhook.io/suspended-selfheal'],
-    )
+  // the other status indicators. Shared with the fleet table's row normalizer
+  // (isArgoSuspendedByRadar) so both surfaces agree on what "suspended" means.
+  const argoSuspendedByRadar = kind === 'applications' && isArgoSuspendedByRadar(resourceQ.data)
   const effectiveSuspended = (status?.suspended ?? false) || argoSuspendedByRadar
   // Lifecycle gate: when the resource is pending deletion, mutating
   // actions are futile (the controller is processing finalizers and
