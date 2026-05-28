@@ -650,8 +650,9 @@ export function GitOpsTableView({
         {/* pb-20 keeps the last row (and its three-dot menu) scrollable clear
             of the app's fixed bottom-right overlay buttons; without the slack
             the bottom row's action trigger sits under them and can't be clicked
-            once the list fills the viewport. */}
-        <div className="min-h-0 min-w-0 flex-1 overflow-auto bg-theme-base pb-20">
+            once the list fills the viewport. Only needed when the actions column
+            is present — consumers without onRowAction (e.g. Hub) skip the slack. */}
+        <div className={clsx('min-h-0 min-w-0 flex-1 overflow-auto bg-theme-base', onRowAction && 'pb-20')}>
           {mode !== 'applications' ? (
             <div className="flex h-full items-center justify-center text-sm text-theme-text-secondary">
               {modeLabel(mode)} view is queued behind the application list.
