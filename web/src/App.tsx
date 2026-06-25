@@ -48,6 +48,7 @@ import { debugNamespaceLog, useNamespaces, useNamespaceScope, useSetActiveNamesp
 import { routePath, apiUrl, getAuthHeaders, getCredentialsMode } from './api/config'
 import { KeyboardShortcutProvider, useRegisterShortcut, useRegisterShortcuts } from './hooks/useKeyboardShortcuts'
 import { useAnimatedUnmount } from './hooks/useAnimatedUnmount'
+import { useDocumentTitle } from './hooks/useDocumentTitle'
 import radarLoadingIcon from '@skyhook-io/k8s-ui/assets/radar/radar-icon-loading.svg'
 import { RefreshCw, Network, List, Clock, Package, Sun, Moon, Activity, Home, Star, Search, Bug, SquareTerminal, ShieldCheck, GitBranch, HelpCircle } from 'lucide-react'
 import { useTheme } from './context/ThemeContext'
@@ -123,6 +124,41 @@ function getViewFromPath(pathname: string): ExtendedMainView {
   return 'home'
 }
 
+// Browser tab label for every Radar view, derived from the URL *path* so it's
+// correct regardless of which component renders it. A detail drawer that opens
+// over a list (?resource=…) is deliberately NOT titled — it's the same page, so
+// it keeps the list's title.
+function radarPageTitle(pathname: string): string | null {
+  const decode = (s: string) => {
+    try {
+      return decodeURIComponent(s)
+    } catch {
+      return s
+    }
+  }
+  const capitalize = (text: string) =>
+    text ? text.charAt(0).toUpperCase() + text.slice(1) : text
+  const pathSegments = pathname.replace(/^\//, '').split('/').filter(Boolean)
+  const view = getViewFromPath(pathname)
+
+  // Full-page resource detail: /workload/<kind>/<ns>/<name> (name may contain '/').
+  if (view === 'workload') return pathSegments.slice(3).map(decode).join('/') || null
+  // Resources is browsed per-kind: /resources/<kind> → "<Kind>" (e.g. Configmaps);
+  // bare /resources (before it redirects to a default kind) → "Resources".
+  if (view === 'resources')
+    return pathSegments[1] ? capitalize(decode(pathSegments[1])) : 'Resources'
+  // GitOps detail is /gitops/detail/<kind>/<ns>/<name> → the resource name;
+  // anything else (the list) → "GitOps".
+  if (view === 'gitops')
+    return pathSegments[1] === 'detail' ? decode(pathSegments[4] ?? '') || 'GitOps' : 'GitOps'
+
+  // The landing view reads "Overview" rather than "Home" in the tab.
+  if (view === 'home') return 'Overview'
+  // Every other view's label is its id capitalized — getViewFromPath has already
+  // normalized aliases (e.g. /audit → 'checks'), so no lookup table is needed.
+  return capitalize(view)
+}
+
 function AuthBarrier({ authMode }: { authMode: string }) {
   useEffect(() => {
     if (authMode === 'oidc') {
@@ -185,7 +221,7 @@ function peekOwnerKey(pathname: string, search: string): string {
   return `${pathname} ${new URLSearchParams(search).get('app') ?? ''}`
 }
 
-function AppInner() {
+function AppInner({ manageDocumentTitle = false, documentTitleSuffix }: { manageDocumentTitle?: boolean; documentTitleSuffix?: string }) {
   const navigate = useNavigate()
   const location = useLocation()
   const navigationType = useNavigationType()
@@ -278,6 +314,11 @@ function AppInner() {
 
   // Get mainView from URL path
   const mainView = getViewFromPath(location.pathname)
+
+  // One URL-derived tab title for every view (see radarPageTitle). Driving it
+  // from the URL — not the mounted component. Off unless the host opts in
+  // (standalone passes manageDocumentTitle), so embedders keep title ownership.
+  useDocumentTitle(manageDocumentTitle ? radarPageTitle(location.pathname) : null, documentTitleSuffix)
 
   // Workload slug after `/resources/` (defaults to `pods`). Bare `/resources` redirects to `/resources/pods`.
   const normalizedResourcesKindSlug = useMemo(() => {
@@ -2154,14 +2195,14 @@ function FloatingButtons({ showHelp, showCommandPalette, showDiagnostics, onHelp
 }
 
 // Main App component wrapped with providers
-function App() {
+function App({ manageDocumentTitle = false, documentTitleSuffix }: { manageDocumentTitle?: boolean; documentTitleSuffix?: string }) {
   return (
     <ConnectionProvider>
       <CapabilitiesProvider>
         <ContextSwitchProvider>
           <DockProvider>
             <KeyboardShortcutProvider>
-              <AppInner />
+              <AppInner manageDocumentTitle={manageDocumentTitle} documentTitleSuffix={documentTitleSuffix} />
             </KeyboardShortcutProvider>
           </DockProvider>
         </ContextSwitchProvider>
