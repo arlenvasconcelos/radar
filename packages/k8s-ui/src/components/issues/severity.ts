@@ -29,10 +29,29 @@ export const ISSUE_SEVERITY_TEXT_CLASS: Record<IssueSeverity, string> = {
   warning: 'text-amber-600 dark:text-amber-400',
 };
 
-// Left accent rail on a queue row — the scan-down severity cue.
+// Left accent rail on a COLLAPSED queue row — the scan-down severity cue + a
+// faint hover tint. The expanded row swaps this for the header band below.
 export const ISSUE_SEVERITY_RAIL_CLASS: Record<IssueSeverity, string> = {
   critical: 'border-l-red-500 hover:bg-red-50/40 dark:hover:bg-red-950/20',
   warning: 'border-l-amber-500 hover:bg-amber-50/30 dark:hover:bg-amber-950/15',
+};
+
+// Solid severity pill — the loud focus signal on the EXPANDED row's header band
+// (collapsed rows keep the soft BADGE pill so a long queue stays calm).
+export const ISSUE_SEVERITY_SOLID_CLASS: Record<IssueSeverity, string> = {
+  critical: 'bg-red-600 text-white dark:bg-red-600',
+  warning: 'bg-amber-500 text-white dark:bg-amber-600',
+};
+
+// Severity-tinted header band, shown only when a row is expanded (border color
+// + a soft fill, no hover variant so it doesn't lighten on hover). Keeps the
+// collapsed queue neutral while the open row gets the full B treatment.
+// Expanded: the left rail color drops (transparent — keeps the 3px width so
+// content doesn't shift) and only the tinted band remains, matching the
+// prototype's expanded header.
+export const ISSUE_SEVERITY_HEADER_BAND_CLASS: Record<IssueSeverity, string> = {
+  critical: 'border-l-transparent bg-red-50 dark:bg-red-950/40',
+  warning: 'border-l-transparent bg-amber-50 dark:bg-amber-950/30',
 };
 
 // Category-group accent — the quiet classification tag (severity is the loud

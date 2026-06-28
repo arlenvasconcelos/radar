@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react';
-import { ChevronRight, CircleCheck, Clock, ExternalLink } from 'lucide-react';
-import { ClusterName, EmptyState } from '../ui';
+import { AlertOctagon, AlertTriangle, ArrowRight, ChevronRight, CircleCheck, Clock, ExternalLink } from 'lucide-react';
+import { CardBody, CardSection, ClusterName, EmptyState, NEUTRAL_CHIP_CLASS, TerminalBlock } from '../ui';
 import { formatCompactAge, formatRelativeAgeTime } from '../../utils/format';
 import {
   ISSUE_SEVERITY_BADGE_CLASS,
+  ISSUE_SEVERITY_HEADER_BAND_CLASS,
   ISSUE_SEVERITY_LABEL,
   ISSUE_SEVERITY_RAIL_CLASS,
+  ISSUE_SEVERITY_SOLID_CLASS,
+  ISSUE_SEVERITY_TEXT_CLASS,
   categoryLabel,
-  groupBadgeClass,
   groupLabel,
 } from './severity';
 import {
@@ -18,7 +20,15 @@ import {
   type Issue,
   type IssueAffected,
   type IssueResourceRef,
+  type IssueSeverity,
 } from './types';
+
+// Leading severity glyph (B "Sectioned + icons"). critical = octagon (stop),
+// warning = triangle — the at-a-glance severity cue on every row.
+const ISSUE_SEVERITY_ICON: Record<IssueSeverity, ComponentType<{ className?: string }>> = {
+  critical: AlertOctagon,
+  warning: AlertTriangle,
+};
 
 export interface IssuesViewProps {
   /** Grouped live issues — one row per subject+category. Typically flattened
@@ -131,6 +141,7 @@ export function IssueRow({
   const { headline } = issueMessageParts(issue);
   const [renderDetails, setRenderDetails] = useState(open);
   const Container = as;
+  const SeverityIcon = ISSUE_SEVERITY_ICON[issue.severity];
   const slotCtx = { issue, open };
 
   useEffect(() => {
@@ -153,9 +164,11 @@ export function IssueRow({
       ].filter(Boolean).join(' ')}
       style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 72px' }}
     >
-      {/* The whole header is the single toggle target — chevron is just the
-          open/closed indicator, not a separate action. Deep-links live in the
-          expanded body (a link nested in a button would be invalid). */}
+      {/* The whole header is the single toggle target. The leading severity
+          icon is the at-a-glance cue; a trailing chevron shows open/closed.
+          Deep-links live in the expanded body (a link nested in a button would
+          be invalid). Collapsed: neutral row + rail. Expanded: severity-tinted
+          band + solid pill — the tint is a focus signal, not per-row alarm. */}
       <div
         role="button"
         tabIndex={0}
@@ -168,20 +181,20 @@ export function IssueRow({
             onToggle();
           }
         }}
-        className={`group flex cursor-pointer items-center gap-3 border-l-2 py-3 pl-3 pr-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-radar-accent)]/40 ${ISSUE_SEVERITY_RAIL_CLASS[issue.severity]}`}
+        className={`group flex cursor-pointer items-start gap-3 border-l-[3px] py-3 pl-3 pr-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-radar-accent)]/40 ${open ? ISSUE_SEVERITY_HEADER_BAND_CLASS[issue.severity] : ISSUE_SEVERITY_RAIL_CLASS[issue.severity]}`}
       >
-        <ChevronRight className={`h-4 w-4 shrink-0 text-theme-text-tertiary transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
+        <SeverityIcon className={`mt-0.5 h-[18px] w-[18px] shrink-0 ${ISSUE_SEVERITY_TEXT_CLASS[issue.severity]}`} aria-hidden />
 
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <div className="flex min-w-0 items-baseline gap-2">
             <span className="shrink-0 text-sm font-medium text-theme-text-primary">{categoryLabel(issue.category)}</span>
-            <span className={`badge-sm shrink-0 self-center text-[10px] ${groupBadgeClass(issue.category_group)}`}>{groupLabel(issue.category_group)}</span>
+            <span className={`shrink-0 self-center ${NEUTRAL_CHIP_CLASS}`}>{groupLabel(issue.category_group)}</span>
             {renderBadges?.(slotCtx)}
-            {/* The detector reason/message rides the title row so the most
-                useful triage signal is visible without expanding — it fills
-                the otherwise-empty band between the title and the severity
-                badge. Full text (plus crash context) stays in the body. */}
-            {issue.reason ? (
+            {/* The detector reason rides the title row while COLLAPSED so the
+                key triage signal shows without expanding. When open, the full
+                cause lives in the WHAT'S WRONG section below, so we drop it here
+                to keep the tinted band clean. */}
+            {issue.reason && !open ? (
               <span className="min-w-0 flex-1 truncate text-xs text-theme-text-tertiary">
                 <span className="font-medium text-theme-text-secondary">{issue.reason}</span>
                 {headline ? <span> — {headline}</span> : null}
@@ -189,7 +202,7 @@ export function IssueRow({
             ) : null}
           </div>
           <div className="flex min-w-0 items-center gap-1.5 text-xs text-theme-text-tertiary">
-            <span className="shrink-0 font-mono uppercase tracking-wide">{issue.kind}</span>
+            <span className="shrink-0 rounded bg-theme-elevated px-1.5 py-px font-mono text-[11px] uppercase text-theme-text-secondary">{issue.kind}</span>
             <span className="min-w-0 truncate font-medium text-theme-text-secondary">
               {issue.namespace ? `${issue.namespace} / ` : ''}
               {issue.name}
@@ -212,27 +225,29 @@ export function IssueRow({
           </div>
         </div>
 
-        {/* Age chip: chronic-vs-acute signal. When issue_timing is
-            started_at_resource_creation, swap the raw age for "since deploy" —
-            the raw age is misleading (it reads as urgency, but this issue has
-            been present since the resource was first created). */}
-        {issue.first_seen ? (
-          <time
-            dateTime={issue.first_seen}
-            title={ageTitle(issue)}
-            className="flex shrink-0 items-center gap-1 text-xs tabular-nums text-theme-text-tertiary"
-          >
-            <Clock className="h-3 w-3" aria-hidden />
-            {issue.issue_timing === 'started_at_resource_creation'
-              ? 'since deploy'
-              : formatCompactAge(issue.first_seen)}
-          </time>
-        ) : null}
-
-        <span className={`badge-sm shrink-0 text-[10px] font-semibold ${ISSUE_SEVERITY_BADGE_CLASS[issue.severity]}`}>
-          {ISSUE_SEVERITY_LABEL[issue.severity]}
-        </span>
-        {renderActions?.(slotCtx)}
+        {/* Right cluster — severity pill THEN age (prototype order), vertically
+            centered as a group and top-aligned with the title line. */}
+        <div className="flex shrink-0 items-center gap-3">
+          <span className={`badge-sm shrink-0 px-2.5 py-0.5 text-xs font-semibold ${open ? ISSUE_SEVERITY_SOLID_CLASS[issue.severity] : ISSUE_SEVERITY_BADGE_CLASS[issue.severity]}`}>
+            {ISSUE_SEVERITY_LABEL[issue.severity]}
+          </span>
+          {/* Age chip: chronic-vs-acute signal. started_at_resource_creation →
+              "since deploy" (raw age misleads — present since creation). */}
+          {issue.first_seen ? (
+            <time
+              dateTime={issue.first_seen}
+              title={ageTitle(issue)}
+              className="flex shrink-0 items-center gap-1 text-xs tabular-nums text-theme-text-tertiary"
+            >
+              <Clock className="h-3 w-3" aria-hidden />
+              {issue.issue_timing === 'started_at_resource_creation'
+                ? 'since deploy'
+                : formatCompactAge(issue.first_seen)}
+            </time>
+          ) : null}
+          {renderActions?.(slotCtx)}
+          <ChevronRight className={`h-4 w-4 shrink-0 text-theme-text-tertiary transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
+        </div>
       </div>
 
       {renderDetails ? (
@@ -245,7 +260,9 @@ export function IssueRow({
           }}
         >
           <div className="overflow-hidden">
-            <div className="border-t border-theme-border bg-theme-base/40 px-4 py-4 pl-11">
+            {/* Body on the white card surface (not a recessed grey panel) — the
+                grey-on-grey fix. Indented to align under the title. */}
+            <div className="border-t border-theme-border bg-theme-surface px-4 py-4">
               <div className="flex flex-col gap-4">
                 <Diagnosis issue={issue} />
                 <DiagnosticContext issue={issue} resourceHref={resourceHref} onResourceClick={onResourceClick} ResourceLinkIcon={ResourceLinkIcon} />
@@ -261,8 +278,10 @@ export function IssueRow({
   );
 }
 
-// What's-wrong block: the specific detector reason + message, plus pod crash
-// context when present (the "chronic vs acute" signal).
+// Diagnosis (B "Sectioned + icons"): WHAT'S WRONG (amber) → NEXT STEP (emerald)
+// → RAW ERROR (monochrome terminal block). The scattered status/timing facts
+// collapse into ONE muted meta line under the diagnosis, so the body reads as
+// three clear beats instead of a stack of grey one-liners.
 function Diagnosis({ issue }: { issue: Issue }) {
   const crash =
     issue.restart_count || issue.last_terminated_reason
@@ -271,67 +290,58 @@ function Diagnosis({ issue }: { issue: Issue }) {
           .join(' · ')
       : null;
   const { headline, detail } = issueMessageParts(issue);
-  // When the issue carries a parsed plain-English cause, lead with it. The raw
-  // detector message is kept below as de-emphasized detail.
-  const rawMessage = issue.cause ? issue.message ?? '' : [headline, detail].filter(Boolean).join(' ');
+  // The raw detector text → terminal block. For cause-bearing issues it's the
+  // original message; for normalized issues (e.g. image-pull) it's the precise
+  // kubelet/containerd detail that the short headline replaced.
+  const rawError = issue.cause ? issue.message ?? '' : detail ?? '';
+
+  // One muted line — stuck/retry · crash · timing · change — replaces the old
+  // stack of individual grey paragraphs.
+  const meta: string[] = [];
+  if (issue.stuck) meta.push('Stuck');
+  if (issue.operation_retry_count) meta.push(`retried ${issue.operation_retry_count}×`);
+  if (crash) meta.push(crash);
+  if (issue.first_seen) {
+    meta.push(
+      issue.issue_timing === 'started_at_resource_creation'
+        ? 'present since deployment'
+        : issue.issue_timing === 'started_after_resource_was_healthy'
+          ? `started ${formatRelativeAgeTime(issue.first_seen)} · was previously healthy`
+          : `started ${formatRelativeAgeTime(issue.first_seen)}`,
+    );
+    if (issue.last_seen && issue.issue_timing !== 'started_at_resource_creation') meta.push(`last seen ${formatRelativeAgeTime(issue.last_seen)}`);
+  }
+  if (issue.change_context) meta.push(changeContextText(issue.change_context));
+
+  const hasNextStep = !!issue.action || (issue.remediation_kind === 'create-namespace' && !!issue.remediation_target);
+
   return (
-    <section className="flex flex-col gap-1">
-      <h4 className="text-[11px] font-semibold uppercase tracking-wide text-theme-text-tertiary">What's wrong</h4>
-      {issue.cause ? (
-        <p className="text-sm leading-relaxed text-theme-text-primary">{issue.cause}</p>
-      ) : (
-        <p className="text-sm leading-relaxed text-theme-text-primary">
-          <span className="font-medium">{issue.reason}</span>
-          {headline ? <span className="text-theme-text-secondary"> — {headline}</span> : null}
-        </p>
-      )}
-      {/* For non-cause issues whose message was normalized to a short headline
-          (e.g. image-pull), keep the precise raw kubelet/containerd detail. The
-          cause branch shows its own raw block below. */}
-      {!issue.cause && detail ? (
-        <p className="break-words font-mono text-xs leading-relaxed text-theme-text-tertiary">{detail}</p>
+    <div className="flex flex-col gap-4">
+      <CardSection icon={AlertTriangle} label="What's wrong" tone="warn">
+        {issue.cause ? (
+          <p className="text-sm leading-relaxed text-theme-text-primary">{issue.cause}</p>
+        ) : (
+          <p className="text-sm leading-relaxed text-theme-text-primary">
+            <span className="font-medium">{issue.reason}</span>
+            {headline ? <span className="text-theme-text-secondary"> — {headline}</span> : null}
+          </p>
+        )}
+        {meta.length > 0 ? <p className="text-xs leading-relaxed text-theme-text-tertiary tabular-nums">{meta.join(' · ')}</p> : null}
+      </CardSection>
+
+      {hasNextStep ? (
+        <CardSection icon={ArrowRight} label="Next step" tone="fix">
+          {issue.action ? <CardBody>{issue.action}</CardBody> : null}
+          {issue.remediation_kind === 'create-namespace' && issue.remediation_target ? (
+            <p className="text-xs text-theme-text-tertiary">
+              Suggested fix: create namespace <code className="rounded bg-theme-elevated px-1 font-mono ring-1 ring-theme-border">{issue.remediation_target}</code> — apply it from the GitOps detail page.
+            </p>
+          ) : null}
+        </CardSection>
       ) : null}
-      {issue.action ? (
-        <p className="text-sm leading-relaxed text-theme-text-secondary">
-          <span className="font-medium text-theme-text-primary">Next step: </span>
-          {issue.action}
-        </p>
-      ) : null}
-      {issue.remediation_kind === 'create-namespace' && issue.remediation_target ? (
-        <p className="text-xs text-theme-text-tertiary">
-          Suggested fix: create namespace <code className="rounded bg-theme-elevated px-1 font-mono">{issue.remediation_target}</code> — apply it from the GitOps detail page.
-        </p>
-      ) : null}
-      {issue.stuck || issue.operation_retry_count ? (
-        <p className="text-xs text-theme-text-tertiary tabular-nums">
-          {issue.stuck ? 'Stuck' : 'Retrying'}
-          {issue.operation_retry_count ? ` · retried ${issue.operation_retry_count}×` : ''}
-        </p>
-      ) : null}
-      {/* Raw detector message, de-emphasized — shown below the parsed cause so
-          the precise error (URLs, resource names) is available without leading. */}
-      {issue.cause && rawMessage ? (
-        <p className="break-words font-mono text-[11px] leading-relaxed text-theme-text-tertiary">{rawMessage}</p>
-      ) : null}
-      {crash ? <p className="text-xs text-theme-text-tertiary tabular-nums">{crash}</p> : null}
-      {issue.change_context ? (
-        <p className="text-xs text-theme-text-tertiary">
-          {changeContextText(issue.change_context)}
-        </p>
-      ) : null}
-      {issue.first_seen ? (
-        <p className="text-xs text-theme-text-tertiary tabular-nums">
-          {issue.issue_timing === 'started_at_resource_creation'
-            ? 'Present since deployment'
-            : issue.issue_timing === 'started_after_resource_was_healthy'
-              ? `Started ${formatRelativeAgeTime(issue.first_seen)} · was previously healthy`
-              : `Started ${formatRelativeAgeTime(issue.first_seen)}`}
-          {issue.last_seen && issue.issue_timing !== 'started_at_resource_creation'
-            ? ` · last seen ${formatRelativeAgeTime(issue.last_seen)}`
-            : ''}
-        </p>
-      ) : null}
-    </section>
+
+      {rawError ? <TerminalBlock label="Raw error">{rawError}</TerminalBlock> : null}
+    </div>
   );
 }
 
@@ -473,7 +483,7 @@ function AffectedResources({
           first deep-link; members (the folded pods) follow. ResourceLine emits
           an <li>, so it needs a list parent of its own. */}
       <ul className="flex flex-col gap-px">
-        <ResourceLine label="Subject" refForLink={subjectRef(issue)} resourceHref={resourceHref} onResourceClick={onResourceClick} ResourceLinkIcon={ResourceLinkIcon} />
+        <ResourceLine label="Subject" compact refForLink={subjectRef(issue)} resourceHref={resourceHref} onResourceClick={onResourceClick} ResourceLinkIcon={ResourceLinkIcon} />
       </ul>
       {members.length > 0 && (
         <>
@@ -508,27 +518,45 @@ function ResourceLine({
   resourceHref,
   onResourceClick,
   ResourceLinkIcon,
+  compact,
 }: {
   label?: string;
   refForLink: IssueResourceRef;
   resourceHref?: (ref: IssueResourceRef) => string;
   onResourceClick?: (ref: IssueResourceRef) => void;
   ResourceLinkIcon: ComponentType<{ className?: string }>;
+  // Footer variant (the Subject row): a tight static line aligned to the body
+  // edge — no padded clickable hit-box — to match the prototype's footer.
+  compact?: boolean;
 }) {
   const r = refForLink;
   const linkable = !!(onResourceClick || resourceHref);
   const body = (
     <>
-      {label ? <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-theme-text-tertiary">{label}</span> : null}
-      <span className="shrink-0 font-mono text-[11px] uppercase tracking-wide text-theme-text-tertiary">{r.kind}</span>
-      <span className={`min-w-0 truncate font-medium ${linkable ? 'text-[var(--color-radar-accent)]' : 'text-theme-text-primary'}`}>
+      {label ? <span className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.06em] text-theme-text-tertiary">{label}</span> : null}
+      {/* Footer (compact): the kind is a grey mono chip (matches the prototype's
+          APPLICATION chip). Member rows keep plain mono. */}
+      {compact ? (
+        <span className="shrink-0 rounded bg-theme-elevated px-1.5 py-px font-mono text-[11px] uppercase text-theme-text-secondary">{r.kind}</span>
+      ) : (
+        <span className="shrink-0 font-mono text-[11px] uppercase tracking-wide text-theme-text-tertiary">{r.kind}</span>
+      )}
+      {/* Link green = --color-brand-600 (#059669), the design's link/brand role,
+          a shade darker than the app accent. */}
+      <span className={`min-w-0 truncate text-sm ${linkable ? `${compact ? 'font-semibold' : 'font-medium'} text-[var(--color-brand-600)]` : 'font-medium text-theme-text-primary'}`}>
         {r.namespace ? `${r.namespace} / ` : ''}
         {r.name}
       </span>
       {linkable && <ResourceLinkIcon className="h-3 w-3 shrink-0 text-theme-text-tertiary opacity-0 transition-opacity group-hover/r:opacity-100" />}
     </>
   );
-  const cls = 'group/r flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-theme-hover/60';
+  // compact = footer Subject row (no row padding/hover); default = padded,
+  // clickable resource row used for the affected-members list.
+  // items-baseline so the SUBJECT label + kind chip share a baseline with the
+  // larger resource name (their sizes differ; centering left them misaligned).
+  const cls = compact
+    ? 'group/r flex w-full items-baseline gap-2 text-left transition-colors'
+    : 'group/r flex w-full items-baseline gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-theme-hover/60';
   return (
     <li>
       {onResourceClick ? (
@@ -540,7 +568,7 @@ function ResourceLine({
           {body}
         </a>
       ) : (
-        <span className="flex items-center gap-2 rounded-md px-2 py-1 text-sm">{body}</span>
+        <span className={compact ? 'flex items-center gap-2' : 'flex items-center gap-2 rounded-md px-2 py-1 text-sm'}>{body}</span>
       )}
     </li>
   );

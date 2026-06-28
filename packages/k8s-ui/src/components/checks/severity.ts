@@ -38,13 +38,33 @@ export const SEVERITY_TEXT_CLASS: Record<CheckSeverity, string> = {
   low: 'text-slate-500 dark:text-slate-400',
 }
 
-// Left accent rail on a queue row — the scan-down severity cue. Pairs a colored
-// 2px border with a faint severity-tinted background that deepens on hover.
+// Left accent rail on a COLLAPSED queue row — the scan-down severity cue + a
+// faint hover tint. The expanded row swaps this for the header band below.
 export const SEVERITY_RAIL_CLASS: Record<CheckSeverity, string> = {
   critical: 'border-l-red-500 hover:bg-red-50/40 dark:hover:bg-red-950/20',
   high: 'border-l-orange-500 hover:bg-orange-50/40 dark:hover:bg-orange-950/20',
   medium: 'border-l-amber-500 hover:bg-amber-50/30 dark:hover:bg-amber-950/15',
   low: 'border-l-slate-300 dark:border-l-slate-600 hover:bg-theme-hover/40',
+}
+
+// Solid severity pill — the loud focus signal on the EXPANDED card's header
+// band (collapsed cards keep the soft BADGE pill so the queue stays calm).
+export const SEVERITY_SOLID_CLASS: Record<CheckSeverity, string> = {
+  critical: 'bg-red-600 text-white dark:bg-red-600',
+  high: 'bg-orange-600 text-white dark:bg-orange-600',
+  medium: 'bg-amber-500 text-white dark:bg-amber-600',
+  low: 'bg-slate-500 text-white dark:bg-slate-600',
+}
+
+// Severity-tinted header band, shown only when a card is expanded (border color
+// + soft fill, no hover variant). Keeps the collapsed queue neutral.
+// Expanded: drop the rail color (transparent, keep 3px width — no shift), keep
+// only the tinted band, matching the prototype's expanded header.
+export const SEVERITY_HEADER_BAND_CLASS: Record<CheckSeverity, string> = {
+  critical: 'border-l-transparent bg-red-50 dark:bg-red-950/40',
+  high: 'border-l-transparent bg-orange-50 dark:bg-orange-950/30',
+  medium: 'border-l-transparent bg-amber-50 dark:bg-amber-950/25',
+  low: 'border-l-transparent bg-slate-50 dark:bg-slate-900/40',
 }
 
 // Category accent — a quiet tag (severity is the loud one). Security is the
