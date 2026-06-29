@@ -1,11 +1,27 @@
 import type { IssueSeverity } from './types';
 import { BADGE_SEVERITY_COLORS as sev } from '../ui/Badge';
+import {
+  TONE_HEADER_BAND_CLASS,
+  TONE_RAIL_CLASS,
+  TONE_SOLID_CLASS,
+  TONE_TEXT_CLASS,
+  type SeverityTone,
+} from '../ui/severity-tone';
 
 // Visual language for the 2-tier Issues severity. critical = red, warning =
 // amber. Issues and Checks are different severity axes but must read as one
-// product — both pull from the canonical Badge severity tones
-// (BADGE_SEVERITY_COLORS), so their pills match each other and every status
-// badge elsewhere.
+// product, so the color strings are shared via the tone module; here we only map
+// each tier onto its tone. The pill still pulls from the canonical Badge tones
+// so it matches every status badge elsewhere.
+const ISSUE_SEVERITY_TONE: Record<IssueSeverity, SeverityTone> = {
+  critical: 'red',
+  warning: 'amber',
+};
+
+const byTone = <T,>(toneMap: Record<SeverityTone, T>): Record<IssueSeverity, T> => ({
+  critical: toneMap[ISSUE_SEVERITY_TONE.critical],
+  warning: toneMap[ISSUE_SEVERITY_TONE.warning],
+});
 
 export const ISSUE_SEVERITY_LABEL: Record<IssueSeverity, string> = {
   critical: 'Critical',
@@ -18,22 +34,10 @@ export const ISSUE_SEVERITY_BADGE_CLASS: Record<IssueSeverity, string> = {
   warning: sev.warning,
 };
 
-// Solid fill — dots + the proportional distribution bar segments.
-export const ISSUE_SEVERITY_FILL_CLASS: Record<IssueSeverity, string> = {
-  critical: 'bg-red-500',
-  warning: 'bg-amber-500',
-};
-
-export const ISSUE_SEVERITY_TEXT_CLASS: Record<IssueSeverity, string> = {
-  critical: 'text-red-600 dark:text-red-400',
-  warning: 'text-amber-600 dark:text-amber-400',
-};
-
-// Left accent rail on a queue row — the scan-down severity cue.
-export const ISSUE_SEVERITY_RAIL_CLASS: Record<IssueSeverity, string> = {
-  critical: 'border-l-red-500 hover:bg-red-50/40 dark:hover:bg-red-950/20',
-  warning: 'border-l-amber-500 hover:bg-amber-50/30 dark:hover:bg-amber-950/15',
-};
+export const ISSUE_SEVERITY_TEXT_CLASS = byTone(TONE_TEXT_CLASS);
+export const ISSUE_SEVERITY_RAIL_CLASS = byTone(TONE_RAIL_CLASS);
+export const ISSUE_SEVERITY_SOLID_CLASS = byTone(TONE_SOLID_CLASS);
+export const ISSUE_SEVERITY_HEADER_BAND_CLASS = byTone(TONE_HEADER_BAND_CLASS);
 
 // Category-group accent — the quiet classification tag (severity is the loud
 // one). One hue per group; unknown/unmapped falls back to a neutral theme tag.

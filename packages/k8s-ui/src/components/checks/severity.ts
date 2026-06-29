@@ -1,9 +1,32 @@
 import type { CheckSeverity } from './types'
 import { BADGE_SEVERITY_COLORS as sev } from '../ui/Badge'
+import {
+  TONE_FILL_CLASS,
+  TONE_HEADER_BAND_CLASS,
+  TONE_RAIL_CLASS,
+  TONE_SOLID_CLASS,
+  TONE_TEXT_CLASS,
+  type SeverityTone,
+} from '../ui/severity-tone'
 
 // The visual language for the 4-tier Checks severity ladder. One hue per tier:
 // red=critical, orange=high, amber=medium, neutral=low — read the queue's left
-// rail top-to-bottom and severity is obvious without reading a word.
+// rail top-to-bottom and severity is obvious without reading a word. The actual
+// color strings are shared with the Issue card via the tone module; here we only
+// map each tier onto its tone.
+const CHECK_SEVERITY_TONE: Record<CheckSeverity, SeverityTone> = {
+  critical: 'red',
+  high: 'orange',
+  medium: 'amber',
+  low: 'slate',
+}
+
+const byTone = <T,>(toneMap: Record<SeverityTone, T>): Record<CheckSeverity, T> => ({
+  critical: toneMap[CHECK_SEVERITY_TONE.critical],
+  high: toneMap[CHECK_SEVERITY_TONE.high],
+  medium: toneMap[CHECK_SEVERITY_TONE.medium],
+  low: toneMap[CHECK_SEVERITY_TONE.low],
+})
 
 export const SEVERITY_LABEL: Record<CheckSeverity, string> = {
   critical: 'Critical',
@@ -23,29 +46,11 @@ export const SEVERITY_BADGE_CLASS: Record<CheckSeverity, string> = {
   low: sev.neutral,
 }
 
-// Solid fill — dots + the proportional distribution bar segments.
-export const SEVERITY_FILL_CLASS: Record<CheckSeverity, string> = {
-  critical: 'bg-red-500',
-  high: 'bg-orange-500',
-  medium: 'bg-amber-500',
-  low: 'bg-slate-400',
-}
-
-export const SEVERITY_TEXT_CLASS: Record<CheckSeverity, string> = {
-  critical: 'text-red-600 dark:text-red-400',
-  high: 'text-orange-600 dark:text-orange-400',
-  medium: 'text-amber-600 dark:text-amber-400',
-  low: 'text-slate-500 dark:text-slate-400',
-}
-
-// Left accent rail on a queue row — the scan-down severity cue. Pairs a colored
-// 2px border with a faint severity-tinted background that deepens on hover.
-export const SEVERITY_RAIL_CLASS: Record<CheckSeverity, string> = {
-  critical: 'border-l-red-500 hover:bg-red-50/40 dark:hover:bg-red-950/20',
-  high: 'border-l-orange-500 hover:bg-orange-50/40 dark:hover:bg-orange-950/20',
-  medium: 'border-l-amber-500 hover:bg-amber-50/30 dark:hover:bg-amber-950/15',
-  low: 'border-l-slate-300 dark:border-l-slate-600 hover:bg-theme-hover/40',
-}
+export const SEVERITY_FILL_CLASS = byTone(TONE_FILL_CLASS)
+export const SEVERITY_TEXT_CLASS = byTone(TONE_TEXT_CLASS)
+export const SEVERITY_RAIL_CLASS = byTone(TONE_RAIL_CLASS)
+export const SEVERITY_SOLID_CLASS = byTone(TONE_SOLID_CLASS)
+export const SEVERITY_HEADER_BAND_CLASS = byTone(TONE_HEADER_BAND_CLASS)
 
 // Category accent — a quiet tag (severity is the loud one). Security is the
 // headline beat, so it gets the most distinct hue.

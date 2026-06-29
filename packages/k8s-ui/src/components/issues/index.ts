@@ -16,7 +16,6 @@ export type { Issue, IssueSeverity, IssueAffected, IssueResourceRef, IssueDiagno
 export {
   ISSUE_SEVERITY_LABEL,
   ISSUE_SEVERITY_BADGE_CLASS,
-  ISSUE_SEVERITY_FILL_CLASS,
   ISSUE_SEVERITY_TEXT_CLASS,
   ISSUE_SEVERITY_RAIL_CLASS,
   groupBadgeClass,

@@ -108,6 +108,16 @@
   --group-icon-app: light-dark(#059669, #34d399);
   --group-icon-label: light-dark(#d97706, #fbbf24);
 
+  /* ── Terminal / console surface (intentionally dark in BOTH themes — it's a
+     console, not chrome). The outer border darkens on a light page and lightens
+     on a dark one so the block stays defined; the inner divider and text stay
+     light because the surface is always dark. ── */
+  --terminal-bg: #0F172A;
+  --terminal-border: light-dark(#1E293B, rgba(255, 255, 255, 0.10));
+  --terminal-divider: rgba(255, 255, 255, 0.10);
+  --terminal-label: #94A3B8;
+  --terminal-text: #CBD5E1;
+
   /* ── ANSI terminal colors (theme-aware for log viewer) ── */
   --ansi-black:   light-dark(#3b3b3b, #4c4c4c);
   --ansi-red:     light-dark(#cd3131, #cd3131);

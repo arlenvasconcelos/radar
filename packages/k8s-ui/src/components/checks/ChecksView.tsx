@@ -1,20 +1,38 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, ChevronRight, ExternalLink, EyeOff, MoreHorizontal, Search, ShieldCheck, Wrench, X } from 'lucide-react'
-import { ClusterName, EmptyState, FilterPill, DistributionBar, DistributionLegendChip } from '../ui'
+import { AlertCircle, AlertOctagon, AlertTriangle, ChevronDown, ChevronRight, ExternalLink, EyeOff, Info, Layers, MoreHorizontal, Search, ShieldCheck, Wrench, X } from 'lucide-react'
+import { CardBody, CardSection, ClusterName, EmptyState, FilterPill, DistributionBar, DistributionLegendChip, NEUTRAL_CHIP_CLASS, renderProse } from '../ui'
 import { useFilterState, defineFilterSchema } from '../../filter-state'
 import type { CheckMeta, CheckReference } from '../audit'
 import { CHECK_SEVERITIES, CHECK_SEVERITY_RANK, type Check, type CheckSeverity, type EffectiveCheckFinding, type CheckResourceRef } from './types'
 import {
   SEVERITY_BADGE_CLASS,
   SEVERITY_FILL_CLASS,
+  SEVERITY_HEADER_BAND_CLASS,
   SEVERITY_LABEL,
   SEVERITY_RAIL_CLASS,
+  SEVERITY_SOLID_CLASS,
   SEVERITY_TEXT_CLASS,
-  categoryBadgeClass,
 } from './severity'
 
 const CATEGORIES: readonly string[] = ['Security', 'Reliability', 'Efficiency']
+
+// Leading severity glyph, one per tier of the 4-tier ladder: critical = octagon,
+// high = triangle, medium = circle, low = info.
+const CHECK_SEVERITY_ICON: Record<CheckSeverity, ComponentType<{ className?: string }>> = {
+  critical: AlertOctagon,
+  high: AlertTriangle,
+  medium: AlertCircle,
+  low: Info,
+}
+
+// An out-of-contract severity the backend might emit is coerced to this tier
+// once, up front (normalizeCheckSeverity), so the icon AND every color map
+// (text/rail/band/pill) resolve together — a raw miss would crash the icon and
+// silently drop the tint everywhere else.
+const CHECK_SEVERITY_FALLBACK: CheckSeverity = 'medium'
+const normalizeCheckSeverity = (s: CheckSeverity): CheckSeverity =>
+  s in CHECK_SEVERITY_ICON ? s : CHECK_SEVERITY_FALLBACK
 
 // Affected-resources shown inline before "View all". A check can fail on
 // thousands of resources; the card stays scannable and only the rare big-list
@@ -410,17 +428,22 @@ export interface CheckRemediationBlockProps {
   layout?: 'columns' | 'stack'
 }
 
+// Remediation body: WHY IT MATTERS (info, the description) → HOW TO FIX
+// (wrench/emerald, the remediation + doc links), rendered as icon-led sections
+// for every host. Prose runs through renderProse so `inline-code` spans become
+// mono chips when the catalog copy carries them. The 'stack' layout is the
+// compact single-column variant for narrow hosts.
 export function CheckRemediationBlock({ description, remediation, references, layout = 'columns' }: CheckRemediationBlockProps) {
   if (!description && !remediation && (!references || references.length === 0)) return null
 
   if (layout === 'stack') {
     return (
       <div className="flex flex-col gap-2">
-        {description && <p className="text-[13px] leading-relaxed text-theme-text-secondary">{description}</p>}
+        {description && <p className="text-[13px] leading-relaxed text-theme-text-secondary">{renderProse(description)}</p>}
         {remediation && (
           <div>
             <div className="text-[11px] uppercase tracking-wider text-theme-text-tertiary">How to fix</div>
-            <p className="mt-0.5 text-[13px] leading-relaxed text-theme-text-secondary">{remediation}</p>
+            <p className="mt-0.5 text-[13px] leading-relaxed text-theme-text-secondary">{renderProse(remediation)}</p>
           </div>
         )}
         {references && references.length > 0 && <CheckReferenceLinks references={references} />}
@@ -429,25 +452,19 @@ export function CheckRemediationBlock({ description, remediation, references, la
   }
 
   return (
-    <>
-      <div className="flex flex-col gap-4 md:flex-row md:gap-8">
-        {remediation && (
-          <section className="md:flex-1">
-            <h4 className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-radar-accent)]">
-              <Wrench className="h-3.5 w-3.5" /> How to fix
-            </h4>
-            <p className="text-sm leading-relaxed text-theme-text-primary">{remediation}</p>
-          </section>
-        )}
-        {description && (
-          <section className="md:flex-1">
-            <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-theme-text-tertiary">What this checks</h4>
-            <p className="text-sm leading-relaxed text-theme-text-secondary">{description}</p>
-          </section>
-        )}
-      </div>
-      {references && references.length > 0 && <CheckReferenceLinks references={references} />}
-    </>
+    <div className="flex flex-col divide-y divide-theme-border/70 [&>*]:py-4 [&>*:first-child]:pt-0 [&>*:last-child]:pb-0">
+      {description && (
+        <CardSection icon={Info} label="Why it matters" tone="neutral">
+          <CardBody>{renderProse(description)}</CardBody>
+        </CardSection>
+      )}
+      {(remediation || (references && references.length > 0)) && (
+        <CardSection icon={Wrench} label="How to fix" tone="fix">
+          {remediation && <CardBody>{renderProse(remediation)}</CardBody>}
+          {references && references.length > 0 && <CheckReferenceLinks references={references} />}
+        </CardSection>
+      )}
+    </div>
   )
 }
 
@@ -500,6 +517,8 @@ export function CheckCardShell({
   dimmed,
 }: CheckCardShellProps) {
   const Container = as
+  const sev = normalizeCheckSeverity(severity)
+  const SeverityIcon = CHECK_SEVERITY_ICON[sev]
   return (
     <Container
       className={[
@@ -510,6 +529,9 @@ export function CheckCardShell({
         .filter(Boolean)
         .join(' ')}
     >
+      {/* Leading severity icon is the at-a-glance cue; a trailing chevron shows
+          open/closed. Collapsed: neutral row + rail. Expanded: severity-tinted
+          band + solid pill — the tint is a focus signal, not per-row alarm. */}
       <div
         role="button"
         tabIndex={0}
@@ -522,31 +544,33 @@ export function CheckCardShell({
             onToggle()
           }
         }}
-        className={`group flex cursor-pointer items-start gap-3 border-l-2 py-3 pl-3 pr-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-radar-accent)]/40 ${SEVERITY_RAIL_CLASS[severity]}`}
+        className={`group flex cursor-pointer items-center gap-3 border-l-[3px] py-3 pl-3 pr-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-radar-accent)]/40 ${open ? SEVERITY_HEADER_BAND_CLASS[sev] : SEVERITY_RAIL_CLASS[sev]}`}
       >
-        <ChevronRight className={`mt-0.5 h-4 w-4 shrink-0 text-theme-text-tertiary transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
+        <SeverityIcon className={`h-[18px] w-[18px] shrink-0 ${SEVERITY_TEXT_CLASS[sev]}`} aria-hidden />
 
         <div className="flex min-w-0 flex-1 flex-col gap-1.5">
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate text-sm font-semibold text-theme-text-primary">{title}</span>
-            <span className={`badge-sm shrink-0 text-[10px] ${categoryBadgeClass(category)}`}>{category}</span>
+            <span className={`shrink-0 ${NEUTRAL_CHIP_CLASS}`}>{category}</span>
           </div>
           {description}
           {summary}
         </div>
 
-        <span className={`badge-sm mt-0.5 shrink-0 text-[10px] font-semibold ${SEVERITY_BADGE_CLASS[severity]}`}>
-          {SEVERITY_LABEL[severity]}
+        <span className={`badge-sm shrink-0 px-2.5 py-0.5 text-xs font-semibold ${open ? SEVERITY_SOLID_CLASS[sev] : SEVERITY_BADGE_CLASS[sev]}`}>
+          {SEVERITY_LABEL[sev]}
         </span>
         {renderActions?.()}
+        <ChevronRight className={`h-4 w-4 shrink-0 text-theme-text-tertiary transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
       </div>
 
       {/* Kept mounted (not `open &&`) so the grid-rows transition animates the
           collapse too, matching IssueRow; inert when closed so SR + tab skip
-          the clipped content. */}
+          the clipped content. Body sits on the card surface (not a recessed grey
+          panel) so its text keeps enough contrast. */}
       <div className="grid transition-[grid-template-rows] duration-200 ease-out" style={{ gridTemplateRows: open ? '1fr' : '0fr' }}>
         <div className="overflow-hidden" inert={!open || undefined}>
-          <div className="flex flex-col gap-4 border-t border-theme-border bg-theme-base/40 px-4 py-4 pl-11">{children}</div>
+          <div className="flex flex-col divide-y divide-theme-border/70 border-t border-theme-border bg-theme-surface py-4 pl-6 pr-4 [&>*]:py-4 [&>*:first-child]:pt-0 [&>*:last-child]:pb-0">{children}</div>
         </div>
       </div>
     </Container>
@@ -561,7 +585,9 @@ export interface CheckClusterBreakdownGroup {
 }
 
 export interface CheckClusterBreakdownShellProps<T extends CheckClusterBreakdownGroup> {
-  heading: ReactNode
+  /** Optional section heading. Omit when the caller already provides one (e.g.
+   *  a wrapping CardSection owns the "Affected resources" eyebrow). */
+  heading?: ReactNode
   groups: T[]
   renderGroupBody: (group: T) => ReactNode
   clusterCap?: number
@@ -584,7 +610,7 @@ export function CheckClusterBreakdownShell<T extends CheckClusterBreakdownGroup>
 
   return (
     <section className="flex flex-col gap-1.5">
-      <h4 className="text-[11px] font-semibold uppercase tracking-wide text-theme-text-tertiary">{heading}</h4>
+      {heading ? <h4 className="text-[11px] font-semibold uppercase tracking-[0.06em] text-theme-text-tertiary">{heading}</h4> : null}
       <ul className="flex flex-col gap-1">
         {shown.map((group) => {
           const isOpen = openClusters.has(group.id)
@@ -687,18 +713,17 @@ function FleetCheckRow({
     >
       <CheckRemediationBlock description={meta?.description} remediation={meta?.remediation} references={meta?.references} />
 
-      <div className="border-t border-theme-border/70 pt-3">
+      <CardSection
+        icon={Layers}
+        label="Affected resources"
+        labelExtra={single ? `· ${fc.totalResources}` : `· ${fc.totalResources} · ${clusterCount} clusters`}
+      >
         {single ? (
-          <ResourceList
-            label={`Affected resources (${fc.totalResources})`}
-            check={fc.clusters[0]}
-            resourceHref={resourceHref}
-            onResourceClick={onResourceClick}
-          />
+          <ResourceList check={fc.clusters[0]} resourceHref={resourceHref} onResourceClick={onResourceClick} />
         ) : (
           <ClusterBreakdown fc={fc} clusterLabel={clusterLabel} resourceHref={resourceHref} onResourceClick={onResourceClick} />
         )}
-      </div>
+      </CardSection>
     </CheckCardShell>
   )
 }
@@ -720,11 +745,8 @@ function ClusterBreakdown({
 }) {
   return (
     <CheckClusterBreakdownShell
-      heading={
-        <>
-          Affected resources <span className="tabular-nums">({fc.totalResources})</span> · {fc.clusters.length} clusters
-        </>
-      }
+      // Heading omitted — the wrapping CardSection (Layers · "Affected
+      // resources") already owns the eyebrow.
       groups={fc.clusters.map((c) => ({
         id: c.subject.cluster_id,
         label: <ClusterName name={clusterLabel?.(c) || c.subject.cluster_id} />,
@@ -822,7 +844,9 @@ function FindingLine({
       {showMessage && <span className="ml-1 truncate text-xs text-theme-text-tertiary">{finding.message}</span>}
     </>
   )
-  const cls = 'group/f flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-theme-hover/60'
+  // items-baseline so the smaller mono kind label shares a baseline with the
+  // larger resource name (their line-heights differ).
+  const cls = 'group/f flex w-full items-baseline gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-theme-hover/60'
   return (
     <li>
       {onResourceClick ? (
