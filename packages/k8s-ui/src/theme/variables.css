@@ -54,6 +54,10 @@
   --border-default: light-dark(#D8E0EE, #222840);
   --border-light: light-dark(#CDD6E8, #2C324A);
   --border-subtle: light-dark(rgba(74, 100, 180, 0.07), rgba(255, 255, 255, 0.04));
+  /* Emphasis edge for the focused/expanded card in a queue — must read clearly
+     against sibling cards' --border-default, unlike --border-light's one-notch
+     step. */
+  --border-emphasis: light-dark(#96A8CA, rgba(255, 255, 255, 0.22));
   --border-focus: var(--color-brand);
 
   /* ── Accent ── */

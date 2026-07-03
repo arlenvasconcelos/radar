@@ -168,11 +168,13 @@ export function IssueRow({
   return (
     <Container
       className={[
-        'overflow-hidden rounded-xl border bg-theme-surface',
-        // The open card lifts via elevation — heavier shadow + crisper border
-        // (dark-mode shadows carry the white inset hairline). Severity stays
-        // rationed to the band + pill; separation is depth, not more color.
-        open ? 'border-theme-border-light shadow-theme-md' : 'border-theme-border shadow-theme-sm',
+        'overflow-hidden rounded-xl border bg-theme-surface transition-[border-color,box-shadow] duration-200',
+        // The open card lifts via elevation — heavier shadow + a bright
+        // emphasis edge that clearly separates it from sibling cards. Severity
+        // stays rationed to the band + pill; separation is depth, not more color.
+        // ring-1 widens the edge to 2px without the layout shift a border-2
+        // swap would cause on expand.
+        open ? 'border-[var(--border-emphasis)] ring-1 ring-[var(--border-emphasis)] shadow-theme-md' : 'border-theme-border shadow-theme-sm',
         dimmed ? 'opacity-60' : '',
         className ?? '',
       ].filter(Boolean).join(' ')}
@@ -206,10 +208,14 @@ export function IssueRow({
             {renderBadges?.(slotCtx)}
             {/* The detector reason rides the title row while COLLAPSED so the
                 key triage signal shows without expanding. When open, the full
-                cause lives in the WHAT'S WRONG section below, so we drop it here
-                to keep the tinted band clean. */}
-            {issue.reason && !open ? (
-              <span className="min-w-0 flex-1 truncate text-xs text-theme-text-tertiary">
+                cause lives in the WHAT'S WRONG section below, so it fades out
+                here (stays mounted — it's the flex-1 filler, so unmounting
+                wouldn't reflow anything, but fading avoids the pop). */}
+            {issue.reason ? (
+              <span
+                aria-hidden={open || undefined}
+                className={`min-w-0 flex-1 truncate text-xs text-theme-text-tertiary transition-opacity duration-200 ${open ? 'opacity-0' : 'opacity-100'}`}
+              >
                 <span className="font-medium text-theme-text-secondary">{issue.reason}</span>
                 {headline ? <span> — {headline}</span> : null}
               </span>

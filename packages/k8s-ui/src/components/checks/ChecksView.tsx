@@ -522,11 +522,13 @@ export function CheckCardShell({
   return (
     <Container
       className={[
-        'overflow-hidden rounded-xl border bg-theme-surface',
-        // The open card lifts via elevation — heavier shadow + crisper border
-        // (dark-mode shadows carry the white inset hairline). Severity stays
-        // rationed to the band + pill; separation is depth, not more color.
-        open ? 'border-theme-border-light shadow-theme-md' : 'border-theme-border shadow-theme-sm',
+        'overflow-hidden rounded-xl border bg-theme-surface transition-[border-color,box-shadow] duration-200',
+        // The open card lifts via elevation — heavier shadow + a bright
+        // emphasis edge that clearly separates it from sibling cards. Severity
+        // stays rationed to the band + pill; separation is depth, not more color.
+        // ring-1 widens the edge to 2px without the layout shift a border-2
+        // swap would cause on expand.
+        open ? 'border-[var(--border-emphasis)] ring-1 ring-[var(--border-emphasis)] shadow-theme-md' : 'border-theme-border shadow-theme-sm',
         dimmed ? 'opacity-60' : '',
         className ?? '',
       ]

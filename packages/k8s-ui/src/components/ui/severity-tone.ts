@@ -45,13 +45,12 @@ export const TONE_SOLID_CLASS: Record<SeverityTone, string> = {
   slate: 'bg-slate-500 text-white dark:bg-slate-600',
 }
 
-// Severity-tinted header band, shown only when a card is expanded. The left rail
-// color drops to transparent (keeping its 3px width so content doesn't shift)
-// and only the soft fill remains; no hover variant, so it doesn't lighten on
-// hover. Keeps the collapsed queue neutral while the open card gets the tint.
+// Severity-tinted header band, shown only when a card is expanded. The left
+// rail keeps its color so the queue's scan-down severity rhythm doesn't break
+// at the focused row; no hover variant, so it doesn't lighten on hover.
 export const TONE_HEADER_BAND_CLASS: Record<SeverityTone, string> = {
-  red: 'border-l-transparent bg-red-50 dark:bg-red-950/40',
-  orange: 'border-l-transparent bg-orange-50 dark:bg-orange-950/30',
-  amber: 'border-l-transparent bg-amber-50 dark:bg-amber-950/30',
-  slate: 'border-l-transparent bg-slate-50 dark:bg-slate-900/40',
+  red: 'border-l-red-500 bg-red-50 dark:bg-red-950/40',
+  orange: 'border-l-orange-500 bg-orange-50 dark:bg-orange-950/30',
+  amber: 'border-l-amber-500 bg-amber-50 dark:bg-amber-950/30',
+  slate: 'border-l-slate-300 dark:border-l-slate-600 bg-slate-50 dark:bg-slate-900/40',
 }
