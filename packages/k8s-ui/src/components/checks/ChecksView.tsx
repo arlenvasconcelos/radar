@@ -31,8 +31,9 @@ const CHECK_SEVERITY_ICON: Record<CheckSeverity, ComponentType<{ className?: str
 // (text/rail/band/pill) resolve together — a raw miss would crash the icon and
 // silently drop the tint everywhere else.
 const CHECK_SEVERITY_FALLBACK: CheckSeverity = 'medium'
+// hasOwnProperty (not `in`) so inherited keys like "toString" don't slip past.
 const normalizeCheckSeverity = (s: CheckSeverity): CheckSeverity =>
-  s in CHECK_SEVERITY_ICON ? s : CHECK_SEVERITY_FALLBACK
+  Object.prototype.hasOwnProperty.call(CHECK_SEVERITY_ICON, s) ? s : CHECK_SEVERITY_FALLBACK
 
 // Affected-resources shown inline before "View all". A check can fail on
 // thousands of resources; the card stays scannable and only the rare big-list

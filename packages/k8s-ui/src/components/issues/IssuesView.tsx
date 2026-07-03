@@ -36,8 +36,9 @@ const ISSUE_SEVERITY_ICON: Record<IssueSeverity, ComponentType<{ className?: str
 // (text/rail/band/pill) resolve together — a raw miss would crash the icon and
 // silently drop the tint everywhere else.
 const ISSUE_SEVERITY_FALLBACK: IssueSeverity = 'warning';
+// hasOwnProperty (not `in`) so inherited keys like "toString" don't slip past.
 const normalizeIssueSeverity = (s: IssueSeverity): IssueSeverity =>
-  s in ISSUE_SEVERITY_ICON ? s : ISSUE_SEVERITY_FALLBACK;
+  Object.prototype.hasOwnProperty.call(ISSUE_SEVERITY_ICON, s) ? s : ISSUE_SEVERITY_FALLBACK;
 
 export interface IssuesViewProps {
   /** Grouped live issues — one row per subject+category. Typically flattened
