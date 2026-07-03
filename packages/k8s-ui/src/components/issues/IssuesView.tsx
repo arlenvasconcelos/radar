@@ -364,7 +364,16 @@ function Diagnosis({ issue }: { issue: Issue }) {
 
   return (
     <div className="flex flex-col divide-y divide-theme-border/70 [&>*]:py-4 [&>*:first-child]:pt-0 [&>*:last-child]:pb-0">
-      <CardSection icon={AlertTriangle} label="What's wrong" tone="warn">
+      {/* When a parsed cause replaces the detector text, the terse reason code
+          (CrashLoopBackOff, FailedMount…) rides the eyebrow — it's the greppable
+          identifier operators anchor on, and the collapsed header drops it while
+          open. The non-cause branch already leads with it in the prose. */}
+      <CardSection
+        icon={AlertTriangle}
+        label="What's wrong"
+        tone="warn"
+        labelExtra={issue.cause && issue.reason ? `· ${issue.reason}` : undefined}
+      >
         {issue.cause ? (
           <p className="text-sm leading-relaxed text-theme-text-primary">{issue.cause}</p>
         ) : (
@@ -592,7 +601,7 @@ function ResourceLine({
           {body}
         </a>
       ) : (
-        <span className={compact ? 'flex items-center gap-2' : 'flex items-center gap-2 rounded-md px-2 py-1 text-sm'}>{body}</span>
+        <span className={compact ? 'flex items-baseline gap-2 rounded-md px-2 py-1' : 'flex items-baseline gap-2 rounded-md px-2 py-1 text-sm'}>{body}</span>
       )}
     </li>
   );

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { createElement } from 'react'
 import { renderToString } from 'react-dom/server'
 import { compareIssues, subjectRef, memberRef, normalizeImagePullMessage, issueMessageParts, type Issue } from './types'
-import { categoryLabel, groupLabel, groupBadgeClass } from './severity'
+import { categoryLabel, groupLabel } from './severity'
 import { IssueRow } from './IssuesView'
 
 const base: Issue = {
@@ -61,9 +61,6 @@ describe('category/group label fallbacks', () => {
   it('humanizes an unmapped group', () => {
     expect(groupLabel('runtime')).toBe('Runtime')
     expect(groupLabel('some_future_group')).toBe('Some future group')
-  })
-  it('groupBadgeClass falls back to a non-empty neutral class for an unknown group', () => {
-    expect(groupBadgeClass('totally_unknown_group')).toBeTruthy()
   })
 })
 

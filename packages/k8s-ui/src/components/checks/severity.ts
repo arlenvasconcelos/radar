@@ -51,18 +51,3 @@ export const SEVERITY_TEXT_CLASS = byTone(TONE_TEXT_CLASS)
 export const SEVERITY_RAIL_CLASS = byTone(TONE_RAIL_CLASS)
 export const SEVERITY_SOLID_CLASS = byTone(TONE_SOLID_CLASS)
 export const SEVERITY_HEADER_BAND_CLASS = byTone(TONE_HEADER_BAND_CLASS)
-
-// Category accent — a quiet tag (severity is the loud one). Security is the
-// headline beat, so it gets the most distinct hue.
-const CATEGORY_BADGE_CLASS: Record<string, string> = {
-  Security: 'bg-violet-50 text-violet-700 ring-1 ring-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:ring-violet-900',
-  Reliability: 'bg-sky-50 text-sky-700 ring-1 ring-sky-200 dark:bg-sky-950/40 dark:text-sky-300 dark:ring-sky-900',
-  Efficiency: 'bg-teal-50 text-teal-700 ring-1 ring-teal-200 dark:bg-teal-950/40 dark:text-teal-300 dark:ring-teal-900',
-}
-
-export function categoryBadgeClass(category: string): string {
-  return (
-    CATEGORY_BADGE_CLASS[category] ??
-    'bg-theme-elevated text-theme-text-secondary ring-1 ring-theme-border'
-  )
-}

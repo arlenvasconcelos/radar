@@ -42,15 +42,16 @@ export function CardSection({
 }) {
   const toneClass = SECTION_TONE_CLASS[tone]
   return (
-    <section className="flex items-center gap-2.5">
-      {/* Icon sits in a fixed gutter and is centered against the WHOLE section
-          (eyebrow + body), not just the eyebrow line — so a two-line body pulls
-          the glyph down to the block's optical center. */}
-      <Icon className={`h-[18px] w-[18px] shrink-0 ${toneClass}`} aria-hidden />
+    <section className="flex items-start gap-2.5">
+      {/* Icon sits in a fixed gutter, anchored to the eyebrow line (top-aligned
+          with a nudge to its optical center) — sections like Affected resources
+          can be dozens of rows tall, and a section-centered glyph would float
+          detached mid-list. */}
+      <Icon className={`mt-[-1px] h-[18px] w-[18px] shrink-0 ${toneClass}`} aria-hidden />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <h4 className={`text-[11px] font-semibold uppercase tracking-[0.06em] ${toneClass}`}>
           {label}
-          {labelExtra ? <span className="font-medium text-theme-text-tertiary"> {labelExtra}</span> : null}
+          {labelExtra ? <span className="font-medium normal-case tracking-normal text-theme-text-tertiary"> {labelExtra}</span> : null}
         </h4>
         {children}
       </div>

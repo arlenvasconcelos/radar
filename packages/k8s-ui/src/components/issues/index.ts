@@ -18,7 +18,6 @@ export {
   ISSUE_SEVERITY_BADGE_CLASS,
   ISSUE_SEVERITY_TEXT_CLASS,
   ISSUE_SEVERITY_RAIL_CLASS,
-  groupBadgeClass,
   categoryLabel,
   groupLabel,
 } from './severity';

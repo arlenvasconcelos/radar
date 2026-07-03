@@ -39,24 +39,6 @@ export const ISSUE_SEVERITY_RAIL_CLASS = byTone(TONE_RAIL_CLASS);
 export const ISSUE_SEVERITY_SOLID_CLASS = byTone(TONE_SOLID_CLASS);
 export const ISSUE_SEVERITY_HEADER_BAND_CLASS = byTone(TONE_HEADER_BAND_CLASS);
 
-// Category-group accent — the quiet classification tag (severity is the loud
-// one). One hue per group; unknown/unmapped falls back to a neutral theme tag.
-const GROUP_BADGE_CLASS: Record<string, string> = {
-  scheduling: 'bg-violet-50 text-violet-700 ring-1 ring-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:ring-violet-900',
-  startup: 'bg-sky-50 text-sky-700 ring-1 ring-sky-200 dark:bg-sky-950/40 dark:text-sky-300 dark:ring-sky-900',
-  runtime: 'bg-rose-50 text-rose-700 ring-1 ring-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:ring-rose-900',
-  configuration: 'bg-teal-50 text-teal-700 ring-1 ring-teal-200 dark:bg-teal-950/40 dark:text-teal-300 dark:ring-teal-900',
-  networking: 'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:ring-indigo-900',
-  storage: 'bg-cyan-50 text-cyan-700 ring-1 ring-cyan-200 dark:bg-cyan-950/40 dark:text-cyan-300 dark:ring-cyan-900',
-  scaling: 'bg-fuchsia-50 text-fuchsia-700 ring-1 ring-fuchsia-200 dark:bg-fuchsia-950/40 dark:text-fuchsia-300 dark:ring-fuchsia-900',
-  security: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-900',
-  control_plane: 'bg-slate-100 text-slate-600 ring-1 ring-slate-200 dark:bg-slate-800/60 dark:text-slate-300 dark:ring-slate-700',
-};
-
-export function groupBadgeClass(group: string): string {
-  return GROUP_BADGE_CLASS[group] ?? 'bg-theme-elevated text-theme-text-secondary ring-1 ring-theme-border';
-}
-
 // Display labels. The server emits raw snake_case category/group enums (so a
 // new category needs no frontend deploy to APPEAR); the UI humanizes for
 // display, falling back to title-cased snake_case for anything unmapped.

@@ -36,10 +36,12 @@ export const TONE_RAIL_CLASS: Record<SeverityTone, string> = {
 
 // Solid severity pill — the loud focus signal on an expanded card's header band
 // (collapsed cards keep the soft BADGE pill so a long queue stays calm).
+// The warm mid-tones (orange/amber) take dark text: white on orange-600/amber-500
+// sits at ~3.5:1/~2.1:1, below WCAG for the 12px pill text.
 export const TONE_SOLID_CLASS: Record<SeverityTone, string> = {
-  red: 'bg-red-600 text-white dark:bg-red-600',
-  orange: 'bg-orange-600 text-white dark:bg-orange-600',
-  amber: 'bg-amber-500 text-white dark:bg-amber-600',
+  red: 'bg-red-600 text-white',
+  orange: 'bg-orange-500 text-orange-950',
+  amber: 'bg-amber-400 text-amber-950',
   slate: 'bg-slate-500 text-white dark:bg-slate-600',
 }
 
