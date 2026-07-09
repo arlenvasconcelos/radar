@@ -17,6 +17,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { AlertTriangle, ChevronRight, Maximize, Search, X } from 'lucide-react'
 import { PaneLoader } from '../../ui/PaneLoader'
+import { Input } from '../../ui/Input'
 import { clsx } from 'clsx'
 
 import type { GitOpsResourceTree, GitOpsTreeNode, GitOpsTreeRef, HealthStatus } from '../../../types'
@@ -252,7 +253,7 @@ function GitOpsTreeToolbar({
       </div>
       <div className="flex items-center gap-1 rounded-lg border border-theme-border bg-theme-surface/90 px-2 py-1.5 backdrop-blur">
         <Search className="h-3.5 w-3.5 text-theme-text-tertiary" />
-        <input
+        <Input
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
           placeholder="Find node..."

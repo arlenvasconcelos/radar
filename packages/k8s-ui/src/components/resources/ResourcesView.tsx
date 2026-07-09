@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect, useCallback, useRef, useContext, u
 import { TableVirtuoso, type TableVirtuosoHandle } from 'react-virtuoso'
 import { PaneLoader } from '../ui/PaneLoader'
 import { RestrictedState } from '../ui/RestrictedState'
+import { Input } from '../ui/Input'
 import type { TopPodMetrics, TopNodeMetrics } from '../../types'
 import {
   Search,
@@ -4026,9 +4027,8 @@ export function ResourcesView({
           <div className="flex-1 min-w-0">
             <div className="relative max-w-md">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-theme-text-tertiary" />
-              <input
+              <Input
                 ref={searchInputRef}
-                type="text"
                 placeholder={regexMode ? 'Search by regex... (press /)' : 'Search... (press /)'}
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
@@ -4182,8 +4182,7 @@ export function ResourcesView({
                     <div className="flex items-center gap-2 p-2 border-b border-theme-border">
                       <div className="relative flex-1">
                         <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-theme-text-tertiary" />
-                        <input
-                          type="text"
+                        <Input
                           placeholder="Search labels..."
                           value={labelSearch}
                           onChange={(e) => setLabelSearch(e.target.value)}
@@ -4361,8 +4360,7 @@ export function ResourcesView({
                       setCustomColumnDraft(d => ({ ...d, path: '' }))
                     }}
                   >
-                    <input
-                      type="text"
+                    <Input
                       list={customColKeysListId}
                       value={customColumnDraft.path}
                       onChange={e => setCustomColumnDraft(d => ({ ...d, path: e.target.value }))}
@@ -4747,8 +4745,7 @@ export function ResourcesView({
                                 <div className="flex items-center gap-2 p-2 border-b border-theme-border">
                                   <div className="relative flex-1">
                                     <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-theme-text-tertiary" />
-                                    <input
-                                      type="text"
+                                    <Input
                                       placeholder="Search..."
                                       value={columnFilterSearch}
                                       onChange={(e) => setColumnFilterSearch(e.target.value)}
