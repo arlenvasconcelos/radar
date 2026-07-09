@@ -9,6 +9,7 @@ import { useCloudRole, useVersionCheck } from '../../api/client'
 import { useCapabilitiesContext } from '../../contexts/CapabilitiesContext'
 import { Tooltip } from '../ui/Tooltip'
 import type { DeploymentMode } from '../../types'
+import { Input } from '@skyhook-io/k8s-ui'
 
 interface Config {
   kubeconfig?: string
@@ -630,8 +631,7 @@ function PrometheusConfigField({
         Manual Prometheus/VictoriaMetrics URL (skips auto-discovery)
       </p>
       <div className="flex items-center gap-2">
-        <input
-          type="text"
+        <Input
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder="http://prometheus-server.monitoring:9090"
@@ -689,8 +689,7 @@ function PrometheusConfigField({
           <div className="rounded-md border border-theme-border bg-theme-elevated/40 p-2.5 space-y-2">
             {headerRows.map((row, i) => (
               <div key={i} className="flex items-center gap-2">
-                <input
-                  type="text"
+                <Input
                   value={row.key}
                   onChange={(e) => {
                     setHeaderRows((rows) => rows!.map((r, j) => j === i ? { ...r, key: e.target.value } : r))
@@ -768,8 +767,7 @@ function ConfigField({
         {label}
       </label>
       {help && <p className="text-xs text-theme-text-tertiary mb-1">{help}</p>}
-      <input
-        type="text"
+      <Input
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
@@ -820,8 +818,7 @@ function ConfigArrayField({
         {label}
       </label>
       {help && <p className="text-xs text-theme-text-tertiary mb-1">{help}</p>}
-      <input
-        type="text"
+      <Input
         value={text}
         onFocus={() => { focusedRef.current = true }}
         onBlur={() => {

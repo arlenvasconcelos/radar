@@ -3,6 +3,7 @@ import { DialogPortal } from '@skyhook-io/k8s-ui/components/ui/DialogPortal'
 import { X, Plus, Trash2, Link2, AlertTriangle } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useHelmOCISources, useAddOCISource, useRemoveOCISource, useClusterInfo } from '../../api/client'
+import { Input } from '@skyhook-io/k8s-ui'
 
 interface TrackChartSourceDialogProps {
   open: boolean
@@ -63,8 +64,7 @@ export function TrackChartSourceDialog({ open, onClose, chartName }: TrackChartS
             OCI registry prefix
           </label>
           <div className="flex gap-2">
-            <input
-              type="text"
+            <Input
               value={value}
               onChange={(e) => setValue(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleAdd()}

@@ -14,6 +14,7 @@ import type { APIResource } from '../../types'
 import { categorizeResources, CORE_RESOURCES } from '../../utils/api-resources'
 import { getResourceIcon } from '../../utils/resource-icons'
 import { Tooltip } from '../ui/Tooltip'
+import { Input } from '../ui/Input'
 
 // Selected resource type info (need both name for API and kind for display)
 export interface SelectedKindInfo {
@@ -489,9 +490,8 @@ export function ResourcesSidebar({
       <div className="px-2 py-3 border-b border-theme-border">
         <div className="relative">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-theme-text-tertiary" />
-          <input
+          <Input
             ref={kindSearchRef}
-            type="text"
             placeholder="Filter resources..."
             value={kindFilter}
             onChange={(e) => setKindFilter(e.target.value)}
