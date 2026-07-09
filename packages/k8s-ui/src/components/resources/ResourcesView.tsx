@@ -4042,12 +4042,26 @@ export function ResourcesView({
                   }
                 }}
                 className={clsx(
-                  'w-full pl-10 pr-10 py-2 bg-theme-elevated border rounded-lg text-sm text-theme-text-primary placeholder-theme-text-disabled focus:outline-none focus:ring-2',
+                  'w-full pl-10 py-2 bg-theme-elevated border rounded-lg text-sm text-theme-text-primary placeholder-theme-text-disabled focus:outline-none focus:ring-2',
+                  searchTerm ? 'pr-16' : 'pr-10',
                   searchRegex.error
                     ? 'border-red-500/60 focus:ring-red-500'
                     : 'border-theme-border-light focus:ring-skyhook-500'
                 )}
               />
+              {searchTerm && (
+                <button
+                  type="button"
+                  aria-label="Clear search"
+                  onClick={() => {
+                    setSearchTerm('')
+                    searchInputRef.current?.focus()
+                  }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center w-6 h-6 rounded text-theme-text-tertiary hover:text-theme-text-primary hover:bg-theme-hover transition-colors"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setRegexMode((v) => !v)}
@@ -4055,7 +4069,8 @@ export function ResourcesView({
                 aria-label={regexMode ? 'Disable regex search' : 'Enable regex search'}
                 title={regexMode ? 'Regex search enabled — click to disable' : 'Enable regex search'}
                 className={clsx(
-                  'absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center w-6 h-6 rounded transition-colors',
+                  'absolute top-1/2 -translate-y-1/2 flex items-center justify-center w-6 h-6 rounded transition-colors',
+                  searchTerm ? 'right-9' : 'right-2',
                   regexMode
                     ? 'bg-skyhook-500/20 text-skyhook-400'
                     : 'text-theme-text-tertiary hover:text-theme-text-primary hover:bg-theme-hover'
