@@ -3940,6 +3940,7 @@ export function ResourcesView({
   // a no-op for that case.
   const hasAnyFilter =
     !!searchTerm ||
+    regexMode ||
     !!labelSelector ||
     hasOwnerFilter ||
     problemFilters.length > 0 ||
@@ -4062,19 +4063,6 @@ export function ResourcesView({
                     : 'border-theme-border-light focus:ring-skyhook-500'
                 )}
               />
-              {searchTerm && (
-                <button
-                  type="button"
-                  aria-label="Clear search"
-                  onClick={() => {
-                    setSearchTerm('')
-                    searchInputRef.current?.focus()
-                  }}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center w-6 h-6 rounded text-theme-text-tertiary hover:text-theme-text-primary hover:bg-theme-hover transition-colors"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
               <button
                 type="button"
                 onClick={() => setRegexMode((v) => !v)}
@@ -4091,6 +4079,19 @@ export function ResourcesView({
               >
                 <Regex className="w-3.5 h-3.5" />
               </button>
+              {searchTerm && (
+                <button
+                  type="button"
+                  aria-label="Clear search"
+                  onClick={() => {
+                    setSearchTerm('')
+                    searchInputRef.current?.focus()
+                  }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center w-6 h-6 rounded text-theme-text-tertiary hover:text-theme-text-primary hover:bg-theme-hover transition-colors"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
               {searchRegex.error && (
                 <div
                   title={searchRegex.error}
