@@ -6,6 +6,9 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useLocation, useSearchParams, useNavigationType, NavigationType } from 'react-router-dom'
 import { HomeView } from './components/home/HomeView'
 import { DebugOverlay } from './components/DebugOverlay'
+import { GlobalDiagnoseButton } from './components/diagnose/LocalDiagnoseAction'
+import { useDiagnoseLayout } from './components/diagnose/DiagnoseContext'
+import { DiagnoseSurface } from './components/diagnose/DiagnoseSurface'
 import { TopologyGraph, TopologySearch, TopologyFilterSidebar, TopologyControls, FreshnessControl, gitOpsRouteForKind, gitOpsRouteForResource, ScopePill, PaneLoader } from '@skyhook-io/k8s-ui'
 import { initNavigationMap } from '@skyhook-io/k8s-ui/utils/navigation'
 import { useAPIResources, CORE_RESOURCES } from './api/apiResources'
@@ -86,6 +89,12 @@ const DEFAULT_VISIBLE_KINDS = ALL_NODE_KINDS.filter(k => k !== 'ReplicaSet')
 // CRD kinds hidden by default in the topology (infrastructure plumbing).
 // Users can re-enable via the filter sidebar.
 const CRD_HIDDEN_BY_DEFAULT = new Set(['GatewayClass', 'IngressClass', 'NodePool', 'NodeClaim', 'NodeClass'])
+
+// Top-bar height in px. The body frame's right-side surfaces (AI panel, resource +
+// Helm drawers) all inset their top by this so they sit BELOW the header. 0 in
+// chromeless embeds (the host owns the chrome, no Radar header). Keep in sync with
+// the <header> py/line-height; the drawers historically hardcoded the same 49.
+const APP_HEADER_HEIGHT = 49
 
 // CAPI kinds shown in Fleet topology mode (+ Node for Machine→Node edges)
 // Includes core CAPI kinds and all infrastructure provider kinds
@@ -277,6 +286,10 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
   const capabilities = useCapabilitiesContext()
   const openLocalTerminal = useOpenLocalTerminal()
   const navCustomization = useNavCustomization()
+  // The AI panel is an absolute slot in the body frame (the column under the header):
+  // it reserves a right gutter on the CONTENT only, so the navbar + nav rail stay
+  // static. contentGutter is the docked panel width (0 when closed/overlay/maximized).
+  const { open: diagnoseOpen, contentGutter } = useDiagnoseLayout()
   // Hand off to a host-owned URL. The host's `onHostNavigate` (Radar Cloud's
   // cross-tree swap) navigates same-document so the chrome morphs instead of
   // cold-booting; without it we fall back to a hard `window.location` nav.
@@ -496,6 +509,18 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     window.addEventListener('radar:open-settings', handler)
     return () => window.removeEventListener('radar:open-settings', handler)
   }, [])
+
+  // Listen for "open-local-terminal" DOM event — the AI surface is portaled above
+  // the DockProvider, so it can't call useOpenLocalTerminal directly; it dispatches
+  // this instead (mirrors the open-settings pattern).
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { command, title } = (e as CustomEvent).detail ?? {}
+      openLocalTerminal({ initialCommand: command, title })
+    }
+    window.addEventListener('radar:open-local-terminal', handler)
+    return () => window.removeEventListener('radar:open-local-terminal', handler)
+  }, [openLocalTerminal])
 
   // Diagnostics overlay state
   const [showDiagnostics, setShowDiagnostics] = useState(false)
@@ -1557,9 +1582,13 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
           span the content area AFTER the rail rather than the full viewport
           under it. `fixed` splashes (connecting/switching) are unaffected. */}
       <div className="relative flex flex-col flex-1 min-w-0 h-full">
-      {/* Header — suppressed in chromeless embed; the host owns the chrome. */}
+      {/* Header — suppressed in chromeless embed; the host owns the chrome.
+          @container: the header's responsive layout keys off its OWN width (≈ viewport
+          − nav rail), not the viewport, so it collapses gracefully on narrow windows.
+          The AI panel docks BELOW the navbar and pushes only the content region, so the
+          navbar is never squeezed by it — these thresholds react to real window width. */}
       {!chromeless && (
-      <header className="relative z-50 flex items-center justify-between px-4 py-2 bg-theme-base/90 backdrop-blur-sm border-b border-theme-border/50">
+      <header className="@container relative z-50 flex items-center justify-between px-4 py-2 bg-theme-base/90 backdrop-blur-sm border-b border-theme-border/50">
         {/* Left: Logo + Cluster info. In the standalone (nav-rail) layout this
             is a FIXED-WIDTH column so the omnibar after it is force-pinned: the
             scope pill + status dot can change width (cluster/namespace value)
@@ -1652,7 +1681,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
             navigates via the left rail (showNavRail), so the pill bar is
             suppressed there to avoid a duplicate primary nav. */}
         {!showNavRail && (
-        <div className="md:absolute md:left-1/2 md:-translate-x-1/2 flex items-center gap-0.5 bg-theme-elevated/50 rounded-full p-1 ml-2 md:ml-0">
+        <div className="@min-[920px]:absolute @min-[920px]:left-1/2 @min-[920px]:-translate-x-1/2 flex items-center gap-0.5 bg-theme-elevated/50 rounded-full p-1 ml-2 @min-[920px]:ml-0">
           {([
             { view: 'home' as const, icon: Home, label: 'Home' },
             { view: 'topology' as const, icon: Network, label: 'Topology' },
@@ -1699,7 +1728,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
                     off-system breakpoint chosen by measurement at the time
                     of this PR — recompute if the cluster switcher cap or
                     other left-section chrome changes appreciably. */}
-                <span className="hidden min-[1440px]:inline">{label}</span>
+                <span className="hidden @min-[1264px]:inline">{label}</span>
               </button>
             </Tooltip>
           ))}
@@ -1714,7 +1743,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
             "Disconnected" text). Overflowing side content truncates instead of
             dragging the box. Same pattern as Radar Hub's ClusterTopBar. */}
         {showNavRail && (
-          <div className="hidden sm:flex flex-1 justify-center min-w-0 px-3">
+          <div className="hidden @min-[720px]:flex flex-1 justify-center min-w-0 px-3">
             <RadarOmnibar
               ref={omnibarRef}
               onNavigateView={(view) => setMainView(view)}
@@ -1755,10 +1784,13 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
 
           {/* GitHub star — hidden in embedded mode (not OSS-distribution chrome). */}
           {!navCustomization.embedded && (
-            <div className="hidden lg:block">
+            <div className="hidden @min-[1100px]:block">
               <GitHubStarButton />
             </div>
           )}
+
+          {/* AI investigations (self-hides when no agent CLI is present) */}
+          <GlobalDiagnoseButton />
 
           {/* Local terminal */}
           {capabilities.localTerminal && (
@@ -1780,7 +1812,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
               to the host's cookie/backend) and the user would see the theme
               bounce on every navigation between host routes and /c/:id. */}
           {!navCustomization.embedded && (
-            <div className="hidden md:flex items-center">
+            <div className="hidden @min-[920px]:flex items-center">
               <ThemeToggle />
             </div>
           )}
@@ -1820,6 +1852,11 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
         </div>
       </header>
       )}
+
+      {/* Body frame — every content state lives here and reflows left of the docked
+          AI panel (an absolute slot in this column). The header + nav rail are OUTSIDE
+          this wrapper, so they never move when the panel opens. */}
+      <div className="relative flex flex-1 flex-col min-h-0" style={{ paddingRight: contentGutter, transition: 'padding-right 0.2s ease' }}>
 
       {/* Auth barrier - show when auth is enabled but user is not authenticated */}
       {authMe?.authEnabled && !authMe?.username && authMe.authMode === 'proxy' && (
@@ -2198,6 +2235,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
 
         </ErrorBoundary>
       </div>}
+      </div>{/* /body frame */}
 
       {/* Resource detail drawer — stays mounted, expands to full-screen WorkloadView.
           Gated on contentReady so it never renders over the connecting/switching
@@ -2209,6 +2247,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
           // No Radar header in chromeless embeds (Radar Hub) — anchor the drawer
           // to the top of the content area instead of leaving a 49px gap.
           headerHeight={chromeless ? 0 : undefined}
+          rightInset={contentGutter}
           isOpen={resourceDrawer.isOpen}
           expanded={drawerExpandedProp}
           onClose={closeDrawer}
@@ -2250,6 +2289,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
         <HelmReleaseDrawer
           release={drawerHelmRelease}
           isOpen={helmDrawer.isOpen}
+          rightInset={contentGutter}
           onClose={() => {
             setSelectedHelmRelease(null)
             const params = new URLSearchParams(window.location.search)
@@ -2268,6 +2308,12 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
           }}
         />
       )}
+
+      {/* AI investigation panel — an absolute slot in this column (the body frame),
+          below the header and right of the nav rail, sharing the frame with the
+          drawers above. Docked = right slot (pushes content via contentGutter);
+          maximized = fills the frame. */}
+      {diagnoseOpen && <DiagnoseSurface topInset={chromeless ? 0 : APP_HEADER_HEIGHT} />}
 
       {/* Port Forward floating panel (indicator lives in header) */}
       <PortForwardPanel />
