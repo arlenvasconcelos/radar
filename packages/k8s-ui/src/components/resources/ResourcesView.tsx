@@ -2014,6 +2014,7 @@ function getInitialFiltersFromURL() {
   const columnFilters = parseColumnFilters(params.get('filters'))
   const result = {
     search: params.get('search') || '',
+    regex: params.get('regex') === 'true',
     columnFilters,
     problemFilters: params.get('problems')?.split(',').filter(Boolean) || [],
     showInactive: params.get('showInactive') === 'true',
@@ -2093,7 +2094,7 @@ export function ResourcesView({
     setBulkForceDelete(false)
   }, [selectedKind.name, selectedKind.group]) // eslint-disable-line react-hooks/exhaustive-deps
   const [searchTerm, setSearchTerm] = useState(initialFilters.search)
-  const [regexMode, setRegexMode] = useState(false)
+  const [regexMode, setRegexMode] = useState(initialFilters.regex)
   const [sortColumn, setSortColumn] = useState<string | null>(null)
   const [sortDirection, setSortDirection] = useState<SortDirection>(null)
   // Filter state
@@ -2842,6 +2843,11 @@ export function ResourcesView({
       setSearchTerm(newFilters.search)
     }
 
+    // Update regex mode if it changed
+    if (newFilters.regex !== regexMode) {
+      setRegexMode(newFilters.regex)
+    }
+
     // Update column filters if changed
     const newFiltersStr = serializeColumnFilters(newFilters.columnFilters)
     const currentFiltersStr = serializeColumnFilters(columnFilters)
@@ -2872,6 +2878,7 @@ export function ResourcesView({
   const updateURL = useCallback((
     kindInfo: SelectedKindInfo,
     search: string,
+    regex: boolean,
     colFilters: Record<string, string[]>,
     problems: string[],
     showInactive: boolean,
@@ -2893,6 +2900,11 @@ export function ResourcesView({
       params.set('search', search)
     } else {
       params.delete('search')
+    }
+    if (regex) {
+      params.set('regex', 'true')
+    } else {
+      params.delete('regex')
     }
     // Write column filters as `filters` param; remove legacy `status` param
     const filtersStr = serializeColumnFilters(colFilters)
@@ -2955,6 +2967,7 @@ export function ResourcesView({
 
   const clearAllFilters = useCallback(() => {
     setSearchTerm('')
+    setRegexMode(false)
     setColumnFilters({})
     setProblemFilters([])
     setLabelSelector('')
@@ -2965,7 +2978,7 @@ export function ResourcesView({
     // params are out of scope here; the host's onClearNamespaces (and its
     // own state→URL sync) owns namespace cleanup.
     const params = new URLSearchParams(window.location.search)
-    for (const key of ['search', 'filters', 'problems', 'labels', 'ownerKind', 'ownerName', 'showInactive']) {
+    for (const key of ['search', 'regex', 'filters', 'problems', 'labels', 'ownerKind', 'ownerName', 'showInactive']) {
       params.delete(key)
     }
     navigate({ pathname: window.location.pathname, search: params.toString() }, { replace: true })
@@ -3022,8 +3035,8 @@ export function ResourcesView({
     shouldPushHistory.current = false
     prevSelectedResourceRef.current = current
 
-    updateURL(selectedKind, searchTerm, columnFilters, problemFilters, showInactiveReplicaSets, selectedResource?.namespace, selectedResource?.name, pushHistory)
-  }, [selectedKind, searchTerm, columnFilters, problemFilters, showInactiveReplicaSets, selectedResource, updateURL, basePath, locationPathname])
+    updateURL(selectedKind, searchTerm, regexMode, columnFilters, problemFilters, showInactiveReplicaSets, selectedResource?.namespace, selectedResource?.name, pushHistory)
+  }, [selectedKind, searchTerm, regexMode, columnFilters, problemFilters, showInactiveReplicaSets, selectedResource, updateURL, basePath, locationPathname])
 
   // Handle resource click from URL on mount
   useEffect(() => {
@@ -4534,7 +4547,10 @@ export function ResourcesView({
               <p>No {selectedKind.kind} found</p>
               {searchTerm && (
                 <button
-                  onClick={() => setSearchTerm('')}
+                  onClick={() => {
+                    setSearchTerm('')
+                    setRegexMode(false)
+                  }}
                   className="flex items-center gap-1.5 text-sm mt-2 px-3 py-1.5 rounded-md bg-theme-elevated hover:bg-theme-border text-theme-text-secondary hover:text-theme-text-primary transition-colors"
                 >
                   No results for "{searchTerm}"
