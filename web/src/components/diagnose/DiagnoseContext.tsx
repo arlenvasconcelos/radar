@@ -136,6 +136,16 @@ export function agentLabelFor(name: string, fallbackLabel?: string): string {
   return AGENT_LABELS[name] || fallbackLabel || name || "your AI agent";
 }
 
+// Whether `name` is a local CLI Radar ships support for. The consent card's
+// default copy ("your own agent, on your machine, your key, nothing to Radar")
+// is only true for these. A backend that advertises anything else is running the
+// agent somewhere we can't describe — the card degrades to claim-free copy
+// rather than assert the local story over a hosted data flow. Hosts that know
+// their own story override it via RadarApp's `diagnoseConsent` prop.
+export function isKnownLocalAgent(name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(AGENT_LABELS, name);
+}
+
 // openDiagnoseSettings opens the Settings dialog (App.tsx listens for this DOM
 // event) — the canonical home for AI-diagnosis config.
 export function openDiagnoseSettings() {

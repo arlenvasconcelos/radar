@@ -26,7 +26,10 @@ export type {
   TimelineCoverageSpan,
   TimelineOverviewResult,
 } from './api/timelineSource';
-export type { RenderDiagnoseAction } from './context/DiagnoseCustomization';
+export type {
+  RenderDiagnoseAction,
+  DiagnoseConsentCopy,
+} from './context/DiagnoseCustomization';
 export { ShortcutHelpOverlay } from './components/ui/ShortcutHelpOverlay';
 
 // Shared cluster-switcher primitive — re-exported from @skyhook-io/k8s-ui so

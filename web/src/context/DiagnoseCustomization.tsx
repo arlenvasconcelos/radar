@@ -1,4 +1,5 @@
-// Slot-based injection of a resource-level "Diagnose" action.
+// Slot-based injection of a resource-level "Diagnose" action, and of the
+// consent card's trust copy.
 //
 // Lets an embedding host (e.g. Radar Hub) inject a "Diagnose with AI" button
 // into every resource detail action bar — without forking WorkloadView or the
@@ -21,22 +22,55 @@ export type RenderDiagnoseAction = (ctx: {
   health?: "problem" | "healthy" | "unknown";
 }) => ReactNode;
 
+/**
+ * Trust copy for the first-run consent card.
+ *
+ * The card makes concrete, checkable claims about *where* the agent runs,
+ * *whose* model account it bills, and *where* the transcript is stored. Those
+ * claims are only true of OSS's bring-your-own-local-CLI agent. A host that
+ * runs the agent anywhere else (Radar Cloud runs it as a sandboxed Job under a
+ * managed key) MUST supply its own copy — shipping OSS's over a different data
+ * flow states the opposite of what happens.
+ *
+ * Radar owns the card's chrome (icon, layout, Approve/Cancel) either way; a
+ * host only replaces the claims.
+ */
+export type DiagnoseConsentCopy = {
+  title: string;
+  body: ReactNode;
+  /** Detail list under the body; each entry is rendered as its own "•" row. */
+  bullets?: ReactNode[];
+  /** Label for the settings link. `null` hides it — for hosts with one fixed
+   *  agent and no isolation choice, where it would open an empty dialog. */
+  settingsLabel?: string | null;
+  approveLabel?: string;
+};
+
 const DiagnoseCustomizationContext = createContext<RenderDiagnoseAction | undefined>(undefined);
+const DiagnoseConsentCopyContext = createContext<DiagnoseConsentCopy | undefined>(undefined);
 
 export function DiagnoseCustomizationProvider({
   value,
+  consentCopy,
   children,
 }: {
   value: RenderDiagnoseAction | undefined;
+  consentCopy?: DiagnoseConsentCopy;
   children: ReactNode;
 }) {
   return (
     <DiagnoseCustomizationContext.Provider value={value}>
-      {children}
+      <DiagnoseConsentCopyContext.Provider value={consentCopy}>
+        {children}
+      </DiagnoseConsentCopyContext.Provider>
     </DiagnoseCustomizationContext.Provider>
   );
 }
 
 export function useDiagnoseCustomization(): RenderDiagnoseAction | undefined {
   return useContext(DiagnoseCustomizationContext);
+}
+
+export function useDiagnoseConsentCopy(): DiagnoseConsentCopy | undefined {
+  return useContext(DiagnoseConsentCopyContext);
 }

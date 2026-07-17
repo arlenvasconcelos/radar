@@ -22,6 +22,7 @@ import { stringify as toYaml } from "yaml";
 import { codeToHtml } from "shiki";
 import { DialogPortal } from "@skyhook-io/k8s-ui/components/ui/DialogPortal";
 import { useTheme } from "../../context/ThemeContext";
+import { type DiagnoseConsentCopy } from "../../context/DiagnoseCustomization";
 import {
   type Diagnosis,
   type DiagnoseStep,
@@ -568,19 +569,25 @@ export function RunContextCard({ run }: { run: RunSummary }) {
   );
 }
 
-// The first-run consent + trust card. Its copy is the OSS BYO-local trust story
-// ("your own agent, on your machine, nothing to Radar").
-// TODO(cloud): this copy must become embedder-overridable for Radar Cloud, where
-//   the agent runs in the cloud (the company's self-hosted instance + their key /
-//   local LLM, OR our SaaS) — a different, honestly-different trust story ("runs in
-//   your Radar Cloud, audited, managed key"). Plumb an override through the
-//   DiagnoseCustomization seam (same place Hub overrides the entry button) before
-//   the k8s-ui lift, so OSS and Cloud don't ship the same claim over different data
-//   flows. This is also a natural "upgrade to Cloud" surface.
+// The first-run consent + trust card.
+//
+// The copy resolves in three tiers, because the claims here are checkable facts
+// about a data flow — not marketing — and the wrong tier is a lie, not a typo:
+//
+//   1. `copy` — the host's own trust story. Radar Cloud runs the agent as a
+//      sandboxed Job under a managed key, so it supplies its own.
+//   2. `hosted` with no `copy` — a backend advertised an agent Radar doesn't
+//      ship (see isKnownLocalAgent). We don't know where it runs or whose key
+//      pays, so we say only what Radar itself can still vouch for and let the
+//      user go ask. Silence beats OSS's local story asserted over a hosted flow.
+//   3. Neither — the OSS bring-your-own-local-CLI default below, which is the
+//      only tier where "on your machine / no Radar cloud / your account" holds.
 export function ConsentCard({
   agentName,
   agent,
   isolated = true,
+  hosted = false,
+  copy,
   onOpenSettings,
   onApprove,
   onCancel,
@@ -588,6 +595,8 @@ export function ConsentCard({
   agentName: string;
   agent?: string;
   isolated?: boolean;
+  hosted?: boolean;
+  copy?: DiagnoseConsentCopy;
   onOpenSettings?: () => void;
   onApprove: () => void;
   onCancel: () => void;
@@ -595,68 +604,112 @@ export function ConsentCard({
   // Cursor can't be isolated (no flag suppresses its global MCP servers), so it
   // gets its own honest framing rather than the isolated/my-setup pair.
   const isCursor = agent === "cursor-agent";
+
+  const resolved: DiagnoseConsentCopy = copy ?? (hosted
+    ? {
+        title: "Run a read-only AI investigation?",
+        body: (
+          <>
+            Radar sends this resource&apos;s spec, recent events, and pod logs to{" "}
+            <span className="font-medium text-theme-text-primary">
+              {agentName}
+            </span>
+            , which runs outside Radar — check with whoever operates it for where
+            it runs, which model provider it uses, and how long transcripts are
+            kept. Through Radar the agent can only{" "}
+            <span className="font-medium">read</span> — it cannot change your
+            cluster.
+          </>
+        ),
+      }
+    : {
+        title:
+          isolated && !isCursor
+            ? "Run a read-only AI investigation?"
+            : "Run an AI investigation?",
+        body: (
+          <>
+            This runs{" "}
+            <span className="font-medium text-theme-text-primary">
+              your own {agentName}
+            </span>{" "}
+            on your machine — no Radar cloud, no API key, no account. Radar sends
+            this resource&apos;s spec, recent events, and pod logs to it (and on
+            to its model provider under your account, not to Radar). Transcripts
+            are kept in your local Radar history on this machine until cleared.
+            {isolated && !isCursor && (
+              <>
+                {" "}
+                Through Radar the agent can only{" "}
+                <span className="font-medium">read</span> — it cannot change your
+                cluster.
+              </>
+            )}
+          </>
+        ),
+        bullets: [
+          isCursor ? (
+            <>
+              Through Radar the agent only{" "}
+              <span className="font-medium">reads</span> your cluster. But Cursor
+              also loads your own global MCP servers and Radar can&apos;t exclude
+              them (unlike Claude or Codex), so if any of those can make changes,
+              Cursor could use them.
+            </>
+          ) : isolated ? (
+            <>
+              Isolated: only Radar&apos;s read-only investigation tools — your
+              other CLI config and MCP servers are excluded.
+              {agent === "codex" && (
+                <>
+                  {" "}
+                  Codex&apos;s sandboxed shell can still <em>read</em> files on
+                  your machine (it cannot write or reach the network).
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              &ldquo;My setup&rdquo;: the agent also runs with your own CLI config
+              + MCP servers and can read local files. Only Radar&apos;s own tools
+              are read-only.
+            </>
+          ),
+        ],
+        settingsLabel: "Change the agent and how it runs in Settings",
+      });
+
+  // `settingsLabel: null` hides the link outright — a host with one fixed agent
+  // has nothing behind it. `undefined` keeps the OSS default label.
+  const settingsLabel =
+    resolved.settingsLabel === undefined
+      ? "Change the agent and how it runs in Settings"
+      : resolved.settingsLabel;
+
   return (
     <div className="rounded-lg border border-theme-border bg-theme-elevated p-4">
       <div className="mb-2 flex items-center gap-2">
         <ShieldCheck className="h-4 w-4 text-accent" />
         <div className="text-sm font-medium text-theme-text-primary">
-          {isolated && !isCursor
-            ? "Run a read-only AI investigation?"
-            : "Run an AI investigation?"}
+          {resolved.title}
         </div>
       </div>
       <p className="text-sm leading-relaxed text-theme-text-secondary">
-        This runs{" "}
-        <span className="font-medium text-theme-text-primary">
-          your own {agentName}
-        </span>{" "}
-        on your machine — no Radar cloud, no API key, no account. Radar sends
-        this resource&apos;s spec, recent events, and pod logs to it (and on to
-        its model provider under your account, not to Radar). Transcripts are
-        kept in your local Radar history on this machine until cleared.
-        {isolated && !isCursor && (
-          <>
-            {" "}
-            Through Radar the agent can only{" "}
-            <span className="font-medium">read</span> — it cannot change your
-            cluster.
-          </>
-        )}
+        {resolved.body}
       </p>
-      <ul className="mt-2 space-y-1 text-xs text-theme-text-tertiary">
-        {isCursor ? (
-          <li>
-            • Through Radar the agent only <span className="font-medium">reads</span>{" "}
-            your cluster. But Cursor also loads your own global MCP servers and
-            Radar can&apos;t exclude them (unlike Claude or Codex), so if any of
-            those can make changes, Cursor could use them.
-          </li>
-        ) : isolated ? (
-          <li>
-            • Isolated: only Radar&apos;s read-only investigation tools — your
-            other CLI config and MCP servers are excluded.
-            {agent === "codex" && (
-              <>
-                {" "}
-                Codex&apos;s sandboxed shell can still <em>read</em> files on
-                your machine (it cannot write or reach the network).
-              </>
-            )}
-          </li>
-        ) : (
-          <li>
-            • &ldquo;My setup&rdquo;: the agent also runs with your own CLI
-            config + MCP servers and can read local files. Only Radar&apos;s own
-            tools are read-only.
-          </li>
-        )}
-      </ul>
-      {onOpenSettings && (
+      {resolved.bullets && resolved.bullets.length > 0 && (
+        <ul className="mt-2 space-y-1 text-xs text-theme-text-tertiary">
+          {resolved.bullets.map((b, i) => (
+            <li key={i}>• {b}</li>
+          ))}
+        </ul>
+      )}
+      {onOpenSettings && settingsLabel && (
         <button
           onClick={onOpenSettings}
           className="mt-3 text-xs text-accent hover:underline"
         >
-          Change the agent and how it runs in Settings
+          {settingsLabel}
         </button>
       )}
       <div className="mt-4 flex gap-2">
@@ -670,7 +723,7 @@ export function ConsentCard({
           onClick={onApprove}
           className="flex-1 rounded-lg btn-brand py-1.5 text-sm"
         >
-          Approve &amp; investigate
+          {resolved.approveLabel ?? "Approve & investigate"}
         </button>
       </div>
     </div>
