@@ -23,6 +23,7 @@ import {
   agentLabelFor,
   openDiagnoseSettings,
 } from "./DiagnoseContext";
+import { useDiagnoseConsentCopy } from "../../context/DiagnoseCustomization";
 import { InvestigationView } from "./InvestigationView";
 import { RecentList } from "./Home";
 import { ConsentCard } from "./parts";
@@ -136,6 +137,7 @@ function InvestigationMenu({ run }: { run: RunSummary }) {
 // Helm drawers, so it no longer floats viewport-fixed or DOM-measures the chrome.
 export function DiagnoseSurface({ topInset = 0 }: { topInset?: number }) {
   const d = useDiagnose();
+  const consentCopy = useDiagnoseConsentCopy();
   const {
     maximized,
     setMaximized,
@@ -203,6 +205,7 @@ export function DiagnoseSurface({ topInset = 0 }: { topInset?: number }) {
           agentName={d.agentLabel}
           agent={d.selectedAgent}
           isolated={d.isolated}
+          copy={consentCopy}
           onOpenSettings={openDiagnoseSettings}
           onApprove={d.approveConsent}
           onCancel={d.cancelConsent}
