@@ -542,7 +542,9 @@ export function InvestigationView({
           <ResultCard
             diagnosis={turns[pinnedIdx].diagnosis!}
             onApply={
-              pinnedIdx === lastRemediationIdx && !stale ? requestApply : undefined
+              pinnedIdx === lastRemediationIdx && !stale && !hosted
+                ? requestApply
+                : undefined
             }
             onAsk={!busy && !stale ? askFollowup : undefined}
             reveal="full"
