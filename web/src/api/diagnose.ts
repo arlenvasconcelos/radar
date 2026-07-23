@@ -10,6 +10,7 @@ export interface AgentInfo {
   version: string;
   present: boolean;
   supported: boolean;
+  hosted?: boolean;
 }
 
 export interface AgentsResponse {

@@ -44,7 +44,7 @@ export function InvestigationView({
   maximized: boolean;
 }) {
   const { kind, namespace, name } = run;
-  const { refreshRuns, openInvestigation, startError } = useDiagnose();
+  const { refreshRuns, openInvestigation, startError, hosted } = useDiagnose();
   const retryDiagnosis = useCallback(
     () => openInvestigation({ kind, namespace, name }),
     [openInvestigation, kind, namespace, name],
@@ -498,7 +498,8 @@ export function InvestigationView({
             <RunContextCard run={run} />
             {turns.map((t, i) => {
               const isLast = i === turns.length - 1;
-              const canApply = i === lastRemediationIdx && !stale;
+              // Hosted runners are read-only — the server refuses apply turns.
+              const canApply = i === lastRemediationIdx && !stale && !hosted;
               const canCheck = isLast && t.status === "done" && !!t.apply;
               return (
                 <TurnView

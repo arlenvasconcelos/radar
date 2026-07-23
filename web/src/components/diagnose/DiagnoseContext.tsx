@@ -34,6 +34,7 @@ export type DiagnoseView = "home" | "investigation";
 interface DiagnoseCtx {
   available: boolean; // an agent CLI is present (button/entry gate)
   agentLabel: string; // label of the selected agent, e.g. "Claude Code"
+  hosted: boolean; // selected agent runs on the host's backend, not this machine
   agents: AgentInfo[]; // supported agents detected on PATH (for the picker)
   selectedAgent: string; // name of the chosen backend ("claude"/"codex")
   setSelectedAgent: (name: string) => void;
@@ -262,6 +263,7 @@ export function DiagnoseProvider({ children }: { children: ReactNode }) {
     selectedAgent,
     agents.find((a) => a.name === selectedAgent)?.label,
   );
+  const hosted = !!agents.find((a) => a.name === selectedAgent)?.hosted;
 
   useEffect(() => {
     const onResize = () => setViewportW(window.innerWidth);
@@ -434,6 +436,7 @@ export function DiagnoseProvider({ children }: { children: ReactNode }) {
   const value: DiagnoseCtx = {
     available,
     agentLabel,
+    hosted,
     agents,
     selectedAgent,
     setSelectedAgent,
