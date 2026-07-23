@@ -44,7 +44,19 @@ export function InvestigationView({
   maximized: boolean;
 }) {
   const { kind, namespace, name } = run;
-  const { refreshRuns, openInvestigation, startError, hosted } = useDiagnose();
+  const {
+    refreshRuns,
+    openInvestigation,
+    startError,
+    agents,
+    hosted: selectedHosted,
+  } = useDiagnose();
+  // Apply turns execute with the run's stored agent, not the picker's current
+  // selection — gate on the former (fall back to the selection for older runs
+  // that didn't record their agent).
+  const hosted = run.agent
+    ? !!agents.find((a) => a.name === run.agent)?.hosted
+    : selectedHosted;
   const retryDiagnosis = useCallback(
     () => openInvestigation({ kind, namespace, name }),
     [openInvestigation, kind, namespace, name],
