@@ -517,8 +517,9 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
               <div className="mb-4">
                 <h3 className="text-base font-semibold text-theme-text-primary">AI diagnose</h3>
                 <p className="mt-0.5 text-xs text-theme-text-tertiary">
-                  Investigate incidents with an AI agent that runs on your own machine — reading
-                  logs, events, and topology to explain what's wrong. No Radar cloud, no API key.
+                  {diag.hosted
+                    ? `Investigate incidents with ${diag.agentLabel} — reading logs, events, and topology to explain what's wrong.`
+                    : "Investigate incidents with an AI agent that runs on your own machine — reading logs, events, and topology to explain what's wrong. No Radar cloud, no API key."}
                 </p>
               </div>
               {aiAvailable ? (
@@ -526,6 +527,8 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
                   <AISettingsSection
                     available={diag.available}
                     agents={diag.agents}
+                    hosted={diag.hosted}
+                    agentLabel={diag.agentLabel}
                     draft={aiDraft}
                     onChange={(patch) => {
                       setAiDraft((d) => ({ ...d, ...patch }))
@@ -533,21 +536,23 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
                     }}
                     onHistoryCleared={diag.refreshRuns}
                   />
-                  <div className="flex items-center justify-end gap-3">
-                    {aiSaved && !aiDirty && (
-                      <span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400/80">
-                        <Check className="w-3 h-3" />
-                        Saved
-                      </span>
-                    )}
-                    <button
-                      onClick={saveAi}
-                      disabled={!aiDirty}
-                      className="px-4 py-1.5 text-sm font-medium btn-brand rounded-md disabled:opacity-50 disabled:pointer-events-none"
-                    >
-                      Save
-                    </button>
-                  </div>
+                  {!diag.hosted && (
+                    <div className="flex items-center justify-end gap-3">
+                      {aiSaved && !aiDirty && (
+                        <span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400/80">
+                          <Check className="w-3 h-3" />
+                          Saved
+                        </span>
+                      )}
+                      <button
+                        onClick={saveAi}
+                        disabled={!aiDirty}
+                        className="px-4 py-1.5 text-sm font-medium btn-brand rounded-md disabled:opacity-50 disabled:pointer-events-none"
+                      >
+                        Save
+                      </button>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <AIUnavailableNotice />
