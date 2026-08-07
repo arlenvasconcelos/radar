@@ -704,9 +704,17 @@ function ConsentCardShell({
           {resolvedSettingsLabel}
         </button>
       )}
+      {/* Red, not amber: the full-local card is itself amber, so an amber box on
+          it reads as another paragraph of body copy. role="alert" because nothing
+          else moves on failure — focus stays on Approve, so without it a screen
+          reader says nothing and the user re-presses a button that cannot succeed. */}
       {error && (
-        <div className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-theme-text-secondary">
-          {error}
+        <div
+          role="alert"
+          className="mt-3 flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-xs text-theme-text-primary"
+        >
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-400" />
+          <span>{error}</span>
         </div>
       )}
       <div className="mt-4 flex gap-2">
