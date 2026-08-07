@@ -91,6 +91,8 @@ export interface RunSummary {
   kind: string;
   namespace: string;
   name: string;
+  /** The issue this session is for, on hosts that key sessions by issue. */
+  issueId?: string;
   context: string;
   agent?: string; // backend CLI that drove this run ("claude"/"codex")
   profile?: ExecutionProfile;
@@ -144,6 +146,14 @@ export async function createRun(
     kind: string;
     namespace: string;
     name: string;
+    // Associates the session with the issue it was started from. Radar records
+    // it and hands it back on RunSummary; what a host does with it is the host's
+    // business.
+    issueId?: string;
+    // Start a new session rather than continuing whatever the backend would
+    // otherwise hand back for this target. Inert for Radar's own backend, which
+    // only ever continues an in-flight run — and that one is never bypassed.
+    fresh?: boolean;
   },
   opts?: {
     agent?: string;

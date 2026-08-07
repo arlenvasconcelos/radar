@@ -15,6 +15,7 @@ import {
   TerminalSquare,
   Copy,
   Check,
+  Plus,
 } from "lucide-react";
 import { Tooltip } from "../ui/Tooltip";
 import {
@@ -223,6 +224,7 @@ export function DiagnoseSurface({ topInset = 0 }: { topInset?: number }) {
           profile={d.profile}
           copy={consentCopy}
           onOpenSettings={openSettings ?? undefined}
+          error={d.startError}
           onApprove={d.approveConsent}
           onCancel={d.cancelConsent}
         />
@@ -341,6 +343,27 @@ export function DiagnoseSurface({ topInset = 0 }: { topInset?: number }) {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
+          {/* Hidden while a turn is in flight: a start would only be handed back
+              the live run, so the button would read as broken. */}
+          {activeRun && activeRun.status !== "running" && !d.needsConsent && (
+            <Tooltip content="New session on this resource" position="bottom">
+              <button
+                onClick={() =>
+                  d.openInvestigation({
+                    kind: activeRun.kind,
+                    namespace: activeRun.namespace,
+                    name: activeRun.name,
+                    issueId: activeRun.issueId,
+                    fresh: true,
+                  })
+                }
+                className="rounded-md p-1 text-theme-text-tertiary hover:bg-theme-hover hover:text-theme-text-primary"
+                aria-label="New session"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+            </Tooltip>
+          )}
           {activeRun && <InvestigationMenu run={activeRun} />}
           <Tooltip content={maximized ? "Restore" : "Expand"} position="bottom">
             <button

@@ -47,9 +47,19 @@ export function InvestigationView({
   // Apply is off for hosted agents (read-only server-side). Keyed on the selected
   // agent, which matches run.agent unless a deployment mixes hosted + local agents.
   const { refreshRuns, openInvestigation, startError, hosted } = useDiagnose();
+  // Re-run means look again, so it asks for a new session explicitly and only
+  // carries the issue forward — being handed the previous answer is the one
+  // thing someone clicking this doesn't want.
   const retryDiagnosis = useCallback(
-    () => openInvestigation({ kind, namespace, name }),
-    [openInvestigation, kind, namespace, name],
+    () =>
+      openInvestigation({
+        kind,
+        namespace,
+        name,
+        issueId: run.issueId,
+        fresh: true,
+      }),
+    [openInvestigation, kind, namespace, name, run.issueId],
   );
   const queryClient = useQueryClient();
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -470,7 +480,7 @@ export function InvestigationView({
                   </span>
                 </div>
                 <button
-                  onClick={() => openInvestigation({ kind, namespace, name })}
+                  onClick={retryDiagnosis}
                   className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-amber-500/50 px-2.5 py-1 font-medium text-amber-600 hover:bg-amber-500/10 dark:text-amber-400"
                 >
                   <Send className="h-3 w-3" />
@@ -489,7 +499,7 @@ export function InvestigationView({
                   </span>
                 </div>
                 <button
-                  onClick={() => openInvestigation({ kind, namespace, name })}
+                  onClick={retryDiagnosis}
                   className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-theme-border px-2.5 py-1 font-medium text-theme-text-primary hover:bg-theme-hover"
                 >
                   <Send className="h-3 w-3" />

@@ -32,6 +32,14 @@ export interface Target {
   kind: string;
   namespace: string;
   name: string;
+  /** The issue this investigation is for, when it came from an issue. Hosts
+   *  that group sessions by issue key on it; the rest carry it and ignore it. */
+  issueId?: string;
+  /** Start a new session instead of continuing one the backend would otherwise
+   *  return for this target. Rides here rather than as a separate argument so
+   *  the consent-deferred path replays one object — a parallel "was it fresh?"
+   *  state is a thing that can fall out of sync with the target it describes. */
+  fresh?: boolean;
 }
 export type DiagnoseView = "home" | "investigation";
 
@@ -475,8 +483,16 @@ export function DiagnoseProvider({ children }: { children: ReactNode }) {
         setPendingTarget(null);
         if (t) startRunRef.current(t);
       })
-      .catch(() => {
-        setStartError("Couldn't record your consent — try again.");
+      .catch((e) => {
+        // The server's message, when it has one. A host that records consent
+        // above the individual refuses whoever isn't allowed to grant it, and
+        // only its message can say who is — "try again" sends them at something
+        // that can never succeed.
+        setStartError(
+          e instanceof DiagnoseError && e.message
+            ? e.message
+            : "Couldn't record your consent — try again.",
+        );
       })
       .finally(() => {
         consentBusyRef.current = false;
