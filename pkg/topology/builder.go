@@ -2955,6 +2955,14 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	for _, ds := range daemonsets {
 		daemonsetsByNS[ds.Namespace] = append(daemonsetsByNS[ds.Namespace], ds)
 	}
+	// Completed Jobs have no pods left to back a Service.
+	activeJobsByNS := make(map[string][]*batchv1.Job)
+	for _, job := range jobs {
+		if job.Status.Active == 0 {
+			continue
+		}
+		activeJobsByNS[job.Namespace] = append(activeJobsByNS[job.Namespace], job)
+	}
 
 	for _, svc := range services {
 		if !opts.MatchesNamespaceFilter(svc.Namespace) {
@@ -3050,13 +3058,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			}
 		}
 		// Check Jobs
-		for _, job := range jobs {
-			if job.Namespace != svc.Namespace {
-				continue
-			}
-			if job.Status.Active == 0 {
-				continue
-			}
+		for _, job := range activeJobsByNS[svc.Namespace] {
 			if matchesSelector(job.Spec.Template.ObjectMeta.Labels, svc.Spec.Selector) {
 				jobID := jobIDs[job.Namespace+"/"+job.Name]
 				if jobID != "" {
