@@ -22,6 +22,7 @@ import type { SelectedResource } from '../../types'
 import { kindToPlural, type NavigateToResource } from '../../utils/navigation'
 import { CreateResourceDialog } from '../shared/CreateResourceDialog'
 import { getSkeletonYaml } from '../../utils/skeleton-yaml'
+import { decideLargeListGuard, LARGE_RESOURCE_LIST_LIMIT, SUMMARY_LIST_KINDS } from './largeListGuard'
 
 interface ResourceCountsResponse {
   counts: Record<string, number>
@@ -42,13 +43,6 @@ interface ResourcesViewProps {
 type SelectedKindInfo = { name: string; kind: string; group: string } | null
 
 const EMPTY_RESOURCE_COUNTS: Record<string, number> = {}
-const LARGE_RESOURCE_LIST_LIMIT = 25000
-const LARGE_RESOURCE_LIST_GUARD_KEYS = new Set([
-  'Pod',
-  'Event',
-  'apps/ReplicaSet',
-  'discovery.k8s.io/EndpointSlice',
-])
 
 const deniedWorkloadWrites: WorkloadWritePermissions = {
   deployments: false,
@@ -188,9 +182,16 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
   const selectedCount = selectedCountKey ? countsData?.counts[selectedCountKey] : undefined
   const selectedCountKnown = selectedCountKey ? hasResourceCount(countsData?.counts, selectedCountKey) : false
   const selectedCountUnavailable = selectedCountKey ? countsData?.unavailable?.includes(selectedCountKey) ?? false : false
-  const isSelectedKindGuarded = selectedCountKey !== '' && LARGE_RESOURCE_LIST_GUARD_KEYS.has(selectedCountKey)
-  const waitingForGuardCount = isSelectedKindGuarded && !countsData && !countsIsError
-  const largeListBlocked = isSelectedKindGuarded && countsData != null && (selectedCountUnavailable || (selectedCountKnown && (selectedCount ?? 0) > LARGE_RESOURCE_LIST_LIMIT))
+  const guardDecision = decideLargeListGuard({
+    countKey: selectedCountKey,
+    countsLoaded: countsData != null,
+    countsErrored: countsIsError,
+    countKnown: selectedCountKnown,
+    countUnavailable: selectedCountUnavailable,
+    count: selectedCount,
+  })
+  const waitingForGuardCount = guardDecision.waitingForCount
+  const largeListBlocked = guardDecision.blocked
   const selectedKindQueryBlocked = waitingForGuardCount || largeListBlocked
   const podCount = countsData?.counts.Pod
   const podCountKnown = hasResourceCount(countsData?.counts, 'Pod')
@@ -223,6 +224,11 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
       const params = new URLSearchParams()
       if (namespaces.length > 0) params.set('namespaces', namespacesParam)
       if (isSelectedCrd && selectedKind.group) params.set('group', selectedKind.group)
+      // The table renders a fixed column set; ask the server for the summary
+      // projection instead of full objects on the kinds where payload size
+      // hurts (22MB -> ~3MB at 30k pods). The detail drawer fetches the full
+      // object separately, so nothing downstream sees the projection.
+      if (!isSelectedCrd && SUMMARY_LIST_KINDS.has(selectedKind.name)) params.set('include', 'summary')
       const startedAt = performance.now()
       debugNamespaceLog('resources:selected-kind-fetch-start', {
         kind: selectedKind.name,

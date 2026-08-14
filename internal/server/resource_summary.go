@@ -37,11 +37,24 @@ var summaryStripProfiles = map[string]prune.Profile{
 	"helm.toolkit.fluxcd.io/HelmRelease": {
 		Drop: [][]string{{"metadata", "managedFields"}, {"status", "inventory"}},
 	},
+	// EndpointSlices ride the dynamic path (deliberately not informer-cached);
+	// the list columns read only endpoints[].addresses/conditions, ports,
+	// addressType and the service-name label — per-endpoint targetRef /
+	// topology data dominates the payload on big slices and is never read.
+	"discovery.k8s.io/EndpointSlice": {
+		Drop: [][]string{{"metadata", "managedFields"}},
+		ElementDrops: []prune.ElementDrop{{
+			Path: []string{"endpoints"},
+			Keys: []string{"targetRef", "nodeName", "zone", "hints", "deprecatedTopology", "hostname"},
+		}},
+	},
 }
 
-// Profiles must target CRD kinds (group contains a dot): the summary strip
-// only runs on the dynamic (unstructured) list path — a typed-kind profile
-// would be accepted and silently never apply. Fail loudly at init instead.
+// Profiles must target dynamic-path kinds (group contains a dot): the summary
+// strip only runs on the dynamic (unstructured) list path — a typed-kind
+// profile would be accepted and silently never apply. Fail loudly at init
+// instead. Typed-cache kinds get their summary via the projections in
+// resource_summary_typed.go.
 func init() {
 	for key := range summaryStripProfiles {
 		if !strings.Contains(key, ".") {
@@ -76,10 +89,11 @@ func parseResourcesInclude(v string) (summary bool, err error) {
 // is never touched (proven by the handler e2e test); do NOT call this with
 // objects you don't own.
 //
-// Typed-cache lists (the default: arm) bypass summary by construction —
-// profiled kinds are all CRDs, guaranteed by the init check above. Dynamic
-// informers preserve apiVersion/kind, so each item keys on its own GVK; an
-// item that lacks a profile is left untouched (fail open).
+// Typed-cache lists bypass THIS strip by construction — profiled kinds all
+// live on the dynamic path, guaranteed by the init check above — and get
+// their summary from applyTypedSummary instead. Dynamic informers preserve
+// apiVersion/kind, so each item keys on its own GVK; an item that lacks a
+// profile is left untouched (fail open).
 func applySummaryStrip(result any) any {
 	switch items := result.(type) {
 	case []*unstructured.Unstructured:

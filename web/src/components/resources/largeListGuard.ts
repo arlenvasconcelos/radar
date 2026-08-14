@@ -1,0 +1,66 @@
+// List-scale policy for the resources view (issue #1303).
+//
+// Guard: kinds whose full-object lists get big enough to hurt the browser are
+// refused above LARGE_RESOURCE_LIST_LIMIT. largeListGuard.test.ts pins this
+// decision table — the plan is to convert the refusal into server-side
+// windowing + truncation, and that test flips with it.
+//
+// Summary: kinds whose list fetch requests ?include=summary — the server
+// projects each object down to the fields the table actually renders
+// (internal/server/resource_summary_typed.go). The detail drawer fetches the
+// full object through its own query, so the projection never reaches
+// renderers.
+
+export const LARGE_RESOURCE_LIST_LIMIT = 25000
+
+export const LARGE_RESOURCE_LIST_GUARD_KEYS = new Set([
+  'Pod',
+  'Event',
+  'apps/ReplicaSet',
+  'discovery.k8s.io/EndpointSlice',
+])
+
+// Keyed by URL kind segment (lowercase plural), matching the list fetch path.
+// Services and Jobs are unguarded but share the same payload problem at scale,
+// so they take the summary projection too.
+export const SUMMARY_LIST_KINDS = new Set([
+  'pods',
+  'events',
+  'replicasets',
+  'endpointslices',
+  'services',
+  'jobs',
+])
+
+export interface LargeListGuardInput {
+  /** Resource-counts key for the selected kind ('' when none selected). */
+  countKey: string
+  /** Counts response arrived. */
+  countsLoaded: boolean
+  /** Counts request errored (guard fails open — list loads without a count). */
+  countsErrored: boolean
+  /** Counts response carries a number for this key. */
+  countKnown: boolean
+  /** Counts response marked this key unavailable (guard fails closed). */
+  countUnavailable: boolean
+  count: number | undefined
+}
+
+export interface LargeListGuardDecision {
+  /** Selected kind is subject to the guard at all. */
+  guarded: boolean
+  /** Guarded kind, counts still in flight — hold the list query. */
+  waitingForCount: boolean
+  /** Guarded kind over the limit (or count unavailable) — list query refused. */
+  blocked: boolean
+}
+
+export function decideLargeListGuard(input: LargeListGuardInput): LargeListGuardDecision {
+  const guarded = input.countKey !== '' && LARGE_RESOURCE_LIST_GUARD_KEYS.has(input.countKey)
+  const waitingForCount = guarded && !input.countsLoaded && !input.countsErrored
+  const blocked =
+    guarded &&
+    input.countsLoaded &&
+    (input.countUnavailable || (input.countKnown && (input.count ?? 0) > LARGE_RESOURCE_LIST_LIMIT))
+  return { guarded, waitingForCount, blocked }
+}
