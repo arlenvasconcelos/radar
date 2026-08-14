@@ -1942,6 +1942,11 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	window, err := parseListWindow(r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	// parseNamespacesForUser primes the per-user perm cache (triggers
 	// DiscoverNamespaces if needed). canRead below relies on it.
@@ -2048,10 +2053,7 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		if includeSummary {
-			result = applySummaryStrip(result)
-		}
-		s.writeJSON(w, result)
+		s.writeListResult(w, result, includeSummary, window)
 		return
 	}
 
@@ -2352,11 +2354,7 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if includeSummary {
-		result = applySummaryStrip(result)
-		result = applyTypedSummary(result)
-	}
-	s.writeJSON(w, result)
+	s.writeListResult(w, result, includeSummary, window)
 }
 
 // normalizeKind converts K8s kind names to lowercase for case-insensitive matching

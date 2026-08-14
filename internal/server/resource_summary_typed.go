@@ -66,9 +66,11 @@ func projectMeta(m metav1.ObjectMeta, keepAnnotations []string) summaryMeta {
 // --- Pod ---
 
 type podSummary struct {
-	Metadata summaryMeta      `json:"metadata"`
-	Spec     podSummarySpec   `json:"spec"`
-	Status   podSummaryStatus `json:"status"`
+	Kind       string           `json:"kind"`
+	APIVersion string           `json:"apiVersion"`
+	Metadata   summaryMeta      `json:"metadata"`
+	Spec       podSummarySpec   `json:"spec"`
+	Status     podSummaryStatus `json:"status"`
 }
 
 type podSummarySpec struct {
@@ -90,10 +92,10 @@ type podSummaryContainer struct {
 // allocatedResources and user info to each status entry, none of which the
 // container-squares column reads.
 type podSummaryContainerStatus struct {
-	Name         string               `json:"name"`
-	Ready        bool                 `json:"ready"`
-	RestartCount int32                `json:"restartCount"`
-	Started      *bool                `json:"started,omitempty"`
+	Name         string                `json:"name"`
+	Ready        bool                  `json:"ready"`
+	RestartCount int32                 `json:"restartCount"`
+	Started      *bool                 `json:"started,omitempty"`
 	State        corev1.ContainerState `json:"state,omitempty"`
 	LastState    corev1.ContainerState `json:"lastState,omitempty"`
 }
@@ -138,6 +140,7 @@ func projectContainerStatuses(statuses []corev1.ContainerStatus) []podSummaryCon
 
 func podToSummary(p *corev1.Pod) podSummary {
 	return podSummary{
+		Kind: "Pod", APIVersion: "v1",
 		Metadata: projectMeta(p.ObjectMeta, podSummaryAnnotations),
 		Spec: podSummarySpec{
 			NodeName:       p.Spec.NodeName,
@@ -158,9 +161,11 @@ func podToSummary(p *corev1.Pod) podSummary {
 // --- Service ---
 
 type serviceSummary struct {
-	Metadata summaryMeta          `json:"metadata"`
-	Spec     serviceSummarySpec   `json:"spec"`
-	Status   serviceSummaryStatus `json:"status"`
+	Kind       string               `json:"kind"`
+	APIVersion string               `json:"apiVersion"`
+	Metadata   summaryMeta          `json:"metadata"`
+	Spec       serviceSummarySpec   `json:"spec"`
+	Status     serviceSummaryStatus `json:"status"`
 }
 
 type serviceSummarySpec struct {
@@ -178,6 +183,7 @@ type serviceSummaryStatus struct {
 
 func serviceToSummary(s *corev1.Service) serviceSummary {
 	return serviceSummary{
+		Kind: "Service", APIVersion: "v1",
 		Metadata: projectMeta(s.ObjectMeta, nil),
 		Spec: serviceSummarySpec{
 			Type:         s.Spec.Type,
@@ -194,9 +200,11 @@ func serviceToSummary(s *corev1.Service) serviceSummary {
 // --- ReplicaSet ---
 
 type replicaSetSummary struct {
-	Metadata summaryMeta             `json:"metadata"`
-	Spec     replicaSetSummarySpec   `json:"spec"`
-	Status   replicaSetSummaryStatus `json:"status"`
+	Kind       string                  `json:"kind"`
+	APIVersion string                  `json:"apiVersion"`
+	Metadata   summaryMeta             `json:"metadata"`
+	Spec       replicaSetSummarySpec   `json:"spec"`
+	Status     replicaSetSummaryStatus `json:"status"`
 }
 
 type replicaSetSummarySpec struct {
@@ -204,14 +212,15 @@ type replicaSetSummarySpec struct {
 }
 
 type replicaSetSummaryStatus struct {
-	Replicas          int32                         `json:"replicas"`
-	ReadyReplicas     int32                         `json:"readyReplicas,omitempty"`
-	AvailableReplicas int32                         `json:"availableReplicas,omitempty"`
-	Conditions        []appsv1.ReplicaSetCondition  `json:"conditions,omitempty"`
+	Replicas          int32                        `json:"replicas"`
+	ReadyReplicas     int32                        `json:"readyReplicas,omitempty"`
+	AvailableReplicas int32                        `json:"availableReplicas,omitempty"`
+	Conditions        []appsv1.ReplicaSetCondition `json:"conditions,omitempty"`
 }
 
 func replicaSetToSummary(rs *appsv1.ReplicaSet) replicaSetSummary {
 	return replicaSetSummary{
+		Kind: "ReplicaSet", APIVersion: "apps/v1",
 		Metadata: projectMeta(rs.ObjectMeta, nil),
 		Spec:     replicaSetSummarySpec{Replicas: rs.Spec.Replicas},
 		Status: replicaSetSummaryStatus{
@@ -226,9 +235,11 @@ func replicaSetToSummary(rs *appsv1.ReplicaSet) replicaSetSummary {
 // --- Job ---
 
 type jobSummary struct {
-	Metadata summaryMeta      `json:"metadata"`
-	Spec     jobSummarySpec   `json:"spec"`
-	Status   jobSummaryStatus `json:"status"`
+	Kind       string           `json:"kind"`
+	APIVersion string           `json:"apiVersion"`
+	Metadata   summaryMeta      `json:"metadata"`
+	Spec       jobSummarySpec   `json:"spec"`
+	Status     jobSummaryStatus `json:"status"`
 }
 
 type jobSummarySpec struct {
@@ -248,6 +259,7 @@ type jobSummaryStatus struct {
 
 func jobToSummary(j *batchv1.Job) jobSummary {
 	return jobSummary{
+		Kind: "Job", APIVersion: "batch/v1",
 		Metadata: projectMeta(j.ObjectMeta, nil),
 		Spec: jobSummarySpec{
 			Parallelism: j.Spec.Parallelism,
@@ -268,6 +280,8 @@ func jobToSummary(j *batchv1.Job) jobSummary {
 // --- Event ---
 
 type eventSummary struct {
+	Kind           string                 `json:"kind"`
+	APIVersion     string                 `json:"apiVersion"`
 	Metadata       summaryMeta            `json:"metadata"`
 	InvolvedObject corev1.ObjectReference `json:"involvedObject"`
 	Reason         string                 `json:"reason,omitempty"`
@@ -281,6 +295,7 @@ type eventSummary struct {
 
 func eventToSummary(e *corev1.Event) eventSummary {
 	return eventSummary{
+		Kind: "Event", APIVersion: "v1",
 		Metadata:       projectMeta(e.ObjectMeta, nil),
 		InvolvedObject: e.InvolvedObject,
 		Reason:         e.Reason,

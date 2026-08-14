@@ -273,6 +273,8 @@ func TestPodListSummaryProjection(t *testing.T) {
 
 	// --- Contract: fields the table reads must be present ---
 	mustHave := [][]string{
+		{"kind"},
+		{"apiVersion"},
 		{"metadata", "name"},
 		{"metadata", "namespace"},
 		{"metadata", "creationTimestamp"},
