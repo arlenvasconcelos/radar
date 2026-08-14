@@ -2031,12 +2031,25 @@ export interface ResourceQueryResult {
   dataUpdatedAt?: number
 }
 
+/** @deprecated The refusal pane it drives was replaced by windowed loading +
+ *  listTruncation; kept for library consumers that still pass it. */
 export interface LargeListGuardState {
   kind: string
   count?: number
   reason?: 'too-many' | 'count-unavailable'
   limit: number
   namespaces: string[]
+}
+
+/** Windowed list state: the table shows the first `shown` of `total` objects
+ *  (server-side name sort). Search still covers the full set — the host
+ *  pushes the term down as a server-side filter. */
+export interface ListTruncationState {
+  /** Plural display label for the banner copy (e.g. "pods"), not the Kind. */
+  kind: string
+  total: number
+  shown: number
+  searchActive?: boolean
 }
 
 function formatLargeListScope(namespaces: string[]): string {
@@ -2067,7 +2080,10 @@ interface ResourcesViewProps {
   // Cluster/SSE connection health — the list is SSE-invalidated ("Auto-updating"),
   // so it must degrade to "Reconnecting…" when the stream drops.
   connectionState?: FreshnessConnection
+  /** @deprecated Superseded by windowed loading + listTruncation. */
   largeListGuard?: LargeListGuardState | null
+  /** Set when the selected kind's list is windowed — renders the truncation banner. */
+  listTruncation?: ListTruncationState | null
   topPodMetrics?: TopPodMetrics[]
   topNodeMetrics?: TopNodeMetrics[]
   certExpiry?: Record<string, { expired?: boolean; daysLeft: number }>
@@ -2312,6 +2328,7 @@ export function ResourcesView({
   selectedKindQuery: selectedKindQueryProp,
   connectionState,
   largeListGuard,
+  listTruncation,
   topPodMetrics,
   topNodeMetrics,
   certExpiry,
@@ -4879,6 +4896,21 @@ export function ResourcesView({
           </div>
         )}
 
+        {/* Truncation banner: the list is windowed server-side; the table has
+            the first page, search reaches the rest via the server. */}
+        {listTruncation && (
+          <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 text-xs border-b border-theme-border bg-amber-500/10 text-theme-text-secondary">
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span>
+              Showing the first {listTruncation.shown.toLocaleString()} of{' '}
+              {listTruncation.total.toLocaleString()} {listTruncation.kind.toLowerCase()}
+              {listTruncation.searchActive ? ' matching your search' : ''}, sorted by name.{' '}
+              {listTruncation.searchActive
+                ? 'Refine the search or namespace scope to narrow further.'
+                : 'Search covers all of them; narrow the namespace scope to browse the rest.'}
+            </span>
+          </div>
+        )}
         {/* Table */}
         <div
           className="flex-1 overflow-auto relative"

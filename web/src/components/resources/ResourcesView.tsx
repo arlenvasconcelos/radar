@@ -191,8 +191,8 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
     count: selectedCount,
   })
   const waitingForGuardCount = guardDecision.waitingForCount
-  const largeListBlocked = guardDecision.blocked
-  const selectedKindQueryBlocked = waitingForGuardCount || largeListBlocked
+  const listWindowed = guardDecision.windowed
+  const selectedKindQueryBlocked = waitingForGuardCount
   const podCount = countsData?.counts.Pod
   const podCountKnown = hasResourceCount(countsData?.counts, 'Pod')
   const podCountUnavailable = countsData?.unavailable?.includes('Pod') ?? false
@@ -206,19 +206,17 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
   const topNodeMetricsEnabled =
     ((selectedKindName === 'nodes' && namespaces.length === 0) || selectedKindName === 'pods') &&
     podCountAllowsBulkMetrics
-  const largeListGuard = selectedKind && largeListBlocked
-    ? {
-        kind: selectedKind.name,
-        count: selectedCountUnavailable ? undefined : selectedCount,
-        reason: selectedCountUnavailable ? 'count-unavailable' as const : 'too-many' as const,
-        limit: LARGE_RESOURCE_LIST_LIMIT,
-        namespaces,
-      }
-    : null
+  // Windowed lists push the (debounced, URL-synced) search term down as a
+  // server-side q filter, so search covers the objects beyond the window.
+  // Regex search stays client-side — the server q is a plain substring.
+  const urlListFilters = new URLSearchParams(location.search)
+  const windowedQ = listWindowed && urlListFilters.get('regex') !== 'true'
+    ? (urlListFilters.get('search') ?? '')
+    : ''
 
   // Fetch full data only for the selected kind
   const selectedKindQuery = useQuery({
-    queryKey: ['resources', selectedKind?.name, isSelectedCrd ? selectedKind?.group : '', namespaces],
+    queryKey: ['resources', selectedKind?.name, isSelectedCrd ? selectedKind?.group : '', namespaces, listWindowed ? `windowed:${windowedQ}` : 'full'],
     queryFn: async () => {
       if (!selectedKind) return []
       const params = new URLSearchParams()
@@ -229,6 +227,13 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
       // hurts (22MB -> ~3MB at 30k pods). The detail drawer fetches the full
       // object separately, so nothing downstream sees the projection.
       if (!isSelectedCrd && SUMMARY_LIST_KINDS.has(selectedKind.name)) params.set('include', 'summary')
+      // Above the guard limit the list is windowed server-side: name-sorted
+      // first page in a {total, items} envelope, q filtering the full set.
+      if (listWindowed) {
+        params.set('sort', 'name')
+        params.set('limit', String(LARGE_RESOURCE_LIST_LIMIT))
+        if (windowedQ) params.set('q', windowedQ)
+      }
       const startedAt = performance.now()
       debugNamespaceLog('resources:selected-kind-fetch-start', {
         kind: selectedKind.name,
@@ -263,19 +268,39 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
     },
   })
 
+  // Windowed responses arrive as a {total, items} envelope; plain lists stay
+  // bare arrays.
+  const windowedEnvelope = listWindowed
+    ? (selectedKindQuery.data as { total: number; items: any[] } | undefined)
+    : undefined
+  const listItems = listWindowed
+    ? windowedEnvelope?.items
+    : (selectedKindQuery.data as any[] | undefined)
+
+  const listTruncation = selectedKind && windowedEnvelope && windowedEnvelope.total > windowedEnvelope.items.length
+    ? {
+        // The plural URL segment ("pods"), not the Kind — the banner copy
+        // reads "first 25,000 of 29,455 pods".
+        kind: selectedKind.name,
+        total: windowedEnvelope.total,
+        shown: windowedEnvelope.items.length,
+        searchActive: windowedQ !== '',
+      }
+    : null
+
   // Map to ResourceQueryResult shape
   const selectedKindQueryResult: ResourceQueryResult | undefined = useMemo(() => {
     if (!selectedKind) return undefined
     return {
       resourceName: selectedKind.name,
       group: selectedKind.group,
-      data: selectedKindQueryBlocked ? [] : selectedKindQuery.data as any[] | undefined,
+      data: selectedKindQueryBlocked ? [] : listItems,
       isLoading: waitingForGuardCount || selectedKindQuery.isLoading,
       error: selectedKindQueryBlocked ? undefined : selectedKindQuery.error,
       refetch: selectedKindQuery.refetch,
       dataUpdatedAt: selectedKindQuery.dataUpdatedAt,
     }
-  }, [selectedKind, selectedKindQueryBlocked, waitingForGuardCount, selectedKindQuery.data, selectedKindQuery.isLoading, selectedKindQuery.error, selectedKindQuery.refetch, selectedKindQuery.dataUpdatedAt])
+  }, [selectedKind, selectedKindQueryBlocked, waitingForGuardCount, listItems, selectedKindQuery.isLoading, selectedKindQuery.error, selectedKindQuery.refetch, selectedKindQuery.dataUpdatedAt])
 
   // Metrics
   const { data: topPodMetrics } = useTopPodMetrics({ enabled: topPodMetricsEnabled, namespaces })
@@ -347,7 +372,7 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
       resourceUnavailable={countsData?.unavailable}
       selectedKindQuery={selectedKindQueryResult}
       connectionState={connection.state}
-      largeListGuard={largeListGuard}
+      listTruncation={listTruncation}
       onSelectedKindChange={setSelectedKind}
       topPodMetrics={topPodMetrics}
       topNodeMetrics={topNodeMetrics}

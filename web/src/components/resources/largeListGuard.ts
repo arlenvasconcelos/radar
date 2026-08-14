@@ -1,9 +1,11 @@
 // List-scale policy for the resources view (issue #1303).
 //
-// Guard: kinds whose full-object lists get big enough to hurt the browser are
-// refused above LARGE_RESOURCE_LIST_LIMIT. largeListGuard.test.ts pins this
-// decision table — the plan is to convert the refusal into server-side
-// windowing + truncation, and that test flips with it.
+// Guard: kinds whose lists get big enough to hurt the browser switch to
+// WINDOWED mode above LARGE_RESOURCE_LIST_LIMIT — the query fetches the
+// summary projection with server-side sort+limit ({total, items} envelope),
+// the table renders the first page, and a truncation banner + server-side
+// q search cover the rest. Nothing is refused. largeListGuard.test.ts pins
+// this decision table.
 //
 // Summary: kinds whose list fetch requests ?include=summary — the server
 // projects each object down to the fields the table actually renders
@@ -51,16 +53,20 @@ export interface LargeListGuardDecision {
   guarded: boolean
   /** Guarded kind, counts still in flight — hold the list query. */
   waitingForCount: boolean
-  /** Guarded kind over the limit (or count unavailable) — list query refused. */
-  blocked: boolean
+  /**
+   * Guarded kind over the limit (or count unavailable) — fetch windowed:
+   * summary projection, server-side sort + LARGE_RESOURCE_LIST_LIMIT cap,
+   * {total, items} envelope, truncation banner when total exceeds the page.
+   */
+  windowed: boolean
 }
 
 export function decideLargeListGuard(input: LargeListGuardInput): LargeListGuardDecision {
   const guarded = input.countKey !== '' && LARGE_RESOURCE_LIST_GUARD_KEYS.has(input.countKey)
   const waitingForCount = guarded && !input.countsLoaded && !input.countsErrored
-  const blocked =
+  const windowed =
     guarded &&
     input.countsLoaded &&
     (input.countUnavailable || (input.countKnown && (input.count ?? 0) > LARGE_RESOURCE_LIST_LIMIT))
-  return { guarded, waitingForCount, blocked }
+  return { guarded, waitingForCount, windowed }
 }
