@@ -57,6 +57,18 @@ type SSEBroadcaster struct {
 	// topology broadcasts use longer debounce and skip the expensive full-topology
 	// cache build. Protected by watchMu (same as watchStopCh).
 	warmupDone chan struct{}
+
+	// topoTrigger carries broadcast requests to the topology worker. One slot:
+	// a request already waiting subsumes any later one, so a full slot means
+	// coalesce, not queue.
+	//
+	// Keeping the build off the caller is load-bearing. It takes seconds on a
+	// large cluster, and it used to run on the sole reader of the resource-change
+	// channel — the same goroutine that fans k8s_event frames out to clients. For
+	// as long as it built, no change was drained and no live update was
+	// delivered; past a few seconds per cycle the channel overflows on top of
+	// that and changes are lost outright.
+	topoTrigger chan struct{}
 }
 
 // ClientInfo stores information about a connected client
@@ -158,6 +170,7 @@ func NewSSEBroadcaster() *SSEBroadcaster {
 		stopCh:      make(chan struct{}),
 		watchStopCh: make(chan struct{}),
 		warmupDone:  make(chan struct{}),
+		topoTrigger: make(chan struct{}, 1),
 	}
 }
 
@@ -178,9 +191,34 @@ func (b *SSEBroadcaster) Start() {
 	b.registerCRDDiscoveryCallback()
 
 	go b.run()
+	go b.topologyWorker()
 	go b.watchResourceChanges()
 	go b.watchDeferredSync()
 	go b.heartbeat()
+}
+
+// requestTopologyBroadcast asks the topology worker to run a broadcast cycle.
+// Never blocks and never runs the build on the caller's goroutine.
+func (b *SSEBroadcaster) requestTopologyBroadcast() {
+	select {
+	case b.topoTrigger <- struct{}{}:
+	default:
+		// A request is already queued; it will pick up the current state.
+	}
+}
+
+// topologyWorker owns every broadcast build, so concurrent triggers (debounce
+// fire, context switch, CRD discovery) coalesce into a single build instead of
+// racing several multi-second ones.
+func (b *SSEBroadcaster) topologyWorker() {
+	for {
+		select {
+		case <-b.stopCh:
+			return
+		case <-b.topoTrigger:
+			b.broadcastTopologyUpdate()
+		}
+	}
 }
 
 // registerCRDDiscoveryCallback registers for CRD discovery completion
@@ -188,7 +226,7 @@ func (b *SSEBroadcaster) Start() {
 func (b *SSEBroadcaster) registerCRDDiscoveryCallback() {
 	k8s.OnCRDDiscoveryComplete(func() {
 		log.Printf("SSE broadcaster: CRD discovery complete, broadcasting topology update")
-		b.broadcastTopologyUpdate()
+		b.requestTopologyBroadcast()
 	})
 }
 
@@ -235,7 +273,7 @@ func (b *SSEBroadcaster) watchDeferredSync() {
 					Event: "deferred_ready",
 					Data:  map[string]any{},
 				})
-				b.broadcastTopologyUpdate()
+				b.requestTopologyBroadcast()
 
 				// Signal warmup complete — debounce can drop to normal.
 				// Close the local copy (not b.warmupDone) so a context switch
@@ -288,7 +326,7 @@ func (b *SSEBroadcaster) registerConnectionStateCallback() {
 		// When we become connected, build and broadcast topology to all clients
 		if status.State == k8s.StateConnected {
 			log.Printf("SSE broadcaster: connection became connected, scheduling topology broadcast")
-			go b.broadcastTopologyUpdate()
+			b.requestTopologyBroadcast()
 		}
 	})
 }
@@ -342,17 +380,17 @@ func (b *SSEBroadcaster) registerContextSwitchCallback() {
 			},
 		})
 
-		// Broadcast the new topology so clients can complete the switch
-		// Run in goroutine to not block the context switch
+		// Broadcast the new topology so clients can complete the switch.
+		// Handed to the worker so the context switch isn't blocked on a build.
 		log.Printf("SSE broadcaster: scheduling topology broadcast")
-		go b.broadcastTopologyUpdate()
+		b.requestTopologyBroadcast()
 	})
 
 	k8s.OnNamespaceRescope(func(namespace string) {
 		log.Printf("SSE broadcaster: namespace cache rescoped to %q, clearing cached topology", k8s.SanitizeForLog(namespace))
 		resetCacheView()
 		log.Printf("SSE broadcaster: scheduling topology broadcast")
-		go b.broadcastTopologyUpdate()
+		b.requestTopologyBroadcast()
 	})
 }
 
@@ -584,7 +622,7 @@ func (b *SSEBroadcaster) watchResourceChanges() {
 		case <-debounceTimer.C:
 			if pendingUpdate {
 				pendingUpdate = false
-				b.broadcastTopologyUpdate()
+				b.requestTopologyBroadcast()
 			}
 		}
 	}
