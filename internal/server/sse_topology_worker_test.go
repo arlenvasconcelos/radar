@@ -210,6 +210,104 @@ func TestCleanCacheIsServedWithoutRebuilding(t *testing.T) {
 	}
 }
 
+// A build reads the process-global caches for seconds. If a kubeconfig context
+// switch lands while one is in flight, everything it produced describes the
+// cluster the user just left — so it must be dropped rather than cached, even
+// though it finished after the switch.
+func TestBuildFromThePreviousClusterIsNotCached(t *testing.T) {
+	b := NewSSEBroadcaster()
+
+	epoch := b.topoEpoch.Load() // what a build in flight would have captured
+	b.topoEpoch.Add(1)          // the switch lands
+
+	previousCluster := &topology.Topology{Nodes: []topology.Node{{ID: "old-cluster"}}}
+	if b.updateCachedTopology(previousCluster, epoch) {
+		t.Error("a build started before the context switch reported itself as cached")
+	}
+
+	b.cachedTopologyMu.RLock()
+	cached := b.cachedTopology
+	b.cachedTopologyMu.RUnlock()
+	if cached != nil {
+		t.Errorf("cached %v after a context switch; relationship lookups would answer from the previous cluster", cached)
+	}
+
+	// The new cluster's build still lands.
+	newCluster := &topology.Topology{Nodes: []topology.Node{{ID: "new-cluster"}}}
+	if !b.updateCachedTopology(newCluster, b.topoEpoch.Load()) {
+		t.Fatal("a build started after the switch was rejected too")
+	}
+}
+
+// Same rule on the wire: a cycle that started against the previous cluster must
+// not reach clients, or the UI shows the old cluster's graph after it has
+// already been told the context changed.
+func TestBroadcastFromThePreviousClusterIsNotPublished(t *testing.T) {
+	if k8s.GetResourceCache() == nil {
+		t.Fatal("package fixture cache missing")
+	}
+
+	b := NewSSEBroadcaster()
+	go b.run()
+	t.Cleanup(b.Stop)
+
+	ch := b.Subscribe(nil, "resources", nil, nil)
+	t.Cleanup(func() { b.Unsubscribe(ch) })
+	for range 100 {
+		if b.ClientCount() > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if b.ClientCount() == 0 {
+		t.Fatal("client never registered")
+	}
+
+	// Control: with no switch, this same cycle does publish. Without it the
+	// assertion below would hold for a broadcaster that never publishes at all.
+	b.broadcastTopologyUpdate()
+	if !drainForTopologyFrame(ch) {
+		t.Fatal("no topology frame published without a context switch; the test below would prove nothing")
+	}
+
+	// Hold the client registry so the cycle is provably mid-flight — it has
+	// captured its epoch and cannot yet have published — when the switch lands.
+	b.mu.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		b.broadcastTopologyUpdate()
+	}()
+	time.Sleep(50 * time.Millisecond)
+	b.topoEpoch.Add(1) // context switch
+	b.mu.Unlock()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("broadcast never finished")
+	}
+
+	if drainForTopologyFrame(ch) {
+		t.Fatal("published a topology frame built against the previous cluster; " +
+			"the UI would render it after context_changed")
+	}
+}
+
+func drainForTopologyFrame(ch chan SSEEvent) bool {
+	found := false
+	for {
+		select {
+		case event := <-ch:
+			if event.Event == "topology" {
+				found = true
+			}
+		default:
+			return found
+		}
+	}
+}
+
 func TestTopologyWorkerStopsWithBroadcaster(t *testing.T) {
 	b := NewSSEBroadcaster()
 

@@ -69,6 +69,14 @@ type SSEBroadcaster struct {
 	// delivered; past a few seconds per cycle the channel overflows on top of
 	// that and changes are lost outright.
 	topoTrigger chan struct{}
+
+	// topoEpoch counts resets of the cluster view (context switch, namespace
+	// rescope). A build reads the process-global caches for seconds, so one
+	// that started before a reset describes a cluster the UI has already left
+	// by the time it finishes. Every build captures the epoch up front and
+	// every publish re-checks it, so an in-flight build is discarded rather
+	// than shown or cached.
+	topoEpoch atomic.Uint64
 }
 
 // ClientInfo stores information about a connected client
@@ -345,6 +353,11 @@ func (b *SSEBroadcaster) registerContextSwitchCallback() {
 	})
 
 	resetCacheView := func() {
+		// Bump before clearing: a build already in flight against the previous
+		// cluster must fail its epoch check no matter where it is, including
+		// between this clear and its own write.
+		b.topoEpoch.Add(1)
+
 		// Clear cached topology and dirty flag for the old context
 		b.cachedTopologyMu.Lock()
 		b.cachedTopology = nil
@@ -396,6 +409,7 @@ func (b *SSEBroadcaster) registerContextSwitchCallback() {
 
 // initCachedTopology builds the initial topology cache
 func (b *SSEBroadcaster) initCachedTopology() {
+	epoch := b.topoEpoch.Load()
 	builder := topology.NewBuilder(k8s.NewTopologyResourceProvider(k8s.GetResourceCache())).WithDynamic(k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery()))
 	opts := topology.DefaultBuildOptions()
 	opts.ViewMode = topology.ViewModeResources
@@ -404,8 +418,9 @@ func (b *SSEBroadcaster) initCachedTopology() {
 	opts.ForRelationshipCache = true
 
 	if topo, err := builder.Build(opts); err == nil {
-		b.updateCachedTopology(topo)
-		log.Printf("Initialized topology cache with %d nodes and %d edges", len(topo.Nodes), len(topo.Edges))
+		if b.updateCachedTopology(topo, epoch) {
+			log.Printf("Initialized topology cache with %d nodes and %d edges", len(topo.Nodes), len(topo.Edges))
+		}
 	} else {
 		log.Printf("Warning: Failed to initialize topology cache: %v", err)
 	}
@@ -636,6 +651,11 @@ func (b *SSEBroadcaster) broadcastTopologyUpdate() {
 		return
 	}
 
+	// The cluster this cycle describes. A switch landing mid-cycle re-triggers
+	// the worker, so abandoning here costs nothing and keeps the previous
+	// cluster's graph off the wire.
+	epoch := b.topoEpoch.Load()
+
 	b.mu.RLock()
 	clients := make(map[chan SSEEvent]ClientInfo, len(b.clients))
 	maps.Copy(clients, b.clients)
@@ -669,10 +689,14 @@ func (b *SSEBroadcaster) broadcastTopologyUpdate() {
 		b.cachedTopologyMu.Unlock()
 	} else {
 		if fullTopo, err := buildFullTopology(); err == nil {
-			b.updateCachedTopology(fullTopo)
+			b.updateCachedTopology(fullTopo, epoch)
 		} else {
 			log.Printf("Error building full topology for cache: %v", err)
 		}
+	}
+
+	if b.topoEpoch.Load() != epoch {
+		return
 	}
 
 	builder := topology.NewBuilder(k8s.NewTopologyResourceProvider(k8s.GetResourceCache())).WithDynamic(k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery()))
@@ -713,6 +737,13 @@ func (b *SSEBroadcaster) broadcastTopologyUpdate() {
 	// next cycle's debounce ladder.
 	var maxEstimated int64
 	for key, group := range clientGroups {
+		// Re-checked per group, not just once: a cycle with many groups is
+		// many builds long, and every one after the switch is both wrong and
+		// time the new cluster's build spends waiting for this one to finish.
+		if b.topoEpoch.Load() != epoch {
+			return
+		}
+
 		opts := topology.DefaultBuildOptions()
 		opts.Namespaces = group.namespaces
 		if key.viewMode == "traffic" {
@@ -724,6 +755,9 @@ func (b *SSEBroadcaster) broadcastTopologyUpdate() {
 		if err != nil {
 			log.Printf("Error building topology for broadcast: %v", err)
 			continue
+		}
+		if b.topoEpoch.Load() != epoch {
+			return
 		}
 		topo.StripNodeKinds(group.deniedKinds)
 
@@ -1092,22 +1126,30 @@ func (b *SSEBroadcaster) rebuildCachedTopology() bool {
 	if cache == nil {
 		return false
 	}
+	epoch := b.topoEpoch.Load()
 	if fullTopo, err := buildFullTopology(); err == nil {
-		b.updateCachedTopology(fullTopo)
-		return true
+		// A rejected write leaves nothing cached for the new cluster, so the
+		// caller must re-dirty and let the next read rebuild against it.
+		return b.updateCachedTopology(fullTopo, epoch)
 	} else {
 		log.Printf("Error rebuilding topology cache on demand: %v", err)
 		return false
 	}
 }
 
-// updateCachedTopology stores a full topology for relationship lookups
-func (b *SSEBroadcaster) updateCachedTopology(topo *topology.Topology) {
+// updateCachedTopology stores a full topology for relationship lookups, unless
+// the cluster view was reset while it was being built. Reports whether it
+// stored.
+func (b *SSEBroadcaster) updateCachedTopology(topo *topology.Topology, epoch uint64) bool {
 	b.cachedTopologyMu.Lock()
 	defer b.cachedTopologyMu.Unlock()
+	if b.topoEpoch.Load() != epoch {
+		return false
+	}
 	b.cachedTopology = topo
 	b.cachedTopologyIndex = nil // rebuilt lazily on next relationship lookup
 	b.cachedTopologyDirty = false
+	return true
 }
 
 // buildFullTopology constructs a full topology (all namespaces, resources view)
