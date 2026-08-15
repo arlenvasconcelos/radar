@@ -13,7 +13,16 @@
 // full object through its own query, so the projection never reaches
 // renderers.
 
-export const LARGE_RESOURCE_LIST_LIMIT = 25000
+// 35,000 measured against the loadtest harness (50-60k synthetic pods,
+// summary projection): fetch 605ms / 457ms main-thread long tasks / 90MB JS
+// heap at this window — comfortably inside budget, with linear scaling and
+// no cliff up to 50k. Realistic-width pods land ~2x those figures.
+export const LARGE_RESOURCE_LIST_LIMIT = 35000
+
+// The bulk CPU/Memory columns are gated separately: /api/metrics/top/pods
+// returns one unwindowed entry per pod and got none of the summary-projection
+// slimming, so its threshold does not move with the list window.
+export const BULK_POD_METRICS_LIMIT = 25000
 
 export const LARGE_RESOURCE_LIST_GUARD_KEYS = new Set([
   'Pod',

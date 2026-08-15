@@ -22,7 +22,7 @@ import type { SelectedResource } from '../../types'
 import { kindToPlural, type NavigateToResource } from '../../utils/navigation'
 import { CreateResourceDialog } from '../shared/CreateResourceDialog'
 import { getSkeletonYaml } from '../../utils/skeleton-yaml'
-import { decideLargeListGuard, LARGE_RESOURCE_LIST_LIMIT, SUMMARY_LIST_KINDS } from './largeListGuard'
+import { BULK_POD_METRICS_LIMIT, decideLargeListGuard, LARGE_RESOURCE_LIST_LIMIT, SUMMARY_LIST_KINDS } from './largeListGuard'
 
 interface ResourceCountsResponse {
   counts: Record<string, number>
@@ -196,7 +196,7 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
   const podCount = countsData?.counts.Pod
   const podCountKnown = hasResourceCount(countsData?.counts, 'Pod')
   const podCountUnavailable = countsData?.unavailable?.includes('Pod') ?? false
-  const podCountAllowsBulkMetrics = countsData != null && podCountKnown && !podCountUnavailable && (podCount ?? 0) <= LARGE_RESOURCE_LIST_LIMIT
+  const podCountAllowsBulkMetrics = countsData != null && podCountKnown && !podCountUnavailable && (podCount ?? 0) <= BULK_POD_METRICS_LIMIT
   const selectedKindName = selectedKind?.name.toLowerCase() ?? ''
   const topPodMetricsEnabled = selectedKindName === 'pods' && podCountAllowsBulkMetrics
   // Node metrics back the Nodes table and, for the Pods table, the pod-vs-node

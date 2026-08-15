@@ -18,14 +18,16 @@ const base = {
 }
 
 describe('decideLargeListGuard', () => {
-  it('windows a guarded kind above the limit instead of refusing (the reported cluster: 29,455 pods)', () => {
-    const d = decideLargeListGuard({ ...base, count: 29455 })
+  it('windows a guarded kind above the limit instead of refusing', () => {
+    const d = decideLargeListGuard({ ...base, count: LARGE_RESOURCE_LIST_LIMIT + 1 })
     expect(d).toEqual({ guarded: true, waitingForCount: false, windowed: true })
   })
 
-  it('loads a guarded kind at or under the limit unwindowed', () => {
+  it('loads a guarded kind at or under the limit unwindowed (the reported cluster: 29,455 pods)', () => {
+    // The 35k window was measured against the loadtest harness; the #1303
+    // cluster fits entirely — no banner, no truncation.
+    expect(decideLargeListGuard({ ...base, count: 29455 }).windowed).toBe(false)
     expect(decideLargeListGuard({ ...base, count: LARGE_RESOURCE_LIST_LIMIT }).windowed).toBe(false)
-    expect(decideLargeListGuard({ ...base, count: 24000 }).windowed).toBe(false)
   })
 
   it('never windows unguarded kinds, whatever their count', () => {
