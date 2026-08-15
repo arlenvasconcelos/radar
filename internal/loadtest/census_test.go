@@ -17,6 +17,13 @@ import (
 // drift makes a comparison against the real cluster unsound.
 const maxCensusDrift = 0.0
 
+// unitTestCensusScale keeps this suite off the reported census. Every kind
+// materializes exactly the count it is given at any scale, so the property is
+// unchanged, whereas the reported census materializes 628k objects and about a
+// gigabyte of resident memory per run. Scale floors every declared kind at 1,
+// so scaling down drops no kind from the check.
+const unitTestCensusScale = 0.01
+
 func kindOf(obj runtime.Object) string {
 	t := fmt.Sprintf("%T", obj)
 	if i := strings.LastIndex(t, "."); i >= 0 {
@@ -34,14 +41,15 @@ func countByKind(objs []runtime.Object) map[string]int {
 }
 
 func TestCensusObjectsMatchDeclaredCounts(t *testing.T) {
-	objs := CensusObjects(LargeMultiTenantEKS, "")
+	census := LargeMultiTenantEKS.Scale(unitTestCensusScale)
+	objs := CensusObjects(census, "")
 	got := countByKind(objs)
 
-	if len(objs) != LargeMultiTenantEKS.Total() {
-		t.Errorf("materialized %d objects, census declares %d", len(objs), LargeMultiTenantEKS.Total())
+	if len(objs) != census.Total() {
+		t.Errorf("materialized %d objects, census declares %d", len(objs), census.Total())
 	}
 
-	for kind, want := range LargeMultiTenantEKS {
+	for kind, want := range census {
 		have := got[kind]
 		drift := float64(have-want) / float64(want) * 100
 		if drift < 0 {
@@ -53,7 +61,7 @@ func TestCensusObjectsMatchDeclaredCounts(t *testing.T) {
 	}
 
 	for kind, have := range got {
-		if _, declared := LargeMultiTenantEKS[kind]; !declared {
+		if _, declared := census[kind]; !declared {
 			t.Errorf("%s: materialized %d objects but the census declares none", kind, have)
 		}
 	}
