@@ -107,6 +107,11 @@ type censusLayout struct {
 	// its parent in topology instead of standing alone — so leaving Jobs as
 	// orphans inflates the graph.
 	cronJobs int
+	// serviceAccounts bounds which namespaces have an identity to run under.
+	// Workloads share one per namespace (see serviceAccountName), so this only
+	// bites on a census with fewer ServiceAccounts than namespaces — there the
+	// remainder must name nothing rather than a name nothing materializes.
+	serviceAccounts int
 }
 
 func newCensusLayout(c Census) censusLayout {
@@ -116,6 +121,8 @@ func newCensusLayout(c Census) censusLayout {
 		nodes:      max(c.get("Node"), 1),
 		configMaps: c.get("ConfigMap"),
 		cronJobs:   c.get("CronJob"),
+
+		serviceAccounts: c.get("ServiceAccount"),
 	}
 }
 
@@ -135,6 +142,22 @@ func (l censusLayout) cronJobNS(i int) string {
 }
 
 func (l censusLayout) hasConfigMap(app int) bool { return app%l.apps < l.configMaps }
+
+// serviceAccountName is the identity an app's pod template runs under. Apps
+// sharing a namespace share it, which is the real shape: a cluster holds far
+// fewer ServiceAccounts than workloads because most workloads run under their
+// namespace's default. Indexing it by namespace is also what makes it resolve —
+// censusServiceAccount places ServiceAccount i in app i's namespace, so a name
+// picked on any other axis lands in the wrong namespace, and topology's
+// (namespace, name) join then drops the edge as silently as a name nothing
+// materializes. Empty when the census is too small to cover the namespace.
+func (l censusLayout) serviceAccountName(app int) string {
+	index := l.nsIndex(app)
+	if index >= l.serviceAccounts {
+		return ""
+	}
+	return fmt.Sprintf("sa-%04d", index)
+}
 
 // Replica distribution. A census fixes totals, not shape, and shape is what
 // the graph is built from: topology renders each pod individually up to 5 per
@@ -178,7 +201,8 @@ func (l censusLayout) podName(i int) string {
 func (l censusLayout) podNS(i int) string {
 	return fmt.Sprintf("loadtest-%03d", l.podApp(i)%l.namespaces)
 }
-func (l censusLayout) ns(i int) string   { return fmt.Sprintf("loadtest-%03d", l.app(i)%l.namespaces) }
+func (l censusLayout) nsIndex(i int) int { return l.app(i) % l.namespaces }
+func (l censusLayout) ns(i int) string   { return fmt.Sprintf("loadtest-%03d", l.nsIndex(i)) }
 func (l censusLayout) node(i int) string { return fmt.Sprintf("loadtest-node-%03d", i%l.nodes) }
 
 func (l censusLayout) appName(i int) string { return fmt.Sprintf("app-%05d", l.app(i)) }
@@ -309,7 +333,7 @@ func censusNode(i int) *corev1.Node {
 func censusPodSpec(l censusLayout, i int, image string) corev1.PodSpec {
 	spec := corev1.PodSpec{
 		NodeName:           l.node(i),
-		ServiceAccountName: fmt.Sprintf("sa-%04d", l.app(i)%512),
+		ServiceAccountName: l.serviceAccountName(l.app(i)),
 		Containers: []corev1.Container{{
 			Name:  "app",
 			Image: image,

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -263,6 +264,83 @@ func TestCensusWorkloadConfigRefsResolve(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no pods materialized")
+	}
+}
+
+// Workload identity is joined by (namespace, name) like the config refs above,
+// so a name that resolves in the wrong namespace erases the ServiceAccount edge
+// class just as completely as a name nothing materializes.
+func TestCensusWorkloadServiceAccountRefsResolve(t *testing.T) {
+	tests := []struct {
+		name        string
+		census      Census
+		wantUnnamed bool
+	}{
+		// Enough ServiceAccounts for every namespace: nothing runs unnamed.
+		{
+			name:   "every namespace covered",
+			census: Census{"Namespace": 4, "Node": 2, "Deployment": 20, "Pod": 40, "ServiceAccount": 6},
+		},
+		// The real census has far more workloads than ServiceAccounts, and
+		// enough of them to wrap any fixed-modulus mapping.
+		{
+			name:   "more workloads than ServiceAccounts",
+			census: Census{"Namespace": 7, "Node": 2, "Deployment": 600, "Pod": 40, "ServiceAccount": 9},
+		},
+		// Fewer ServiceAccounts than namespaces: the uncovered ones must name
+		// nothing rather than a name that exists in someone else's namespace.
+		{
+			name:        "fewer ServiceAccounts than namespaces",
+			census:      Census{"Namespace": 4, "Node": 2, "Deployment": 20, "Pod": 40, "ServiceAccount": 2},
+			wantUnnamed: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			objs := CensusObjects(tt.census, "")
+
+			serviceAccounts := map[string]bool{}
+			for _, o := range objs {
+				if sa, ok := o.(*corev1.ServiceAccount); ok {
+					serviceAccounts[sa.Namespace+"/"+sa.Name] = true
+				}
+			}
+
+			// Both shapes topology reads an identity from: the workload's pod
+			// template and the running Pod.
+			type identity struct{ kind, id, namespace, serviceAccount string }
+			var identities []identity
+			for _, o := range objs {
+				switch v := o.(type) {
+				case *appsv1.Deployment:
+					identities = append(identities, identity{"Deployment", v.Name, v.Namespace, v.Spec.Template.Spec.ServiceAccountName})
+				case *corev1.Pod:
+					identities = append(identities, identity{"Pod", v.Name, v.Namespace, v.Spec.ServiceAccountName})
+				}
+			}
+
+			named, unnamed := 0, 0
+			for _, got := range identities {
+				if got.serviceAccount == "" {
+					unnamed++
+					continue
+				}
+				named++
+				if key := got.namespace + "/" + got.serviceAccount; !serviceAccounts[key] {
+					t.Errorf("%s %s/%s runs as ServiceAccount %q, which was never materialized in that namespace",
+						got.kind, got.namespace, got.id, key)
+				}
+			}
+
+			if named == 0 {
+				t.Fatal("nothing names a ServiceAccount; the edge class is absent from the measured graph")
+			}
+			if got := unnamed > 0; got != tt.wantUnnamed {
+				t.Errorf("workloads running unnamed = %v (%d of %d), want %v",
+					got, unnamed, len(identities), tt.wantUnnamed)
+			}
+		})
 	}
 }
 
