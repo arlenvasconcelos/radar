@@ -1,6 +1,7 @@
 package server
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -76,21 +77,82 @@ func TestRequestTopologyBroadcastDoesNotBlockWhileBuildInFlight(t *testing.T) {
 	}
 }
 
-func TestConcurrentTopologyRequestsCoalesce(t *testing.T) {
+// Every trigger source (debounce fire, context switch, CRD discovery,
+// connection state) can fire while a build runs. However many arrive, the
+// worker owes exactly one more build afterwards — not one per trigger, and not
+// zero.
+func TestConcurrentTopologyRequestsCoalesceIntoOneFollowUpBuild(t *testing.T) {
 	b := NewSSEBroadcaster()
-	release := blockWorker(t, b)
-	defer release()
 
-	// Every trigger source (debounce fire, context switch, CRD discovery,
-	// connection state) can fire while a build runs. They must collapse into a
-	// single pending request rather than each queueing another full build.
+	var builds atomic.Int64
+	started := make(chan struct{})
+	release := make(chan struct{})
+	b.topoBuild = func() bool {
+		if builds.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return true
+	}
+
+	go b.topologyWorker()
+	t.Cleanup(b.Stop)
+
+	b.requestTopologyBroadcast()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker never started the first build")
+	}
+
 	for range 50 {
 		b.requestTopologyBroadcast()
 	}
+	close(release)
 
-	if got := len(b.topoTrigger); got > 1 {
-		t.Errorf("pending topology requests = %d, want at most 1: concurrent triggers must coalesce", got)
+	waitFor(t, 2*time.Second, func() bool { return builds.Load() >= 2 })
+
+	// Give any surplus queued build time to run before declaring one.
+	time.Sleep(100 * time.Millisecond)
+	if got := builds.Load(); got != 2 {
+		t.Errorf("builds = %d, want 2 (the one in flight plus a single coalesced follow-up)", got)
 	}
+}
+
+// The worker consumes one token per cycle, and that token stands for every
+// request that coalesced into it. Dropping it because the cluster view happens
+// to be torn down strands the graph until something else triggers a build.
+func TestTriggerConsumedWhileClusterViewIsDownIsRetried(t *testing.T) {
+	b := NewSSEBroadcaster()
+
+	var attempts atomic.Int64
+	b.topoBuild = func() bool {
+		attempts.Add(1)
+		return false // cluster view unavailable
+	}
+	// The retry is skipped when nobody is watching, so register a client.
+	go b.run()
+	t.Cleanup(b.Stop)
+	ch := b.Subscribe(nil, "resources", nil, nil)
+	t.Cleanup(func() { b.Unsubscribe(ch) })
+	waitFor(t, 2*time.Second, func() bool { return b.ClientCount() > 0 })
+
+	go b.topologyWorker()
+
+	b.requestTopologyBroadcast()
+	waitFor(t, topologyRetryDelay*3, func() bool { return attempts.Load() >= 2 })
+}
+
+func waitFor(t *testing.T, limit time.Duration, done func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(limit)
+	for time.Now().Before(deadline) {
+		if done() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("condition not met within %v", limit)
 }
 
 // A relationship read is answered from the cluster as it is now, not as it was.
@@ -270,27 +332,61 @@ func TestBroadcastFromThePreviousClusterIsNotPublished(t *testing.T) {
 		t.Fatal("no topology frame published without a context switch; the test below would prove nothing")
 	}
 
-	// Hold the client registry so the cycle is provably mid-flight — it has
-	// captured its epoch and cannot yet have published — when the switch lands.
-	b.mu.Lock()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		b.broadcastTopologyUpdate()
-	}()
-	time.Sleep(50 * time.Millisecond)
-	b.topoEpoch.Add(1) // context switch
-	b.mu.Unlock()
-
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("broadcast never finished")
+	// The switch lands the instant the cycle captures its epoch, which is the
+	// worst case and the one a sleep can only approximate.
+	b.topoEpochAtCycleStart = func() uint64 {
+		epoch := b.topoEpoch.Load()
+		b.topoEpoch.Add(1)
+		return epoch
 	}
+
+	b.broadcastTopologyUpdate()
 
 	if drainForTopologyFrame(ch) {
 		t.Fatal("published a topology frame built against the previous cluster; " +
 			"the UI would render it after context_changed")
+	}
+}
+
+// A cycle that declines to store its graph must leave the cache dirty. Nil and
+// clean reads as "this cluster has no topology", which a relationship lookup
+// then answers with instead of rebuilding.
+func TestBroadcastRejectedForThePreviousClusterLeavesTheCacheDirty(t *testing.T) {
+	if k8s.GetResourceCache() == nil {
+		t.Fatal("package fixture cache missing")
+	}
+
+	b := NewSSEBroadcaster()
+	go b.run()
+	t.Cleanup(b.Stop)
+
+	ch := b.Subscribe(nil, "resources", nil, nil)
+	t.Cleanup(func() { b.Unsubscribe(ch) })
+	waitFor(t, 2*time.Second, func() bool { return b.ClientCount() > 0 })
+
+	// Past warmup, so the cycle builds the relationship cache rather than just
+	// flagging it.
+	b.watchMu.Lock()
+	close(b.warmupDone)
+	b.watchMu.Unlock()
+
+	b.topoEpochAtCycleStart = func() uint64 {
+		epoch := b.topoEpoch.Load()
+		b.topoEpoch.Add(1)
+		return epoch
+	}
+
+	b.broadcastTopologyUpdate()
+
+	b.cachedTopologyMu.RLock()
+	cached, dirty := b.cachedTopology, b.cachedTopologyDirty
+	b.cachedTopologyMu.RUnlock()
+
+	if cached != nil {
+		t.Error("stored a graph built for the previous cluster")
+	}
+	if !dirty {
+		t.Error("cache left clean and empty after a rejected write; a reader would be told the cluster has no topology")
 	}
 }
 
