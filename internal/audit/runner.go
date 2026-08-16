@@ -87,14 +87,20 @@ func collectTypedInput(cache *k8s.ResourceCache, namespaces []string) *bp.CheckI
 }
 
 func collectWorkloadInput(cache *k8s.ResourceCache, namespaces []string) *bp.CheckInput {
-	return &bp.CheckInput{
-		Pods:         listNamespaced(cache.Pods(), namespaces),
+	input := &bp.CheckInput{
 		Deployments:  listNamespaced(cache.Deployments(), namespaces),
 		StatefulSets: listNamespaced(cache.StatefulSets(), namespaces),
 		DaemonSets:   listNamespaced(cache.DaemonSets(), namespaces),
 		Jobs:         listNamespaced(cache.Jobs(), namespaces),
 		CronJobs:     listNamespaced(cache.CronJobs(), namespaces),
 	}
+	// isEnabled-gated lister is non-nil over an empty store while the
+	// delayed/promoted Pod LIST is in flight. Nil skips pod checks and
+	// lands in MissingInputs instead of "zero pods" findings.
+	if !cache.IsDeferredPending(k8score.Pods) {
+		input.Pods = listNamespaced(cache.Pods(), namespaces)
+	}
+	return input
 }
 
 // listCrossplaneDynamic enumerates the dynamic cache's already-watching

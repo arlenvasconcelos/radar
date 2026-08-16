@@ -1167,7 +1167,8 @@ func typedObjectToUnstructured(obj runtime.Object, gvr schema.GroupVersionResour
 // through to the dynamic cache.
 //
 // The deferred check runs BEFORE the lister read: several deferred kinds
-// (ServiceAccounts, ReplicaSets, HPAs, LimitRanges, ResourceQuotas) expose
+// (ServiceAccounts, ReplicaSets, HPAs, LimitRanges, ResourceQuotas) and
+// kinds promoted off the critical path (Pods after first paint) expose
 // a non-nil lister as soon as they're enabled, so during the warmup window
 // they'd otherwise serve empty stores as confident NotFound/empty results.
 // After it, a nil-lister "forbidden" error can only mean the RBAC probe

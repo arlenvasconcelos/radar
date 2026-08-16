@@ -2058,8 +2058,8 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 	// Try typed cache for known resource types first
 	switch kind {
 	case "pods":
-		if cache.Pods() == nil {
-			forbiddenMsg("pods")
+		if cache.IsDeferredPending("pods") || cache.Pods() == nil {
+			notReadyOrForbidden("pods")
 			return
 		}
 		result, err = listPerNs(
@@ -2532,8 +2532,8 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 	// Try typed cache for known resource types first
 	switch kind {
 	case "pods", "pod":
-		if cache.Pods() == nil {
-			forbiddenGet("pods")
+		if cache.IsDeferredPending("pods") || cache.Pods() == nil {
+			notReadyOrForbiddenGet("pods")
 			return
 		}
 		resource, err = cache.Pods().Pods(namespace).Get(name)

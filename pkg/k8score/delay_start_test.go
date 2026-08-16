@@ -149,6 +149,15 @@ func TestDelayStart_FirstPaintDoesNotWaitForPods(t *testing.T) {
 	if rc.Services() == nil || rc.Deployments() == nil {
 		t.Error("expected wave-1 listers available at first paint")
 	}
+
+	// Lister is isEnabled-gated — non-nil over an empty store. Handlers
+	// must see pending so they return 503 instead of 404 / empty 200.
+	if rc.Pods() == nil {
+		t.Fatal("Pods() must stay non-nil while the delayed LIST is in flight")
+	}
+	if !rc.IsDeferredPending(Pods) {
+		t.Fatal("promoted Pod LIST must be IsDeferredPending so REST/audit do not treat the empty store as truth")
+	}
 }
 
 // TestDelayStart_FastPathNoPatienceRegression: small cluster, everything
@@ -179,6 +188,9 @@ func TestDelayStart_FastPathNoPatienceRegression(t *testing.T) {
 	}
 	if rc.Pods() == nil {
 		t.Error("expected Pods() lister after fast-path sync")
+	}
+	if rc.IsDeferredPending(Pods) {
+		t.Error("Pods synced on the fast path; IsDeferredPending must be false")
 	}
 }
 

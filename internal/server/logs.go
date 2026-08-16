@@ -55,6 +55,10 @@ func (s *Server) handlePodLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if cache.IsDeferredPending(k8score.Pods) || cache.Pods() == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "pods are still loading, please retry shortly")
+		return
+	}
 	pod, err := cache.Pods().Pods(namespace).Get(podName)
 	if err != nil {
 		s.writeError(w, http.StatusNotFound, fmt.Sprintf("Pod not found: %v", err))
@@ -143,7 +147,7 @@ func (s *Server) handlePodLogsStream(w http.ResponseWriter, r *http.Request) {
 	// If no container specified, get the first one
 	if container == "" {
 		cache := k8s.GetResourceCache()
-		if cache != nil {
+		if cache != nil && !cache.IsDeferredPending(k8score.Pods) && cache.Pods() != nil {
 			pod, err := cache.Pods().Pods(namespace).Get(podName)
 			if err == nil && len(pod.Spec.Containers) > 0 {
 				container = pod.Spec.Containers[0].Name

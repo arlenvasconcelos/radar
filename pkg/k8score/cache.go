@@ -1900,8 +1900,12 @@ func (rc *ResourceCache) isReady(key string) bool {
 // IsDeferredPending returns true when the resource type passed RBAC checks
 // (informer is enabled) but deferred sync has not completed yet. Callers
 // can use this to distinguish "no permission" (return 403) from "not ready
-// yet" (return 503) when a lister returns nil.
-// Returns false once deferred sync has permanently failed (avoids infinite spinner).
+// yet" (return 503) when a lister returns nil — or when a lister is
+// isEnabled-gated and non-nil over an unsynced store (promoted kinds).
+//
+// Originally-deferred types and kinds promoted off the critical path
+// (DelayStart / patience) both land in deferredSynced. Returns false
+// once deferred sync has permanently failed (avoids infinite spinner).
 func (rc *ResourceCache) IsDeferredPending(key string) bool {
 	if rc == nil {
 		return false
@@ -1909,13 +1913,17 @@ func (rc *ResourceCache) IsDeferredPending(key string) bool {
 	if !rc.isEnabled(key) {
 		return false
 	}
-	if rc.config.DeferredTypes == nil || !rc.config.DeferredTypes[key] {
-		return false
-	}
 	if rc.deferredFailed.Load() {
 		return false
 	}
 	rc.deferredMu.RLock()
 	defer rc.deferredMu.RUnlock()
-	return !rc.deferredSynced[key]
+	if rc.deferredSynced == nil {
+		return rc.config.DeferredTypes[key]
+	}
+	synced, tracked := rc.deferredSynced[key]
+	if !tracked {
+		return false
+	}
+	return !synced
 }
