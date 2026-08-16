@@ -26,8 +26,11 @@ import (
 // (#1408) cut the build enough that they now fit. The stall itself is the thing
 // under test — no change is delivered while it lasts, overflow or not.
 //
-// Scale defaults low enough for CI. RADAR_CENSUS_SCALE=1.0 reproduces the
-// reported census (628k objects) — slow and memory hungry.
+// Scale defaults low enough for CI, where the build is milliseconds and the
+// derived arrival count is a handful of changes — at that scale this is a smoke
+// test that the comparison still runs, not a measurement of anything.
+// RADAR_CENSUS_SCALE=1.0 reproduces the reported census (628k objects) and the
+// numbers in the commit message; it is slow and memory hungry.
 func TestMeasureConsumerStallPerDebounceFire(t *testing.T) {
 	if testing.Short() {
 		t.Skip("measurement test; runs full topology builds")
@@ -48,11 +51,16 @@ func TestMeasureConsumerStallPerDebounceFire(t *testing.T) {
 	)
 
 	census := loadtest.LargeMultiTenantEKS.Scale(scale)
-	client := fake.NewSimpleClientset(loadtest.CensusObjects(census, "registry.example/app:v1")...)
+	client := fake.NewClientset(loadtest.CensusObjects(census, "registry.example/app:v1")...)
+	// Init swaps the global without stopping what was there, so the caches are
+	// stopped explicitly on the way in and out. Otherwise the census informers
+	// and their objects stay resident for the rest of the package's run.
+	k8s.ResetResourceCache()
 	if err := k8s.InitTestResourceCache(client); err != nil {
 		t.Fatalf("init census-shaped resource cache: %v", err)
 	}
 	t.Cleanup(func() {
+		k8s.ResetResourceCache()
 		if err := k8s.InitTestResourceCache(testFakeClient); err != nil {
 			t.Fatalf("restore package fixture cache: %v", err)
 		}
