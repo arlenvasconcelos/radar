@@ -39,6 +39,11 @@ import (
 var (
 	testServer    *httptest.Server
 	testServerSrv *Server
+	// testFakeClient lets individual tests seed extra fixtures at runtime
+	// (created objects propagate to the shared informer cache); tests that
+	// add fixtures must delete them before returning so the shared state
+	// stays what TestMain seeded.
+	testFakeClient *fake.Clientset
 )
 
 func TestMain(m *testing.M) {
@@ -342,6 +347,8 @@ func TestMain(m *testing.M) {
 			}},
 		},
 	)
+
+	testFakeClient = fakeClient
 
 	// Initialize cache from fake client (bypasses RBAC checks)
 	if err := k8s.InitTestResourceCache(fakeClient); err != nil {

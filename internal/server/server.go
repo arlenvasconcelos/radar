@@ -2352,8 +2352,13 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Both, because the switch's default arm serves CRDs (and EndpointSlices)
+	// off the dynamic cache: unstructured items reach this exit and need the
+	// prune profiles, while typed items need the projections. Each helper
+	// ignores the shape it doesn't own.
 	if includeSummary {
 		result = applySummaryStrip(result)
+		result = applyTypedSummary(result)
 	}
 	s.writeJSON(w, result)
 }
