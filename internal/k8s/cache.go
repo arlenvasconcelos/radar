@@ -63,7 +63,7 @@ var initialSyncComplete bool
 // deferredResources lists informer keys that are NOT required for the initial
 // dashboard render. These sync in the background after the critical informers
 // complete, so the UI can render immediately with core resources.
-// Critical: pods, deployments, services, statefulsets, daemonsets, nodes, namespaces, ingresses, jobs, cronjobs.
+// Critical: pods, deployments, services, statefulsets, daemonsets, nodes, namespaces.
 var deferredResources = map[string]bool{
 	"secrets":                  true,
 	"events":                   true,
@@ -78,6 +78,17 @@ var deferredResources = map[string]bool{
 	"serviceaccounts":          true, // audit inheritance lookups, not first-render
 	"limitranges":              true, // audit inheritance lookups, not first-render
 	"resourcequotas":           true, // scheduling/admission diagnostics, not first-render
+	// None of the three below gates the first-paint minimal set
+	// (pods/services/deployments/nodes/namespaces), and at large-cluster
+	// scale (a measured shape: 17k Ingresses, 20k Jobs, 4k CronJobs) they
+	// are among the heaviest LISTs, streaming over the same HTTP/2
+	// connection as the Pod LIST during exactly the window that decides
+	// time to first paint. Deferring them trades seconds of lag on their
+	// own views for first paint on large clusters; on small clusters they
+	// sync within a second of phase 1 either way.
+	"ingresses": true,
+	"jobs":      true,
+	"cronjobs":  true,
 }
 
 // minimalFirstPaintSet is the subset of critical informers the home
