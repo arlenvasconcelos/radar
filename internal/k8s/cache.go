@@ -81,17 +81,24 @@ var deferredResources = map[string]bool{
 }
 
 // minimalFirstPaintSet is the subset of critical informers the home
-// dashboard needs to feel coherent. Pods are included despite being
-// typically the largest kind — without pods the topology graph and
-// resource counts are empty. The patience window absorbs pod-sync
-// latency on healthy clusters; on slow ones, the user sees a working
-// home view sooner with a "still loading" hint for the rest.
+// dashboard needs to feel coherent. Pods are deliberately excluded:
+// they are the fattest LIST on large clusters and are started in a
+// second wave (delayStartFirstPaint) once these kinds have synced, so
+// first paint is not gated on the Pod LIST. Home shows empty pod
+// counts until that LIST lands; PartialData lists Pod as still loading.
 var minimalFirstPaintSet = map[string]bool{
-	"pods":        true,
 	"namespaces":  true,
 	"nodes":       true,
 	"services":    true,
 	"deployments": true,
+}
+
+// delayStartFirstPaint kinds stay critical but their LIST does not start
+// until minimalFirstPaintSet has synced. Pods are the only member: on
+// large clusters they are tens of thousands of objects and starve
+// Service/Deployment on the shared HTTP/2 connection if started at t=0.
+var delayStartFirstPaint = map[string]bool{
+	"pods": true,
 }
 
 // firstPaintPatience is how long we wait for ALL critical informers before
@@ -372,6 +379,7 @@ func InitResourceCache(ctx context.Context) error {
 			TimingLogger:            logTiming,
 			PatienceWindow:          firstPaintPatience,
 			MinimalSet:              minimalFirstPaintSet,
+			DelayStart:              delayStartFirstPaint,
 			SyncTimeout:             FirstPaintBackstop,
 			SyncProgress:            emitSyncProgress,
 			DeferredSyncTimeout:     3 * time.Minute,

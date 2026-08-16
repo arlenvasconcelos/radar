@@ -222,6 +222,14 @@ type CacheConfig struct {
 	// that are deferred or absent are ignored.
 	MinimalSet map[string]bool
 
+	// DelayStart lists critical kinds whose initial LIST is held until
+	// MinimalSet has synced. Used to keep a high-cardinality kind (Pods)
+	// off the HTTP/2 connection that first paint is waiting on. Ignored
+	// when PatienceWindow/MinimalSet are unset, when the kind is already
+	// deferred, or when the kind is also in MinimalSet (that combination
+	// would deadlock first paint).
+	DelayStart map[string]bool
+
 	// SyncProgress is invoked roughly every second during the critical
 	// sync phase, and once more when first paint is ready. `synced` and
 	// `total` count critical informers; `minimalReady` is true when the

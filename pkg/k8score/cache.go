@@ -350,6 +350,7 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 	cfg.ResourceScopeNamespaces = cloneScopeNamespaces(cfg.ResourceScopeNamespaces)
 	cfg.DeferredTypes = maps.Clone(cfg.DeferredTypes)
 	cfg.MinimalSet = maps.Clone(cfg.MinimalSet)
+	cfg.DelayStart = maps.Clone(cfg.DelayStart)
 
 	// Derive a per-kind scope view that captures both modes:
 	//   - ResourceScopes (when set) is authoritative.
@@ -481,11 +482,12 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 	// Track per-informer sync status, HasSynced funcs, and the informer
 	// handle (needed for staggered start).
 	type informerEntry struct {
-		kind     string
-		key      string
-		deferred bool
-		synced   cache.InformerSynced
-		run      func(stopCh <-chan struct{})
+		kind       string
+		key        string
+		deferred   bool
+		delayStart bool
+		synced     cache.InformerSynced
+		run        func(stopCh <-chan struct{})
 	}
 	var allEntries []informerEntry
 
@@ -589,7 +591,12 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 		}
 
 		isDeferred := deferredTypes[s.key]
-		entry := informerEntry{kind: s.kind, key: s.key, deferred: isDeferred, synced: synced, run: run}
+		// DelayStart only applies on the patience+minimal-set path, and
+		// never to a kind that also gates first paint (that deadlocks:
+		// paint waits for a LIST that never starts).
+		delayStart := !isDeferred && cfg.DelayStart[s.key] &&
+			cfg.PatienceWindow > 0 && len(cfg.MinimalSet) > 0 && !cfg.MinimalSet[s.key]
+		entry := informerEntry{kind: s.kind, key: s.key, deferred: isDeferred, delayStart: delayStart, synced: synced, run: run}
 		allEntries = append(allEntries, entry)
 
 		if isDeferred && s.isEvent {
@@ -621,23 +628,38 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 		return rc, nil
 	}
 
-	// Start critical informers first. Deferred informers are started after
-	// Phase 1 completes to reduce concurrent LIST pressure on the API server.
-	// On large clusters (300+ nodes), ~10 concurrent LISTs is significantly
-	// lighter than ~19, giving the heaviest resource (Pods) more API server
-	// bandwidth during the critical path.
+	// Start critical informers first. DelayStart kinds (Pods) wait until
+	// the first-paint set has synced so their LIST does not share the
+	// HTTP/2 connection with Service/Deployment. Deferred informers start
+	// after Phase 1.
+	var delayedKinds []string
+	var wave1Kinds []string
 	for _, e := range allEntries {
-		if !e.deferred {
-			go e.run(stopCh)
+		if e.deferred {
+			continue
 		}
+		if e.delayStart {
+			delayedKinds = append(delayedKinds, e.kind)
+			continue
+		}
+		wave1Kinds = append(wave1Kinds, e.kind)
+		go e.run(stopCh)
+	}
+	if overlap := delayStartMinimalOverlap(cfg.DelayStart, cfg.MinimalSet); len(overlap) > 0 {
+		stdlog.Printf("WARNING: DelayStart kinds also in MinimalSet (not delayed, would deadlock first paint): %s",
+			strings.Join(overlap, ", "))
+	}
+	if len(delayedKinds) > 0 {
+		stdlog.Printf("Delaying %s LIST until first-paint wave 1 syncs (%s)",
+			strings.Join(delayedKinds, ", "), strings.Join(wave1Kinds, ", "))
 	}
 
 	if len(backgroundKeys) > 0 {
-		stdlog.Printf("Starting resource cache: %d critical + %d deferred + %d background informers (%d total)",
-			len(criticalSyncFuncs), len(deferredSyncFuncs), len(backgroundSyncFuncs), enabledCount)
+		stdlog.Printf("Starting resource cache: %d critical + %d deferred + %d background informers (%d total, delayed start: %d)",
+			len(criticalSyncFuncs), len(deferredSyncFuncs), len(backgroundSyncFuncs), enabledCount, len(delayedKinds))
 	} else {
-		stdlog.Printf("Starting resource cache: %d critical + %d deferred informers (%d total, deferred start after critical sync)",
-			len(criticalSyncFuncs), len(deferredSyncFuncs), enabledCount)
+		stdlog.Printf("Starting resource cache: %d critical + %d deferred informers (%d total, delayed start: %d)",
+			len(criticalSyncFuncs), len(deferredSyncFuncs), enabledCount, len(delayedKinds))
 	}
 	syncStart := time.Now()
 	rc.syncStartTime = syncStart
@@ -660,8 +682,14 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 			tag := "critical"
 			if entry.deferred {
 				tag = "deferred"
+			} else if entry.delayStart {
+				tag = "delayed"
 			}
 			logf("    Informer synced: %-28s %v (%s)", entry.kind, time.Since(t), tag)
+			if entry.delayStart {
+				stdlog.Printf("Delayed %s LIST synced in %v (%d items) — first-paint was not gated on this kind",
+					entry.kind, time.Since(t), rc.GetKindObjectCounts()[entry.kind])
+			}
 			rc.informerMu.Lock()
 			rc.informerStatuses[idx].Synced = true
 			rc.informerStatuses[idx].SyncedAt = time.Now().Format(time.RFC3339)
@@ -682,6 +710,31 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 	useMinimalSet := cfg.PatienceWindow > 0 && len(cfg.MinimalSet) > 0
 	timedOut := false
 	patienceElapsed := false
+
+	var delayedEntries []informerEntry
+	for _, e := range allEntries {
+		if e.delayStart {
+			delayedEntries = append(delayedEntries, e)
+		}
+	}
+	delayedStarted := false
+	var delayedStartedAt time.Time
+	startDelayed := func(reason string) {
+		if delayedStarted || len(delayedEntries) == 0 {
+			return
+		}
+		delayedStarted = true
+		delayedStartedAt = time.Now()
+		var names []string
+		for _, e := range delayedEntries {
+			names = append(names, e.kind)
+			go e.run(stopCh)
+		}
+		stdlog.Printf("Starting delayed LIST (%s) after %v — %s — wave 1 counts: %s",
+			reason, time.Since(syncStart), strings.Join(names, ", "),
+			formatKindCounts(rc.GetKindObjectCounts(), wave1Kinds))
+	}
+
 	if len(criticalSyncFuncs) > 0 {
 		// Build the index of "must-sync" entries for the minimal-set check.
 		// Filter to entries that are critical AND in MinimalSet (deferred
@@ -775,6 +828,10 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 		}
 
 		for {
+			if !delayedStarted && useMinimalSet && minimalReady() {
+				startDelayed("wave 1 ready")
+			}
+
 			allSynced := true
 			for _, fn := range criticalSyncFuncs {
 				if !fn() {
@@ -829,6 +886,22 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 							len(synced), len(synced)+len(pendingParts), time.Since(syncStart).Seconds(), strings.Join(pendingParts, ", "))
 					}
 				}
+				if len(delayedEntries) > 0 && !delayedStarted {
+					stdlog.Printf("Delayed LIST not started (%.0fs elapsed) — waiting for wave 1: %s",
+						time.Since(syncStart).Seconds(), strings.Join(minimalPending, ", "))
+				} else if delayedStarted {
+					var delayedPending []string
+					for _, e := range delayedEntries {
+						if !e.synced() {
+							delayedPending = append(delayedPending, fmt.Sprintf("%s(%d)", e.kind, counts[e.kind]))
+						}
+					}
+					if len(delayedPending) > 0 {
+						stdlog.Printf("Delayed LIST in flight (%.0fs since start, %.0fs since LIST began) — pending: %s",
+							time.Since(syncStart).Seconds(), time.Since(delayedStartedAt).Seconds(),
+							strings.Join(delayedPending, ", "))
+					}
+				}
 				emitProgress(useMinimalSet && patienceElapsed && minimalReady())
 			default:
 				time.Sleep(100 * time.Millisecond)
@@ -838,6 +911,10 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 			}
 		}
 	}
+
+	// If Phase 1 exited before wave 1 was ready (timeout), still start
+	// the delayed LIST so Pods are not left unwatched.
+	startDelayed("phase 1 complete")
 
 	// Reclassify any critical informer still pending as deferred so the
 	// cache can return. No-op on the all-synced path.
@@ -863,8 +940,13 @@ func NewResourceCache(cfg CacheConfig) (*ResourceCache, error) {
 			len(criticalSyncFuncs), len(promoted), time.Since(syncStart))
 		rc.promotedKinds = promoted
 	case patienceElapsed && len(promoted) > 0:
-		stdlog.Printf("First-paint ready after %v: minimal set synced; %d slower informers continue in background: %s",
-			time.Since(syncStart), len(promoted), strings.Join(promoted, ", "))
+		delayedNote := ""
+		if delayedStarted && !delayedStartedAt.IsZero() {
+			delayedNote = fmt.Sprintf("; delayed LIST began %v after start", delayedStartedAt.Sub(syncStart))
+		}
+		stdlog.Printf("First-paint ready after %v: wave 1 synced %s; %d slower informers continue in background: %s%s",
+			time.Since(syncStart), formatKindCounts(rc.GetKindObjectCounts(), wave1Kinds),
+			len(promoted), strings.Join(promoted, ", "), delayedNote)
 		logf("    Phase 1 minimal-set sync (%d/%d critical, %d still loading): %v",
 			len(criticalSyncFuncs)-len(promoted), len(criticalSyncFuncs), len(promoted), time.Since(syncStart))
 		rc.promotedKinds = promoted
@@ -1751,6 +1833,31 @@ func (kl kindLister) CountKey() string {
 
 // GetKindObjectCounts returns the number of cached objects per resource kind.
 // Only includes kinds that are enabled. Returns nil if cache is nil.
+func delayStartMinimalOverlap(delayStart, minimal map[string]bool) []string {
+	if len(delayStart) == 0 || len(minimal) == 0 {
+		return nil
+	}
+	var overlap []string
+	for k := range delayStart {
+		if minimal[k] {
+			overlap = append(overlap, k)
+		}
+	}
+	sort.Strings(overlap)
+	return overlap
+}
+
+func formatKindCounts(counts map[string]int, kinds []string) string {
+	if len(kinds) == 0 {
+		return "(none)"
+	}
+	parts := make([]string, 0, len(kinds))
+	for _, kind := range kinds {
+		parts = append(parts, fmt.Sprintf("%s(%d)", kind, counts[kind]))
+	}
+	return strings.Join(parts, " ")
+}
+
 func (rc *ResourceCache) GetKindObjectCounts() map[string]int {
 	if rc == nil {
 		return nil
