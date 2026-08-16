@@ -2353,6 +2353,7 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if includeSummary {
+		result = summarizeTypedList(kind, result)
 		result = applySummaryStrip(result)
 	}
 	s.writeJSON(w, result)
