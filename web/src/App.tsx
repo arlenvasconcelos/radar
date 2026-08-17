@@ -1140,9 +1140,15 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     },
     onConnectionStateChange: updateConnectionFromSSE,
     onDeferredReady: () => {
-      // Deferred informers (secrets, events, configmaps, etc.) have finished syncing.
-      // Refetch dashboard so counts, warning events, and cert health fill in.
+      // Deferred informers (secrets, events, configmaps, ingresses, jobs,
+      // cronjobs) have finished syncing. Refetch dashboard so counts, warning
+      // events, and cert health fill in — plus the resource lists and their
+      // counts: a list opened during warmup got a 503 and the initial store
+      // load emits no k8s_event, so nothing else would ever refetch it before
+      // the 2-minute safety poll.
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      queryClient.invalidateQueries({ queryKey: ['resources'] })
+      queryClient.invalidateQueries({ queryKey: ['resource-counts'] })
     },
     onK8sEvent: handleK8sEvent,
   }, forceNamespaceFilter, showPolicyEffect)

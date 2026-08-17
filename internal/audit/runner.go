@@ -75,7 +75,13 @@ func RunFromCache(cache *k8s.ResourceCache, namespaces []string, opts *RunOption
 func collectTypedInput(cache *k8s.ResourceCache, namespaces []string) *bp.CheckInput {
 	input := collectWorkloadInput(cache, namespaces)
 	input.Services = listNamespaced(cache.Services(), namespaces)
-	input.Ingresses = listNamespaced(cache.Ingresses(), namespaces)
+	// Ingresses/Jobs/CronJobs are deferred but keep a non-nil lister while their
+	// store warms, so listNamespaced can't tell "none exist" from "not loaded
+	// yet". Leaving the field nil routes them to MissingInputs instead of
+	// reporting a warming cluster as passing every Ingress/Job check.
+	if !cache.IsDeferredPending(k8score.Ingresses) {
+		input.Ingresses = listNamespaced(cache.Ingresses(), namespaces)
+	}
 	input.HorizontalPodAutoscalers = listNamespaced(cache.HorizontalPodAutoscalers(), namespaces)
 	input.PodDisruptionBudgets = listNamespaced(cache.PodDisruptionBudgets(), namespaces)
 	input.ConfigMaps = listNamespaced(cache.ConfigMaps(), namespaces)
@@ -87,14 +93,19 @@ func collectTypedInput(cache *k8s.ResourceCache, namespaces []string) *bp.CheckI
 }
 
 func collectWorkloadInput(cache *k8s.ResourceCache, namespaces []string) *bp.CheckInput {
-	return &bp.CheckInput{
+	input := &bp.CheckInput{
 		Pods:         listNamespaced(cache.Pods(), namespaces),
 		Deployments:  listNamespaced(cache.Deployments(), namespaces),
 		StatefulSets: listNamespaced(cache.StatefulSets(), namespaces),
 		DaemonSets:   listNamespaced(cache.DaemonSets(), namespaces),
-		Jobs:         listNamespaced(cache.Jobs(), namespaces),
-		CronJobs:     listNamespaced(cache.CronJobs(), namespaces),
 	}
+	if !cache.IsDeferredPending(k8score.Jobs) {
+		input.Jobs = listNamespaced(cache.Jobs(), namespaces)
+	}
+	if !cache.IsDeferredPending(k8score.CronJobs) {
+		input.CronJobs = listNamespaced(cache.CronJobs(), namespaces)
+	}
+	return input
 }
 
 // listCrossplaneDynamic enumerates the dynamic cache's already-watching

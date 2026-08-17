@@ -1993,6 +1993,10 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 	// notReadyOrForbidden returns 503 when a deferred resource is still syncing,
 	// or 403 when RBAC denied access. Callers use this for deferred resource types
 	// (configmaps, secrets, events, etc.) where a nil lister can mean either case.
+	// Deferred kinds whose lister is gated on isEnabled rather than isReady
+	// (ingresses, jobs, cronjobs) hand back a non-nil lister over a store that
+	// has not synced yet, so those callers must test IsDeferredPending BEFORE the
+	// nil check — otherwise a warming store answers as an authoritative empty list.
 	notReadyOrForbidden := func(resourceKind string) {
 		if cache.IsDeferredPending(resourceKind) {
 			s.writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("%s are still loading, please retry shortly", resourceKind))
@@ -2114,8 +2118,8 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 			func(ns string) (any, error) { return cache.ReplicaSets().ReplicaSets(ns).List(labels.Everything()) },
 		)
 	case "ingresses":
-		if cache.Ingresses() == nil {
-			forbiddenMsg("ingresses")
+		if cache.IsDeferredPending("ingresses") || cache.Ingresses() == nil {
+			notReadyOrForbidden("ingresses")
 			return
 		}
 		result, err = listPerNs(
@@ -2192,8 +2196,8 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 		}
 		result, err = cache.ClusterRoleBindings().List(labels.Everything())
 	case "jobs":
-		if cache.Jobs() == nil {
-			forbiddenMsg("jobs")
+		if cache.IsDeferredPending("jobs") || cache.Jobs() == nil {
+			notReadyOrForbidden("jobs")
 			return
 		}
 		result, err = listPerNs(
@@ -2201,8 +2205,8 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 			func(ns string) (any, error) { return cache.Jobs().Jobs(ns).List(labels.Everything()) },
 		)
 	case "cronjobs":
-		if cache.CronJobs() == nil {
-			forbiddenMsg("cronjobs")
+		if cache.IsDeferredPending("cronjobs") || cache.CronJobs() == nil {
+			notReadyOrForbidden("cronjobs")
 			return
 		}
 		result, err = listPerNs(
@@ -2476,7 +2480,10 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusForbidden, fmt.Sprintf("insufficient permissions to access %s", resourceKind))
 	}
 
-	// notReadyOrForbiddenGet is the single-resource counterpart of notReadyOrForbidden (see handleListResources).
+	// notReadyOrForbiddenGet is the single-resource counterpart of notReadyOrForbidden
+	// (see handleListResources for why isEnabled-gated deferred kinds must test
+	// IsDeferredPending before the nil check — here a warming store would otherwise
+	// answer a live resource with a confident 404).
 	notReadyOrForbiddenGet := func(resourceKind string) {
 		if cache.IsDeferredPending(resourceKind) {
 			s.writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("%s are still loading, please retry shortly", resourceKind))
@@ -2568,8 +2575,8 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 		}
 		resource, err = cache.ReplicaSets().ReplicaSets(namespace).Get(name)
 	case "ingresses", "ingress":
-		if cache.Ingresses() == nil {
-			forbiddenGet("ingresses")
+		if cache.IsDeferredPending("ingresses") || cache.Ingresses() == nil {
+			notReadyOrForbiddenGet("ingresses")
 			return
 		}
 		resource, err = cache.Ingresses().Ingresses(namespace).Get(name)
@@ -2605,14 +2612,14 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 		}
 		resource, err = cache.HorizontalPodAutoscalers().HorizontalPodAutoscalers(namespace).Get(name)
 	case "jobs", "job":
-		if cache.Jobs() == nil {
-			forbiddenGet("jobs")
+		if cache.IsDeferredPending("jobs") || cache.Jobs() == nil {
+			notReadyOrForbiddenGet("jobs")
 			return
 		}
 		resource, err = cache.Jobs().Jobs(namespace).Get(name)
 	case "cronjobs", "cronjob":
-		if cache.CronJobs() == nil {
-			forbiddenGet("cronjobs")
+		if cache.IsDeferredPending("cronjobs") || cache.CronJobs() == nil {
+			notReadyOrForbiddenGet("cronjobs")
 			return
 		}
 		resource, err = cache.CronJobs().CronJobs(namespace).Get(name)
