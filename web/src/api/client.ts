@@ -373,11 +373,6 @@ export interface DashboardChange {
   timestamp: string;
 }
 
-export interface DashboardTopologySummary {
-  nodeCount: number;
-  edgeCount: number;
-}
-
 export interface DashboardTopFlow {
   src: string;
   dst: string;
@@ -543,7 +538,6 @@ export interface DashboardResponse {
   problems: DashboardProblem[]
   resourceCounts: DashboardResourceCounts
   recentChanges: DashboardChange[]
-  topologySummary: DashboardTopologySummary
   trafficSummary: DashboardTrafficSummary | null
   metrics: DashboardMetrics | null
   metricsServerAvailable: boolean

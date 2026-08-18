@@ -73,7 +73,11 @@ export function HomeView({ namespaces, topology, fallbackClusterLoadState, onNav
     })
     const nodeIds = new Set(nodes.map(n => n.id))
     const edges = topology.edges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target))
-    return { nodes, edges }
+    // Carry the frame's own flags through the filter. A large cluster serves an
+    // empty graph flagged requiresNamespaceFilter until SSE picks the pick up
+    // server-side, and a consumer that sees only nodes/edges reads that
+    // declined build as a namespace holding nothing.
+    return { ...topology, nodes, edges }
   }, [topology, namespaces])
   // CRDs and Helm load lazily after main dashboard to keep initial load fast
   const { data: crdsData } = useDashboardCRDs(namespaces)
@@ -150,7 +154,7 @@ export function HomeView({ namespaces, topology, fallbackClusterLoadState, onNav
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
               <TopologyPreview
                 topology={scopedTopology}
-                summary={data.topologySummary}
+                namespaceSelected={namespaces.length > 0}
                 onNavigate={() => onNavigateToView('topology')}
               />
               <ActivitySummary

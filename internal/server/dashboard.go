@@ -23,7 +23,6 @@ import (
 	"github.com/skyhook-io/radar/internal/timeline"
 	"github.com/skyhook-io/radar/internal/traffic"
 	"github.com/skyhook-io/radar/pkg/health"
-	topology "github.com/skyhook-io/radar/pkg/topology"
 )
 
 // DashboardResponse is the aggregated response for the home dashboard
@@ -33,7 +32,6 @@ type DashboardResponse struct {
 	Problems               []DashboardProblem              `json:"problems"`
 	ResourceCounts         DashboardResourceCounts         `json:"resourceCounts"`
 	RecentChanges          []DashboardChange               `json:"recentChanges"`
-	TopologySummary        DashboardTopologySummary        `json:"topologySummary"`
 	TrafficSummary         *DashboardTrafficSummary        `json:"trafficSummary"`
 	Metrics                *DashboardMetrics               `json:"metrics"`
 	MetricsServerAvailable bool                            `json:"metricsServerAvailable"`
@@ -235,11 +233,6 @@ type DashboardChange struct {
 	Timestamp  string `json:"timestamp"`
 }
 
-type DashboardTopologySummary struct {
-	NodeCount int `json:"nodeCount"`
-	EdgeCount int `json:"edgeCount"`
-}
-
 type DashboardTrafficSummary struct {
 	Source    string             `json:"source"`
 	FlowCount int                `json:"flowCount"`
@@ -395,10 +388,6 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	t = time.Now()
 	resp.RecentChanges = s.getDashboardRecentChanges(ctx, namespaces)
 	k8s.LogTiming("  [dashboard] changes: %v", time.Since(t))
-
-	t = time.Now()
-	resp.TopologySummary = s.getDashboardTopologySummary(namespaces)
-	k8s.LogTiming("  [dashboard] topology: %v", time.Since(t))
 
 	// Cert health is derived from TLS Secrets — gate by per-user secrets RBAC.
 	resp.CertificateHealth = s.getDashboardCertificateHealth(s.secretReadableNamespaces(r, namespaces))
@@ -1169,34 +1158,6 @@ func (s *Server) getDashboardRecentChanges(ctx context.Context, namespaces []str
 	}
 
 	return result
-}
-
-func (s *Server) getDashboardTopologySummary(namespaces []string) DashboardTopologySummary {
-	// Use cached topology only when no namespace filter is active,
-	// since the cached topology's namespace scope may not match the request.
-	if namespaces == nil {
-		if cachedTopo := s.broadcaster.GetCachedTopology(); cachedTopo != nil {
-			return DashboardTopologySummary{
-				NodeCount: len(cachedTopo.Nodes),
-				EdgeCount: len(cachedTopo.Edges),
-			}
-		}
-	}
-
-	// Build topology with the requested namespace filter
-	opts := topology.DefaultBuildOptions()
-	opts.Namespaces = namespaces
-	builder := topology.NewBuilder(k8s.NewTopologyResourceProvider(k8s.GetResourceCache())).WithDynamic(k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery()))
-	topo, err := builder.Build(opts)
-	if err != nil {
-		log.Printf("[dashboard] Failed to build topology summary: %v", err)
-		return DashboardTopologySummary{}
-	}
-
-	return DashboardTopologySummary{
-		NodeCount: len(topo.Nodes),
-		EdgeCount: len(topo.Edges),
-	}
 }
 
 func (s *Server) getDashboardTrafficSummary(ctx context.Context, namespaces []string) *DashboardTrafficSummary {
