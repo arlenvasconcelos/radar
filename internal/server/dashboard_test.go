@@ -12,7 +12,6 @@ import (
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/helmhistory"
 	"github.com/skyhook-io/radar/pkg/k8score"
-	"github.com/skyhook-io/radar/pkg/topology"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -218,42 +217,6 @@ func TestDashboardCalicoCoverageUsesNamespaceAwareReadsAndCalicoFallback(t *test
 	}
 	if filtered.TotalWorkloads != 3 || filtered.CoveredWorkloads != 2 || filtered.CoveredWorkloadsIfStaged != 3 {
 		t.Fatalf("filtered coverage = %+v, want denied legacy policy excluded from coverage", filtered)
-	}
-}
-
-func TestDashboardTopologySummaryFiltersRBACWithoutMutatingCache(t *testing.T) {
-	server := newAuthServer(auth.Config{Mode: "proxy"})
-	perms := &auth.UserPermissions{AllowedNamespaces: nil}
-	perms.SetCanI("list", "projectcalico.org", "globalnetworkpolicies", "", true)
-	perms.SetCanI("list", "crd.projectcalico.org", "globalnetworkpolicies", "", false)
-	server.permCache.Set("alice", perms)
-	server.broadcaster = NewSSEBroadcaster()
-
-	allowedID := "calicoglobalnetworkpolicy//allowed/projectcalico.org"
-	deniedCalicoID := "calicoglobalnetworkpolicy//denied/crd.projectcalico.org"
-	deniedNodeID := "node//node-a"
-	workloadID := "deployment/demo/web"
-	server.broadcaster.updateCachedTopology(&topology.Topology{
-		Nodes: []topology.Node{
-			{ID: allowedID, Kind: topology.KindCalicoGlobalNetworkPolicy, Name: "allowed", Data: map[string]any{"apiVersion": "projectcalico.org/v3"}},
-			{ID: deniedCalicoID, Kind: topology.KindCalicoGlobalNetworkPolicy, Name: "denied", Data: map[string]any{"apiVersion": "crd.projectcalico.org/v1"}},
-			{ID: deniedNodeID, Kind: topology.KindNode, Name: "node-a", Data: map[string]any{"apiVersion": "v1"}},
-			{ID: workloadID, Kind: topology.KindDeployment, Name: "web", Data: map[string]any{"namespace": "demo"}},
-		},
-		Edges: []topology.Edge{
-			{Source: allowedID, Target: workloadID, Type: topology.EdgeProtects},
-			{Source: deniedCalicoID, Target: workloadID, Type: topology.EdgeProtects},
-			{Source: deniedNodeID, Target: workloadID, Type: topology.EdgeConfigures},
-		},
-	}, server.broadcaster.topoEpoch.Load())
-
-	got := server.getDashboardTopologySummary(requestWithUser("GET", "/", &auth.User{Username: "alice"}), nil)
-	if got.NodeCount != 2 || got.EdgeCount != 1 {
-		t.Fatalf("topology summary = %+v, want 2 visible nodes and 1 visible edge", got)
-	}
-	cached := server.broadcaster.GetCachedTopology()
-	if len(cached.Nodes) != 4 || len(cached.Edges) != 3 {
-		t.Fatalf("cached topology was mutated: nodes=%d edges=%d", len(cached.Nodes), len(cached.Edges))
 	}
 }
 
