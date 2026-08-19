@@ -5,32 +5,38 @@ import "time"
 
 // Flow represents a single network flow between two endpoints.
 type Flow struct {
-	Source      Endpoint  `json:"source"`
-	Destination Endpoint  `json:"destination"`
-	Protocol    string    `json:"protocol"` // tcp, udp, http, grpc
-	Port        int       `json:"port"`
-	L7Protocol  string    `json:"l7Protocol,omitempty"` // HTTP, gRPC, DNS (if L7 visibility)
+	Source           Endpoint `json:"source"`
+	Destination      Endpoint `json:"destination"`
+	Protocol         string   `json:"protocol"` // tcp, udp, http, grpc
+	Port             int      `json:"port"`
+	L7Protocol       string   `json:"l7Protocol,omitempty"` // HTTP, gRPC, DNS (if L7 visibility)
 	HTTPMethod       string   `json:"httpMethod,omitempty"`
 	HTTPPath         string   `json:"httpPath,omitempty"`
 	HTTPStatus       int      `json:"httpStatus,omitempty"`
-	LatencyNs        uint64   `json:"latencyNs,omitempty"`        // from Layer7.latency_ns (RESPONSE flows)
-	L7Type           string   `json:"l7Type,omitempty"`            // REQUEST, RESPONSE, SAMPLE
-	HTTPProtocol     string   `json:"httpProtocol,omitempty"`      // HTTP/1.1, HTTP/2
-	HTTPHeaders      []string `json:"httpHeaders,omitempty"`       // allowlisted headers as "key: value"
+	LatencyNs        uint64   `json:"latencyNs,omitempty"`    // from Layer7.latency_ns (RESPONSE flows)
+	L7Type           string   `json:"l7Type,omitempty"`       // REQUEST, RESPONSE, SAMPLE
+	HTTPProtocol     string   `json:"httpProtocol,omitempty"` // HTTP/1.1, HTTP/2
+	HTTPHeaders      []string `json:"httpHeaders,omitempty"`  // allowlisted headers as "key: value"
 	DNSQuery         string   `json:"dnsQuery,omitempty"`
 	DNSIPs           []string `json:"dnsIPs,omitempty"`
 	DNSTTL           uint32   `json:"dnsTTL,omitempty"`
-	DNSRCode         uint32   `json:"dnsRCode,omitempty"`          // 0=NoError, 3=NXDomain
+	DNSRCode         uint32   `json:"dnsRCode,omitempty"` // 0=NoError, 3=NXDomain
 	DNSQTypes        []string `json:"dnsQTypes,omitempty"`
-	TrafficDirection string   `json:"trafficDirection,omitempty"`  // ingress, egress
+	TrafficDirection string   `json:"trafficDirection,omitempty"` // ingress, egress
 	DropReasonDesc   string   `json:"dropReasonDesc,omitempty"`
 	SourceService    string   `json:"sourceService,omitempty"`
 	DestService      string   `json:"destService,omitempty"`
-	BytesSent   int64     `json:"bytesSent"`
-	BytesRecv   int64     `json:"bytesRecv"`
-	Connections int64     `json:"connections"`
-	Verdict     string    `json:"verdict"` // forwarded, dropped, error
-	LastSeen    time.Time `json:"lastSeen"`
+	BytesSent        int64    `json:"bytesSent"`
+	BytesRecv        int64    `json:"bytesRecv"`
+	Connections      int64    `json:"connections"`
+	// DirectionUnknown marks a conversation whose initiator could not be
+	// established, so the two endpoints are ordered arbitrarily and BytesSent /
+	// BytesRecv follow that ordering rather than describing a caller and a callee.
+	// The graph draws these without an arrowhead: the traffic is real, only its
+	// direction is not known.
+	DirectionUnknown bool      `json:"directionUnknown,omitempty"`
+	Verdict          string    `json:"verdict"` // forwarded, dropped, error
+	LastSeen         time.Time `json:"lastSeen"`
 	// L7 stats (populated by Istio source)
 	RequestRate float64 `json:"requestRate,omitempty"` // requests per second
 	ErrorRate   float64 `json:"errorRate,omitempty"`   // 5xx errors per second
@@ -53,13 +59,6 @@ type FlowOptions struct {
 	Since     time.Duration // Look back period (default: 5 minutes)
 	Follow    bool          // Stream new flows
 	Limit     int           // Max flows to return (0 = no limit)
-	// ResultWillBeFiltered tells the source that the caller is going to narrow the
-	// flows it returns — the server does this for a user whose RBAC allows several
-	// namespaces, since Namespace above can only carry one. A source must not then
-	// make claims about traffic it can see but the caller will remove, because that
-	// traffic is not the user's to be told about. Claims about how the source
-	// itself is configured are unaffected.
-	ResultWillBeFiltered bool
 }
 
 // FlowsResponse contains the flows and metadata.
@@ -98,19 +97,22 @@ type AggregatedFlow struct {
 	BytesRecv   int64     `json:"bytesRecv"`
 	Connections int64     `json:"connections"`
 	LastSeen    time.Time `json:"lastSeen"`
+	// DirectionUnknown is set when the flows behind this edge could not be
+	// oriented; the graph then draws it without an arrowhead.
+	DirectionUnknown bool `json:"directionUnknown,omitempty"`
 	// L7 stats (if available)
-	L7Protocol       string             `json:"l7Protocol,omitempty"`       // HTTP, gRPC, DNS (from majority of flows)
-	RequestCount     int64              `json:"requestCount,omitempty"`
-	ErrorCount       int64              `json:"errorCount,omitempty"`
-	AvgLatencyMs     float64            `json:"avgLatencyMs,omitempty"`
-	LatencyP50Ms     float64            `json:"latencyP50Ms,omitempty"`
-	LatencyP95Ms     float64            `json:"latencyP95Ms,omitempty"`
-	LatencyP99Ms     float64            `json:"latencyP99Ms,omitempty"`
-	HTTPStatusCounts map[string]int64   `json:"httpStatusCounts,omitempty"` // "2xx": 150, "5xx": 3
-	TopHTTPPaths     []HTTPPathStat     `json:"topHTTPPaths,omitempty"`
-	TopDNSQueries    []DNSQueryStat     `json:"topDNSQueries,omitempty"`
-	VerdictCounts    map[string]int64   `json:"verdictCounts,omitempty"`    // "forwarded": 500, "dropped": 3
-	DropReasons      map[string]int64   `json:"dropReasons,omitempty"`
+	L7Protocol       string           `json:"l7Protocol,omitempty"` // HTTP, gRPC, DNS (from majority of flows)
+	RequestCount     int64            `json:"requestCount,omitempty"`
+	ErrorCount       int64            `json:"errorCount,omitempty"`
+	AvgLatencyMs     float64          `json:"avgLatencyMs,omitempty"`
+	LatencyP50Ms     float64          `json:"latencyP50Ms,omitempty"`
+	LatencyP95Ms     float64          `json:"latencyP95Ms,omitempty"`
+	LatencyP99Ms     float64          `json:"latencyP99Ms,omitempty"`
+	HTTPStatusCounts map[string]int64 `json:"httpStatusCounts,omitempty"` // "2xx": 150, "5xx": 3
+	TopHTTPPaths     []HTTPPathStat   `json:"topHTTPPaths,omitempty"`
+	TopDNSQueries    []DNSQueryStat   `json:"topDNSQueries,omitempty"`
+	VerdictCounts    map[string]int64 `json:"verdictCounts,omitempty"` // "forwarded": 500, "dropped": 3
+	DropReasons      map[string]int64 `json:"dropReasons,omitempty"`
 }
 
 // HTTPPathStat tracks request statistics for a specific HTTP method+path combination.

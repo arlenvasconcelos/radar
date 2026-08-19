@@ -247,7 +247,10 @@ metadata:
   name: web
   namespace: ${DEMO_NS}
 spec:
-  replicas: 1
+  # Two replicas, because Beyla's L7 metrics are reported per pod. A destination
+  # with one pod cannot show whether a consumer combines those series or lets one
+  # replica's figure stand in for the whole destination.
+  replicas: 2
   selector:
     matchLabels: { app: web }
   template:
@@ -257,10 +260,40 @@ spec:
       containers:
         - name: nginx
           image: nginx:1.27-alpine
-          ports: [{ containerPort: 80 }]
+          ports: [{ containerPort: 80 }, { containerPort: 8080 }]
+          volumeMounts:
+            - { name: conf, mountPath: /etc/nginx/conf.d }
           resources:
             requests: { cpu: 10m, memory: 16Mi }
             limits: { memory: 64Mi }
+      volumes:
+        - name: conf
+          configMap: { name: web-conf }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-conf
+  namespace: ${DEMO_NS}
+data:
+  # /boom returns 500 so the error path has something to report. Without it the
+  # graph's "Errors (5xx)" legend entry can never light up on this cluster, and an
+  # error rate of zero proves nothing about whether the code reads it correctly.
+  default.conf: |
+    server {
+      listen 80;
+      location / { return 200 'ok\n'; }
+      location /boom { return 500 'boom\n'; }
+    }
+    # A second served port, so the destination is genuinely multi-port rather than
+    # multi-port only by way of ephemeral client ports. Both ports fail some of the
+    # time, so a destination-wide error figure has to combine them rather than
+    # report whichever port was busiest.
+    server {
+      listen 8080;
+      location / { return 200 'ok\n'; }
+      location /bad { return 500 'bad\n'; }
+    }
 ---
 apiVersion: v1
 kind: Service
@@ -269,7 +302,9 @@ metadata:
   namespace: ${DEMO_NS}
 spec:
   selector: { app: web }
-  ports: [{ name: http, port: 80, targetPort: 80 }]
+  ports:
+    - { name: http, port: 80, targetPort: 80 }
+    - { name: http-alt, port: 8080, targetPort: 8080 }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -325,14 +360,50 @@ spec:
                 for i in 1 2 3 4 5; do
                   wget -q -T 3 -O /dev/null "http://web.${DEMO_NS}.svc.cluster.local/" || true
                 done
+                # One 500 per five successes, so the 5xx rate is a visible minority.
+                wget -q -T 3 -O /dev/null "http://web.${DEMO_NS}.svc.cluster.local/boom" || true
                 printf 'PING\r\n' | nc -w 2 db.${DEMO_NS}.svc.cluster.local 6379 >/dev/null 2>&1 || true
                 sleep 1
               done
           resources:
             requests: { cpu: 10m, memory: 16Mi }
             limits: { memory: 64Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: ${DEMO_NS}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: worker }
+  template:
+    metadata:
+      labels: { app: worker }
+    spec:
+      containers:
+        - name: gen
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          # A second caller reaching the same destination, on the other port and at
+          # a much lower volume than client. The HTTP metric carries no caller
+          # labels, so a destination's request rate has to be divided between its
+          # callers; with a single caller that division is the identity and proves
+          # nothing. The volumes are deliberately lopsided so a rate copied to both
+          # callers is obvious rather than plausible.
+          args:
+            - |
+              while true; do
+                wget -q -T 3 -O /dev/null "http://web.${DEMO_NS}.svc.cluster.local:8080/" || true
+                wget -q -T 3 -O /dev/null "http://web.${DEMO_NS}.svc.cluster.local:8080/bad" || true
+                sleep 5
+              done
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 64Mi }
 YAML
-  ok "web (:80), db (:6379) and client traffic generator applied"
+  ok "web (2 replicas, :80 and :8080, each with a failing route), db (:6379), and two callers applied"
 }
 
 apply_prometheus() {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,6 +46,15 @@ func beylaJobSelector() string {
 }
 
 type promQueryFunc func(ctx context.Context, query string) (*prom.QueryResult, error)
+
+// usableSample reports whether a series value can be turned into a count. The
+// comparison alone is not enough: NaN fails every ordered comparison, so `val <= 0`
+// admits it, and converting NaN or an infinity to an integer is platform-defined —
+// on amd64 it yields the most negative int64, which then sums into byte totals.
+// A ratio of two rates, as the mean-latency query is, produces NaN at zero traffic.
+func usableSample(val float64) bool {
+	return val > 0 && !math.IsNaN(val) && !math.IsInf(val, 0)
+}
 
 // BeylaSource implements TrafficSource for Grafana Beyla via Prometheus metrics.
 type BeylaSource struct {
@@ -183,7 +193,11 @@ func (s *BeylaSource) Detect(ctx context.Context) (*DetectionResult, error) {
 		return result, nil
 	}
 
-	result.Message = "Beyla not detected. Install Alloy + Beyla for L7 traffic visibility."
+	// Says to enable the network feature up front. It is opt-in and off by default,
+	// so advice that stops at "install it" ends with an install that produces an
+	// empty map and a second message explaining why.
+	result.Message = `Beyla not detected. Install Alloy + Beyla for traffic visibility, ` +
+		`and include "network" in OTEL_EBPF_METRICS_FEATURES — the traffic map needs it and it is off by default.`
 	return result, nil
 }
 
@@ -288,21 +302,34 @@ type l4LabelPresence struct {
 	portedDsts map[dstKey]bool
 	port       bool
 	transport  bool
-	// hiddenUDP is set when the cluster has traffic Beyla could not orient — UDP,
-	// which it reports as direction="unknown" in both directions and which the
-	// direction filter therefore drops. Recorded so the graph can say the traffic
-	// exists but is not shown, rather than appearing to be complete.
-	hiddenUDP bool
+	// replyLossFraction is how much of the return traffic Prometheus could not
+	// measure, between 0 and 1. Exporting dst.port makes Beyla label each reply
+	// with the client's port, which is new for every connection and gone again
+	// within seconds, so most reply counters are never observed twice and no rate
+	// can be derived from them. How much that costs depends on the workload —
+	// long-lived connections keep a stable port and measure fine — so it is
+	// measured rather than assumed from the configuration.
+	replyLossFraction float64
 }
 
 func (s *BeylaSource) GetFlows(ctx context.Context, opts FlowOptions) (*FlowsResponse, error) {
-	flows, presence, err := s.getFlowsInternal(ctx, opts, true)
+	flows, presence, err := s.getFlowsInternal(ctx, opts)
 	if err != nil {
 		log.Printf("[beyla] Error fetching flows: %v", err)
 		return &FlowsResponse{Source: "beyla", Timestamp: time.Now(), Flows: []Flow{},
 			Warning:     fmt.Sprintf("Failed to query Beyla metrics: %v", err),
 			WarningKind: WarningTransient}, nil
 	}
+	// Measured here rather than inside getFlowsInternal because only this path
+	// builds a warning from it. StreamFlows shares that helper and discards the
+	// presence it returns, so probing there would query the response series on
+	// every poll and throw the answer away.
+	// Only when dst.port is exported: without it replies carry no port, so they
+	// aggregate into a handful of stable counters and nothing is lost.
+	if presence.port {
+		presence.replyLossFraction = s.replyLossFraction(ctx, beylaWindow(opts.Since))
+	}
+
 	response := &FlowsResponse{Source: "beyla", Timestamp: time.Now(), Flows: flows}
 	if warning := presence.warning(len(flows)); warning != "" {
 		response.Warning = warning
@@ -328,34 +355,67 @@ func (p l4LabelPresence) warning(flowCount int) string {
 		if !p.transport {
 			missing = append(missing, "transport")
 		}
+		// Worth saying only when it actually costs something: a handful of unmeasured
+		// replies among thousands does not move the figure. The wording tracks the
+		// measurement rather than sitting at its worst case — claiming "most" of a
+		// 15% loss would be its own inaccuracy.
+		if p.replyLossFraction > 0.1 {
+			scale := "many"
+			if p.replyLossFraction > 0.5 {
+				scale = "most"
+			}
+			parts = append(parts, fmt.Sprintf("Received-byte figures on these edges are too low: %s replies could "+
+				"not be measured. Each reply is labelled with the client's short-lived port, and those come and go "+
+				"faster than they can be counted. Bytes sent, request rate, errors and latency are not affected. "+
+				"Remove dst.port from attributes.select for %s if you need accurate received bytes.",
+				scale, strings.TrimSuffix(p.metric, "_total")))
+		}
+
 		if len(missing) > 0 {
 			// Names the metric this cluster actually exposes: on an OBI install the
 			// attributes.select key is obi_network_flow_bytes, and advice pointing at
 			// the other spelling does not work.
-			parts = append(parts, fmt.Sprintf("Beyla is not exporting %s, so any edges here have no port or "+
-				"protocol detail (they appear as port 0 over TCP). Both are opt-in attributes: add them "+
-				"to attributes.select for %s to see per-port edges.",
-				strings.Join(missing, " and "), strings.TrimSuffix(p.metric, "_total")))
-		}
-	}
+			// Each attribute has its own consequence, and only one of them may be
+			// absent: advising transport on its own is deliberate, so a cluster that
+			// took that advice has ports missing and protocols correct. Naming both
+			// consequences either way would tell such an operator their change did
+			// nothing.
+			metric := strings.TrimSuffix(p.metric, "_total")
+			switch {
+			case !p.port && !p.transport:
+				parts = append(parts, fmt.Sprintf("Beyla is not exporting dst.port and transport, so edges here "+
+					"have no port or protocol detail: they appear as port 0, and UDP is shown as TCP. Both are "+
+					"opt-in, added under attributes.select for %s.", metric))
+			case !p.port:
+				parts = append(parts, fmt.Sprintf("Beyla is not exporting dst.port, so every edge here appears as "+
+					"port 0. It is opt-in, added under attributes.select for %s.", metric))
+			case !p.transport:
+				parts = append(parts, fmt.Sprintf("Beyla is not exporting transport, so UDP traffic here is shown "+
+					"as TCP. It is opt-in, added under attributes.select for %s.", metric))
+			}
 
-	// Stated whether or not there are flows: with no TCP traffic at all, "Beyla
-	// sees UDP but cannot place it" is the only honest explanation for an empty
-	// graph.
-	if p.hiddenUDP {
-		parts = append(parts, "Traffic Beyla reports as direction=unknown on both sides of the "+
-			"conversation — which is where UDP such as DNS lands — is left out, because which end "+
-			"initiated it cannot be determined and drawing it would invent an arrow.")
+			// The two are not equivalent and must not be recommended as a pair.
+			// Adding transport is free. Adding dst.port buys per-port edges and costs
+			// the received-byte figures.
+			if !p.transport {
+				parts = append(parts, "Adding transport is safe and makes UDP show as UDP.")
+			}
+			if !p.port {
+				// Self-contained on purpose: the warning that explains this loss only
+				// appears once dst.port is already exported, so a reader seeing this
+				// sentence has not seen that explanation and never will from here.
+				parts = append(parts, "Adding dst.port gives per-port edges, but replies would then carry the "+
+					"client's short-lived port, and most of the return traffic could no longer be measured — so "+
+					"received-byte figures would become unreliable. It is a trade rather than a fix.")
+			}
+		}
 	}
 
 	return strings.Join(parts, " ")
 }
 
-// getFlowsInternal fetches and merges the flows. withDiagnostics controls the
-// extra probe behind the partial-data warning: callers that discard the warning
-// must pass false rather than pay for an answer they throw away.
-func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions, withDiagnostics bool) ([]Flow, l4LabelPresence, error) {
-	l4Map, presence, err := s.queryL4(ctx, opts, withDiagnostics)
+func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions) ([]Flow, l4LabelPresence, error) {
+	l4Map, presence, err := s.queryL4(ctx, opts)
 	if err != nil {
 		return nil, presence, fmt.Errorf("L4 query: %w", err)
 	}
@@ -364,6 +424,50 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions, wi
 	if err != nil {
 		log.Printf("[beyla] L7 query failed (continuing with L4 only): %v", err)
 		l7Flows = nil
+	}
+
+	// Fill in what came back before anything else reads BytesRecv: the L7 split
+	// below weights each caller by its share of the conversation, and half a
+	// conversation is the wrong weight.
+	// Received bytes are known per conversation, not per port: the response series
+	// carry the client's ephemeral port, so they cannot be attributed to one of a
+	// pair's edges. Where a pair has several edges the total is divided between
+	// them by their share of bytes sent — copying it onto each would count the same
+	// return traffic once per port.
+	received := s.queryReceivedBytes(ctx, opts)
+	if len(received) > 0 {
+		sentPerPair := make(map[flowKey]int64)
+		edgesPerPair := make(map[flowKey][]*Flow)
+		for _, f := range l4Map {
+			key := flowKey{
+				srcNs: f.Source.Namespace, srcWorkload: f.Source.Name,
+				dstNs: f.Destination.Namespace, dstWorkload: f.Destination.Name,
+			}
+			sentPerPair[key] += f.BytesSent
+			edgesPerPair[key] = append(edgesPerPair[key], f)
+		}
+		for key, edges := range edgesPerPair {
+			total, ok := received[key]
+			if !ok {
+				continue
+			}
+			sent := sentPerPair[key]
+			for _, f := range edges {
+				switch {
+				case len(edges) == 1:
+					f.BytesRecv = total
+				case sent > 0:
+					// In float64: the product of two byte counts overflows int64 at
+					// roughly 3 GB each way within the window, which a multi-edge pair
+					// reaches at about 10 MB/s and reports as a negative figure. A
+					// float64 mantissa carries byte counts far beyond anything a
+					// five-minute window can hold.
+					f.BytesRecv = int64(float64(total) * float64(f.BytesSent) / float64(sent))
+				default:
+					f.BytesRecv = total / int64(len(edges))
+				}
+			}
+		}
 	}
 
 	byDstPort := make(map[dstPortKey][]*Flow, len(l4Map))
@@ -393,10 +497,13 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions, wi
 	// could not name, in which case no bucket carries that port at all.
 	portedDsts := presence.portedDsts
 
+	latency, errorRates := s.queryL7Detail(ctx, opts)
 	perPort, perDst := l7ByPortAndDestination(l7Flows)
 	for key, edges := range byDstPort {
 		l7, ok := perPort[key]
+		portless := false
 		if !ok && key.port == 0 && !portedDsts[dstKey{key.dstNs, key.dstName}] {
+			portless = true
 			// These edges carry no port information and this destination has no
 			// port-bearing edges either, so every port's HTTP traffic for it belongs
 			// to them. Use the destination-wide aggregate, which has summed the
@@ -419,12 +526,49 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions, wi
 			f.L7Protocol = l7.L7Protocol
 			f.HTTPMethod = l7.HTTPMethod
 			f.HTTPPath = l7.HTTPPath
-			f.HTTPStatus = l7.HTTPStatus
+			// Deliberately no HTTPStatus. A destination's requests are spread across
+			// status codes and this is one series out of them, so recording it makes
+			// the aggregate report a single status class as the whole distribution —
+			// a destination serving 17% 5xx renders a confident all-2xx bar. The
+			// error rate below carries the failure signal, which is how the other
+			// rate-based source reports it: Istio queries 5xx separately and never
+			// claims a status distribution either.
+
+			// This caller's share of the destination's traffic. Everything the HTTP
+			// metric reports is per destination, not per caller, so every figure
+			// derived from it is divided the same way — mixing a split rate with an
+			// unsplit error count produces ratios above 100%.
+			share := 1 / float64(len(edges))
 			if totalBytes > 0 {
-				share := float64(f.BytesSent+f.BytesRecv) / float64(totalBytes)
-				f.RequestRate = l7.RequestRate * share
-			} else {
-				f.RequestRate = l7.RequestRate / float64(len(edges))
+				share = float64(f.BytesSent+f.BytesRecv) / float64(totalBytes)
+			}
+			f.RequestRate = l7.RequestRate * share
+			// Same shape as the Istio source: a rate-based source puts its rate in
+			// Connections and the graph labels it req/s rather than "conn".
+			// RoundRate is the package's own rate-to-count conversion, and using it
+			// keeps this equal to the RequestCount the aggregation derives from the
+			// same rate — hand-rolling it here truncated where that rounds.
+			f.Connections = RoundRate(f.RequestRate)
+
+			// Latency is a duration, not a quantity, so it is not divided — every
+			// caller on this port waited the same average. The error rate is a
+			// quantity and is divided like the request rate.
+			detailKey := dstPortKey{l7.Destination.Namespace, l7.Destination.Name, l7.Port}
+			if seconds, ok := latency.forEdge(detailKey, portless); ok {
+				f.LatencyNs = uint64(seconds * float64(time.Second))
+			}
+			if rate, ok := errorRates.forEdge(detailKey, portless); ok {
+				// Split on the same basis as the request rate above. The HTTP metric
+				// has no caller labels, so neither figure can be attributed exactly,
+				// but they must at least be attributed consistently: giving each
+				// caller the destination's whole error rate alongside its own share
+				// of the requests lets the error count exceed the request count, and
+				// the graph renders that ratio as a percentage.
+				f.ErrorRate = rate * share
+				// Istio marks the flow errored once any 5xx is present. The verdict
+				// drives the flow-list badge; the graph colours the edge from the
+				// error count the aggregation derives from this rate.
+				f.Verdict = "error"
 			}
 		}
 	}
@@ -433,6 +577,10 @@ func (s *BeylaSource) getFlowsInternal(ctx context.Context, opts FlowOptions, wi
 	for _, f := range l4Map {
 		result = append(result, *f)
 	}
+	// Conversations Beyla could not orient are still conversations, and are drawn
+	// without an arrowhead rather than left out. Leaving them out takes the
+	// workload on the far end off the map with them — for DNS, that is coredns.
+	result = append(result, s.queryUnorientable(ctx, opts)...)
 	return result, presence, nil
 }
 
@@ -490,10 +638,24 @@ func l7ByPortAndDestination(l7Flows []Flow) (map[dstPortKey]Flow, map[dstKey]Flo
 // letting Prometheus result order decide makes the rendered Kind arbitrary.
 // Radar's graph navigates to workloads, so the workload attribution wins.
 func preferL4(incumbent, candidate *Flow) *Flow {
-	if serviceEndpoints(candidate) < serviceEndpoints(incumbent) {
+	switch {
+	case serviceEndpoints(candidate) < serviceEndpoints(incumbent):
+		// The candidate is the workload attribution of a Service-routed
+		// conversation; the incumbent is the Service's copy of the same bytes.
+		candidate.BytesRecv = incumbent.BytesRecv
 		return candidate
+	case serviceEndpoints(candidate) > serviceEndpoints(incumbent):
+		return incumbent
+	default:
+		// Neither is a Service copy of the other, so both are attributions of one
+		// conversation under two owner types — Beyla reports those with identical
+		// values, so adding them would double the edge. Taking the larger keeps the
+		// conversation's real size and, unlike keeping whichever arrived first, does
+		// not depend on the order Prometheus returned them in.
+		incumbent.BytesSent = max(incumbent.BytesSent, candidate.BytesSent)
+		incumbent.BytesRecv = max(incumbent.BytesRecv, candidate.BytesRecv)
+		return incumbent
 	}
-	return incumbent
 }
 
 func serviceEndpoints(f *Flow) int {
@@ -527,9 +689,9 @@ const (
 	// The cost is that UDP traffic does not appear in the graph at all. That is
 	// surfaced to the user rather than left implicit — see l4LabelPresence.
 	beylaL4DirectionFilter = `, direction="request"`
-	// beylaUnknownDirectionProbe counts the series excluded by the filter above,
-	// so the absence of UDP can be stated instead of silently rendering nothing.
-	beylaUnknownDirectionProbe = `, direction="unknown"`
+	// beylaUnknownDirection selects the conversations Beyla could not orient. They
+	// are read separately and drawn without an arrowhead rather than dropped.
+	beylaUnknownDirection = `, direction="unknown"`
 	// beylaL7Metric is Beyla's OTel-aligned HTTP server histogram; there is no
 	// millisecond variant.
 	beylaL7Metric = "http_server_request_duration_seconds_count"
@@ -540,14 +702,45 @@ const (
 	// served on, which is what lets L7 join to a specific L4 edge. No caller or
 	// source labels exist on this metric at all.
 	beylaL7GroupBy = `k8s_namespace_name, k8s_owner_name, k8s_pod_name, server_port, http_request_method, http_route, http_response_status_code`
+	// beylaL7DetailGroupBy keys latency and errors the way parseL7Flows names a
+	// destination — owner first, pod name when a workload has no owner. Grouping by
+	// owner alone collapses every owner-less series in a namespace into one row with
+	// an empty name, which is then dropped, so a bare pod gets a request rate but
+	// never a latency or an error.
+	beylaL7DetailGroupBy = `k8s_namespace_name, k8s_owner_name, k8s_pod_name, server_port`
 )
 
-// beylaRateQuery builds `sum by (groupBy) (rate(metric{job=~...,extra}[5m]))`. A
+// rateWindow is the span every query in this source rates over, and the span the
+// byte totals are derived for. Both have to come from the same place: a rate is
+// per-second, so turning it back into a total means multiplying by exactly the
+// window that produced it.
+type rateWindow struct {
+	promQL  string
+	seconds float64
+}
+
+// beylaWindow turns the caller's requested span into a window these queries can
+// use. The traffic view offers 1m to 1h and the value arrives here; ignoring it
+// leaves the control inert, which is what it was.
+//
+// Anything shorter than a minute cannot be rated: Prometheus needs two samples in
+// the window, and a scrape interval of 15s makes a sub-minute span a coin toss. The
+// default matches the view's own default rather than being an arbitrary floor.
+func beylaWindow(since time.Duration) rateWindow {
+	if since < time.Minute {
+		return rateWindow{promQL: "5m", seconds: beylaRateWindowSeconds}
+	}
+	// Expressed in seconds so any duration the caller asks for is valid PromQL.
+	// time.Duration'''s own format is not: it renders an hour as "1h0m0s".
+	return rateWindow{promQL: fmt.Sprintf("%ds", int(since.Seconds())), seconds: since.Seconds()}
+}
+
+// beylaRateQuery builds `sum by (groupBy) (rate(metric{job=~...,extra}[window]))`. A
 // namespace filter has to become two OR'd selectors: PromQL cannot express
 // "src OR dst namespace matches" inside a single label selector.
-func beylaRateQuery(groupBy, metric, namespace, extra string) string {
+func beylaRateQuery(groupBy, metric, namespace, extra string, w rateWindow) string {
 	sum := func(more string) string {
-		return fmt.Sprintf(`sum by (%s) (rate(%s{%s%s%s}[5m]))`, groupBy, metric, beylaJobSelector(), extra, more)
+		return fmt.Sprintf(`sum by (%s) (rate(%s{%s%s%s}[%s]))`, groupBy, metric, beylaJobSelector(), extra, more, w.promQL)
 	}
 	if namespace == "" {
 		return sum("")
@@ -556,86 +749,379 @@ func beylaRateQuery(groupBy, metric, namespace, extra string) string {
 		sum(fmt.Sprintf(`, k8s_dst_namespace=%q`, namespace))
 }
 
-// beylaL7RateQuery builds the L7 query. Unlike beylaRateQuery, there's only
-// one namespace label to filter on (k8s_namespace_name) since the metric has
-// no source side.
-func beylaL7RateQuery(namespace string) string {
+// beylaL7LatencyQuery averages the HTTP server duration per destination and port.
+// Beyla exports the histogram's sum and count; their ratio over the same window is
+// the mean, which is what the flow list's Latency column shows. Hubble fills the
+// same field from packet timing.
+func beylaL7LatencyQuery(namespace string, w rateWindow) string {
 	extra := ""
 	if namespace != "" {
 		extra = fmt.Sprintf(`, k8s_namespace_name=%q`, namespace)
 	}
-	return fmt.Sprintf(`sum by (%s) (rate(%s{%s%s}[5m]))`, beylaL7GroupBy, beylaL7Metric, beylaJobSelector(), extra)
+	group := beylaL7DetailGroupBy
+	return fmt.Sprintf(`sum by (%s) (rate(http_server_request_duration_seconds_sum{%s%s}[%s])) / sum by (%s) (rate(%s{%s%s}[%s]))`,
+		group, beylaJobSelector(), extra, w.promQL, group, beylaL7Metric, beylaJobSelector(), extra, w.promQL)
 }
 
-func (s *BeylaSource) queryL4(ctx context.Context, opts FlowOptions, withDiagnostics bool) (map[l4Key]*Flow, l4LabelPresence, error) {
-	query := beylaRateQuery(beylaL4GroupBy, s.flowMetricName(), opts.Namespace, beylaL4DirectionFilter)
+// beylaL7ErrorQuery is the 5xx share of requests, the same definition the Istio
+// source uses for ErrorRate and what the graph's "Errors (5xx)" legend entry means.
+func beylaL7ErrorQuery(namespace string, w rateWindow) string {
+	extra := ""
+	if namespace != "" {
+		extra = fmt.Sprintf(`, k8s_namespace_name=%q`, namespace)
+	}
+	group := beylaL7DetailGroupBy
+	return fmt.Sprintf(`sum by (%s) (rate(%s{%s%s, http_response_status_code=~"5.."}[%s]))`,
+		group, beylaL7Metric, beylaJobSelector(), extra, w.promQL)
+}
+
+// beylaL7RateQuery builds the L7 query. Unlike beylaRateQuery, there's only
+// one namespace label to filter on (k8s_namespace_name) since the metric has
+// no source side.
+func beylaL7RateQuery(namespace string, w rateWindow) string {
+	extra := ""
+	if namespace != "" {
+		extra = fmt.Sprintf(`, k8s_namespace_name=%q`, namespace)
+	}
+	return fmt.Sprintf(`sum by (%s) (rate(%s{%s%s}[%s]))`, beylaL7GroupBy, beylaL7Metric, beylaJobSelector(), extra, w.promQL)
+}
+
+func (s *BeylaSource) queryL4(ctx context.Context, opts FlowOptions) (map[l4Key]*Flow, l4LabelPresence, error) {
+	query := beylaRateQuery(beylaL4GroupBy, s.flowMetricName(), opts.Namespace, beylaL4DirectionFilter, beylaWindow(opts.Since))
 	result, err := s.query(ctx, query)
 	if err != nil {
 		return nil, l4LabelPresence{}, err
 	}
-	flows, presence := s.parseL4Flows(result)
+	flows, presence := s.parseL4Flows(result, beylaWindow(opts.Since))
 	presence.metric = s.flowMetricName()
-	// The unorientable-traffic probe is cluster-wide unless a single namespace was
-	// given, so when the caller is about to narrow the result it cannot be scoped
-	// to what the user may see. Skipped rather than reported out of scope. The
-	// missing-attribute part of the warning is unaffected: that describes Beyla's
-	// configuration, which is the same whichever namespaces you can read.
-	if withDiagnostics && !(opts.ResultWillBeFiltered && opts.Namespace == "") {
-		presence.hiddenUDP = s.hasUnorientableTraffic(ctx, opts)
-	}
 	return flows, presence, nil
 }
 
-// hasUnorientableTraffic reports whether there is traffic the direction filter
-// excluded, so its absence from the graph can be stated instead of read as an
-// absence of traffic. A failed probe stays silent rather than guessing.
+// queryReceivedBytes reads the response half of each conversation, which the flow
+// query itself excludes because it cannot be oriented into an edge. It is still
+// the true count of bytes coming back, so it fills BytesRecv rather than being
+// discarded — the same field Istio fills from istio_response_bytes_sum.
 //
-// Deliberately uncached. It reports on current traffic, not on how Beyla is
-// configured, so a cached answer goes stale the moment such traffic starts or
-// stops — and the load it was guarding against is gone: the stream path skips
-// diagnostics entirely, and the REST path is a user-triggered snapshot rather
-// than a poll.
-func (s *BeylaSource) hasUnorientableTraffic(ctx context.Context, opts FlowOptions) bool {
+// Keyed by the forward edge: a response series runs destination-to-source, so its
+// endpoints are inverted here. Port is left out of the key because response series
+// carry the client's ephemeral port.
+// replyLossFraction measures how much of the return traffic is present in
+// Prometheus but cannot be turned into a rate.
+//
+// Deriving a rate needs a counter observed at least twice. When dst.port is
+// exported, Beyla labels each reply with the client's port, so a new counter
+// appears per connection and is gone within seconds — usually seen once, or not at
+// all, between scrapes. Those bytes are dropped before any grouping this code
+// could change, which is why the figure is disclosed rather than corrected.
+//
+// Whether it matters depends on the workload: long-lived connections hold a stable
+// client port and measure normally. So this reports what was actually lost instead
+// of inferring severity from the configuration. Returns 0 when nothing is missing
+// or the probe cannot be answered — this drives a warning, and a warning invented
+// from a failed query is worse than none.
+func (s *BeylaSource) replyLossFraction(ctx context.Context, w rateWindow) float64 {
 	metric := s.flowMetricName()
-	base := beylaJobSelector() + beylaUnknownDirectionProbe
+	// Deliberately not scoped to the namespace filter. This measures whether the
+	// cluster's reply counters are measurable at all, which is a property of how
+	// Beyla is configured rather than of whichever namespaces are on screen, and
+	// scoping it would mean an `or` of two counts and no single value to read.
+	query := fmt.Sprintf(
+		`1 - ((count(rate(%s{%s, direction="response"}[%s]) > 0) or vector(0)) / (count(%s{%s, direction="response"}) or vector(1)))`,
+		metric, beylaJobSelector(), w.promQL, metric, beylaJobSelector())
+	result, err := s.query(ctx, query)
+	if err != nil || result == nil || len(result.Series) == 0 || len(result.Series[0].DataPoints) == 0 {
+		return 0
+	}
+	// A fraction outside (0, 1] is not an answer to the question asked, so treat it
+	// as no answer rather than scaling a warning by it.
+	val := result.Series[0].DataPoints[0].Value
+	if math.IsNaN(val) || math.IsInf(val, 0) || val <= 0 || val > 1 {
+		return 0
+	}
+	return val
+}
 
-	// Rate-filtered, not a bare series count. Beyla keeps emitting a series after
-	// its traffic stops, and a zero-rate unknown-direction series was observed for
-	// plain TCP — counting series would announce hidden traffic on a cluster that
-	// has none. `> 0` is the same bar parseL4Flows applies to a flow.
-	//
-	// Scoped the way beylaRateQuery scopes flows — either end of the conversation
-	// inside the namespace — so the warning describes the traffic the user is
-	// actually looking at. Filtering on the source alone would both miss inbound
-	// traffic and report traffic the user cannot see.
-	rated := func(extra string) string {
-		return fmt.Sprintf(`count(rate(%s{%s%s}[5m]) > 0)`, metric, base, extra)
+func (s *BeylaSource) queryReceivedBytes(ctx context.Context, opts FlowOptions) map[flowKey]int64 {
+	// k8s_*_owner_type belongs in the group-by even though the key ignores it.
+	// Beyla reports a Service-routed conversation twice, once attributed to the
+	// workload and once to the Service, with identical values; without the label
+	// here PromQL's sum by adds the two together and every such edge reports
+	// double the bytes coming back.
+	groupBy := `k8s_src_owner_name, k8s_src_namespace, k8s_src_owner_type, k8s_dst_owner_name, k8s_dst_namespace, k8s_dst_owner_type`
+	w := beylaWindow(opts.Since)
+	query := beylaRateQuery(groupBy, s.flowMetricName(), opts.Namespace, `, direction="response"`, w)
+	result, err := s.query(ctx, query)
+	if err != nil || result == nil {
+		// Received bytes are an enrichment; without them edges still draw.
+		return nil
 	}
-	query := rated("")
-	if opts.Namespace != "" {
-		query = rated(fmt.Sprintf(`, k8s_src_namespace=%q`, opts.Namespace)) + " or " +
-			rated(fmt.Sprintf(`, k8s_dst_namespace=%q`, opts.Namespace))
-	}
-	found := false
-	qr, err := s.query(ctx, query)
-	if err != nil {
-		// A failed probe is not an answer; say nothing rather than assert an absence.
-		return false
-	}
-	if qr != nil {
-		for _, series := range qr.Series {
-			for _, point := range series.DataPoints {
-				if point.Value > 0 {
-					found = true
-				}
-			}
+
+	received := make(map[flowKey]int64, len(result.Series))
+	for _, series := range result.Series {
+		if len(series.DataPoints) == 0 {
+			continue
+		}
+		val := series.DataPoints[0].Value
+		if !usableSample(val) {
+			continue
+		}
+		labels := series.Labels
+		respSrc := pickLabel(labels, "k8s_src_owner_name", "k8s_src_name")
+		respDst := pickLabel(labels, "k8s_dst_owner_name", "k8s_dst_name")
+		if respSrc == "" || respDst == "" {
+			continue
+		}
+		// Invert: the response's destination is the forward edge's source.
+		// flowKey is the package's existing pair key, used the same way by the
+		// Istio source to join its byte and error queries onto its flows.
+		key := flowKey{
+			srcNs: labels["k8s_dst_namespace"], srcWorkload: respDst,
+			dstNs: labels["k8s_src_namespace"], dstWorkload: respSrc,
+		}
+		// The duplicate attributions carry the same value, so take one rather than
+		// summing. Max is used instead of first-seen so the result does not depend
+		// on the order Prometheus returned the series, and so a pair whose
+		// attributions ever disagree reports the larger rather than their total.
+		if bytes := int64(val * w.seconds); bytes > received[key] {
+			received[key] = bytes
 		}
 	}
-	return found
+	return received
+}
+
+// queryUnorientable reads the conversations Beyla reports as direction="unknown"
+// — which is where UDP lands, DNS above all — and returns one edge per pair.
+//
+// Both halves carry that label, so neither can be called the request. Emitting
+// both would draw a mirrored pair of arrows, and dropping them removes real
+// traffic from the map along with the workload on the other end: with DNS gone,
+// coredns disappears entirely. Instead the pair is collapsed into a single edge,
+// ordered deterministically, marked as having no known direction so the graph
+// leaves the arrowhead off.
+//
+// Ports are not carried. In a default install they are absent anyway, and where
+// they exist one side holds the client's ephemeral port, so there is no single
+// port that describes the conversation.
+func (s *BeylaSource) queryUnorientable(ctx context.Context, opts FlowOptions) []Flow {
+	groupBy := `k8s_src_owner_name, k8s_src_namespace, k8s_src_owner_type, k8s_dst_owner_name, k8s_dst_namespace, k8s_dst_owner_type, transport`
+	w := beylaWindow(opts.Since)
+	query := beylaRateQuery(groupBy, s.flowMetricName(), opts.Namespace, beylaUnknownDirection, w)
+	result, err := s.query(ctx, query)
+	if err != nil || result == nil {
+		return nil
+	}
+
+	// One accumulator per conversation per attribution. Beyla reports a
+	// Service-routed conversation twice — once attributed to the workload, once to
+	// the Service — with identical values, so the two must not be added together.
+	// Ports are absent from the group-by, so Prometheus has already summed across
+	// them and each attribution yields one row per direction.
+	byAttribution := make(map[attribution]*conversationBytes)
+
+	for _, series := range result.Series {
+		if len(series.DataPoints) == 0 {
+			continue
+		}
+		val := series.DataPoints[0].Value
+		if !usableSample(val) {
+			continue
+		}
+		labels := series.Labels
+		aName := pickLabel(labels, "k8s_src_owner_name", "k8s_src_name")
+		bName := pickLabel(labels, "k8s_dst_owner_name", "k8s_dst_name")
+		if aName == "" || bName == "" {
+			continue
+		}
+		aNs, bNs := labels["k8s_src_namespace"], labels["k8s_dst_namespace"]
+		aType, bType := labels["k8s_src_owner_type"], labels["k8s_dst_owner_type"]
+
+		// Order the endpoints so both halves of a conversation land on one key.
+		// Which end is "source" is arbitrary and the graph will not imply
+		// otherwise, but it has to be stable across polls or the edge would flip.
+		forward := aNs+"/"+aName < bNs+"/"+bName
+		key := flowKey{srcNs: aNs, srcWorkload: aName, dstNs: bNs, dstWorkload: bName}
+		if !forward {
+			key = flowKey{srcNs: bNs, srcWorkload: bName, dstNs: aNs, dstWorkload: aName}
+		}
+
+		srcType, dstType := aType, bType
+		if !forward {
+			srcType, dstType = bType, aType
+		}
+
+		att := attribution{key: key, transport: labels["transport"], srcType: srcType, dstType: dstType}
+		h, ok := byAttribution[att]
+		if !ok {
+			h = &conversationBytes{}
+			byAttribution[att] = h
+		}
+		if bytes := int64(val * w.seconds); forward {
+			h.forward += bytes
+		} else {
+			h.backward += bytes
+		}
+	}
+
+	// Collapse the attributions of each conversation. The graph navigates to
+	// workloads, so the attribution with fewer Service ends wins — the same choice
+	// preferL4 makes on the oriented path. Deterministic, so the rendered kinds do
+	// not depend on the order Prometheus returned the rows.
+	chosen := make(map[conversation]attribution)
+	totals := make(map[conversation]*conversationBytes)
+	for att, h := range byAttribution {
+		conv := conversation{key: att.key, transport: att.transport}
+		if prev, ok := chosen[conv]; !ok || serviceEnds(att) < serviceEnds(prev) {
+			chosen[conv] = att
+		}
+		if t, ok := totals[conv]; ok {
+			// Same conversation under another attribution: identical values, so keep
+			// the larger rather than adding a second copy of the same traffic.
+			t.forward = max(t.forward, h.forward)
+			t.backward = max(t.backward, h.backward)
+		} else {
+			totals[conv] = &conversationBytes{forward: h.forward, backward: h.backward}
+		}
+	}
+
+	flows := make([]Flow, 0, len(totals))
+	for conv, h := range totals {
+		att := chosen[conv]
+		// A conversation with itself has no forward and no backward: both halves
+		// sort equal, so everything lands on one side. Report the traffic rather
+		// than a zero.
+		if conv.key.srcNs == conv.key.dstNs && conv.key.srcWorkload == conv.key.dstWorkload && h.forward == 0 {
+			h.forward, h.backward = h.backward, 0
+		}
+		flows = append(flows, Flow{
+			Source:      Endpoint{Name: conv.key.srcWorkload, Namespace: conv.key.srcNs, Kind: mapBeylaKind(att.srcType), Workload: conv.key.srcWorkload},
+			Destination: Endpoint{Name: conv.key.dstWorkload, Namespace: conv.key.dstNs, Kind: mapBeylaKind(att.dstType), Workload: conv.key.dstWorkload},
+			Protocol:    mapBeylaTransport(conv.transport),
+			Verdict:     "forwarded",
+			LastSeen:    time.Now(),
+			BytesSent:   h.forward,
+			BytesRecv:   h.backward,
+			// Beyla reports no request count for these, and deriving one from bytes
+			// would be a number it never measured.
+			DirectionUnknown: true,
+		})
+		// Same rule the oriented path applies: an endpoint with no namespace is
+		// outside the cluster, and the external filters key on that kind.
+		f := &flows[len(flows)-1]
+		if f.Source.Namespace == "" && f.Source.Name != "" {
+			f.Source.Kind = "External"
+		}
+		if f.Destination.Namespace == "" && f.Destination.Name != "" {
+			f.Destination.Kind = "External"
+		}
+	}
+	return flows
+}
+
+// conversation identifies an unorientable exchange between two endpoints over one
+// transport, without saying which end began it.
+type conversation struct {
+	key       flowKey
+	transport string
+}
+
+// attribution is one conversation as Beyla reported it. The same exchange arrives
+// twice when a Service fronts the destination, once under each owner type.
+type attribution struct {
+	key              flowKey
+	transport        string
+	srcType, dstType string
+}
+
+type conversationBytes struct {
+	forward  int64
+	backward int64
+}
+
+// serviceEnds counts how many ends of an attribution are the Service in front of
+// a workload rather than the workload itself.
+func serviceEnds(a attribution) int {
+	n := 0
+	if strings.EqualFold(a.srcType, "service") {
+		n++
+	}
+	if strings.EqualFold(a.dstType, "service") {
+		n++
+	}
+	return n
+}
+
+// queryL7Detail reads mean latency and 5xx rate per destination and port. Both are
+// enrichments: a failure leaves the fields unset rather than blocking the edges.
+func (s *BeylaSource) queryL7Detail(ctx context.Context, opts FlowOptions) (latency, errors l7Detail) {
+	read := func(query string, combine func(a, b float64) float64) l7Detail {
+		out := l7Detail{perPort: map[dstPortKey]float64{}, perDst: map[dstKey]float64{}}
+		result, err := s.query(ctx, query)
+		if err != nil || result == nil {
+			return out
+		}
+		for _, series := range result.Series {
+			if len(series.DataPoints) == 0 {
+				continue
+			}
+			val := series.DataPoints[0].Value
+			if !usableSample(val) {
+				continue
+			}
+			name, _ := pickBeylaOwner(series.Labels)
+			if name == "" {
+				continue
+			}
+			ns := series.Labels["k8s_namespace_name"]
+			// Series are grouped by pod, so a destination with more than one replica
+			// reports the same owner and port once per pod. They combine the same way
+			// a destination's ports do — overwriting would report a single replica's
+			// figure as the whole destination's.
+			port := dstPortKey{ns, name, parseIntLabel(series.Labels["server_port"])}
+			if existing, ok := out.perPort[port]; ok {
+				out.perPort[port] = combine(existing, val)
+			} else {
+				out.perPort[port] = val
+			}
+			dst := dstKey{ns, name}
+			if existing, ok := out.perDst[dst]; ok {
+				out.perDst[dst] = combine(existing, val)
+			} else {
+				out.perDst[dst] = val
+			}
+		}
+		return out
+	}
+	// How two figures for one destination combine, whether they come from separate
+	// ports or separate replicas. Error rates add up. Latencies are means, so the
+	// combined figure is the largest of them rather than their sum — an average of
+	// averages would need per-series request counts to weight it, and overstating
+	// the worst port is safer than understating it.
+	w := beylaWindow(opts.Since)
+	return read(beylaL7LatencyQuery(opts.Namespace, w), math.Max),
+		read(beylaL7ErrorQuery(opts.Namespace, w), func(a, b float64) float64 { return a + b })
+}
+
+// l7Detail holds a per-port measurement and its destination-wide equivalent, for
+// the case where the L4 edges carry no port and everything for a destination lands
+// on the same edge.
+type l7Detail struct {
+	perPort map[dstPortKey]float64
+	perDst  map[dstKey]float64
+}
+
+// forEdge picks the figure matching how the L7 record was chosen: an exact port
+// when the edges have one, the destination-wide figure when they do not.
+func (d l7Detail) forEdge(key dstPortKey, portless bool) (float64, bool) {
+	if portless {
+		v, ok := d.perDst[dstKey{key.dstNs, key.dstName}]
+		return v, ok
+	}
+	v, ok := d.perPort[key]
+	return v, ok
 }
 
 func (s *BeylaSource) queryL7(ctx context.Context, opts FlowOptions) ([]Flow, error) {
-	query := beylaL7RateQuery(opts.Namespace)
+	query := beylaL7RateQuery(opts.Namespace, beylaWindow(opts.Since))
 	result, err := s.query(ctx, query)
 	if err != nil {
 		return nil, err
@@ -647,7 +1133,7 @@ func (s *BeylaSource) queryL7(ctx context.Context, opts FlowOptions) ([]Flow, er
 // labels are still in hand — the raw transport value and the owner types needed
 // to resolve a collision are not carried on Flow. It also reports which optional
 // attributes the scrape included.
-func (s *BeylaSource) parseL4Flows(result *prom.QueryResult) (map[l4Key]*Flow, l4LabelPresence) {
+func (s *BeylaSource) parseL4Flows(result *prom.QueryResult, w rateWindow) (map[l4Key]*Flow, l4LabelPresence) {
 	flows := make(map[l4Key]*Flow)
 	var presence l4LabelPresence
 	if result == nil {
@@ -659,7 +1145,7 @@ func (s *BeylaSource) parseL4Flows(result *prom.QueryResult) (map[l4Key]*Flow, l
 			continue
 		}
 		val := series.DataPoints[0].Value
-		if val <= 0 {
+		if !usableSample(val) {
 			continue
 		}
 
@@ -701,8 +1187,13 @@ func (s *BeylaSource) parseL4Flows(result *prom.QueryResult) (map[l4Key]*Flow, l
 			Port:        port,
 			Verdict:     "forwarded",
 			LastSeen:    time.Now(),
-			BytesSent:   int64(val * beylaRateWindowSeconds),
-			Connections: 1,
+			BytesSent:   int64(val * w.seconds),
+			// Deliberately not set here. Beyla exports rates, not connection counts,
+			// so there is no number to put in it — Hubble's `Connections: 1` means
+			// "one observed event" and sums to a real count, which does not carry
+			// over to a source that emits one series per aggregate. Where HTTP data
+			// exists the merge below fills it with the request rate, the way Istio
+			// does; where it does not, it stays zero rather than claiming one.
 		}
 
 		if flow.Source.Namespace == "" && flow.Source.Name != "" {
@@ -741,7 +1232,7 @@ func (s *BeylaSource) parseL7Flows(result *prom.QueryResult) []Flow {
 			continue
 		}
 		val := series.DataPoints[0].Value
-		if val <= 0 {
+		if !usableSample(val) {
 			continue
 		}
 
@@ -765,7 +1256,6 @@ func (s *BeylaSource) parseL7Flows(result *prom.QueryResult) []Flow {
 			// connection count; Connections here is only a non-zero weight for
 			// downstream aggregation.
 			RequestRate: val,
-			Connections: max(int64(val*beylaRateWindowSeconds), 1),
 		}
 
 		flows = append(flows, flow)
@@ -841,11 +1331,7 @@ func (s *BeylaSource) StreamFlows(ctx context.Context, opts FlowOptions) (<-chan
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				// Streams carry flows only — there is nowhere to put a warning on
-				// this channel — so skip the diagnostics probe rather than run it
-				// every tick and discard the result. The REST poll behind the same
-				// view reports it.
-				flows, _, err := s.getFlowsInternal(ctx, opts, false)
+				flows, _, err := s.getFlowsInternal(ctx, opts)
 				if err != nil {
 					log.Printf("[beyla] Error fetching flows: %v", err)
 					continue

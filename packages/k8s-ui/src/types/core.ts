@@ -202,6 +202,11 @@ export type CoreNodeKind =
   | 'KubeadmControlPlane' // Cluster API KubeadmControlPlane
   | 'ClusterClass'       // Cluster API ClusterClass
   | 'MachineHealthCheck' // Cluster API MachineHealthCheck
+  | 'CalicoNetworkPolicy'
+  | 'CalicoGlobalNetworkPolicy'
+  | 'CalicoStagedNetworkPolicy'
+  | 'CalicoStagedGlobalNetworkPolicy'
+  | 'CalicoStagedKubernetesNetworkPolicy'
 
 // NodeKind can be a core kind or any arbitrary CRD kind string
 export type NodeKind = CoreNodeKind | (string & {})
@@ -236,6 +241,11 @@ export function displayKind(kind: string): string {
     KubeadmControlPlane: 'Control Plane',
     ClusterClass: 'ClusterClass',
     MachineHealthCheck: 'Health Check',
+    CalicoNetworkPolicy: 'Calico NetworkPolicy',
+    CalicoGlobalNetworkPolicy: 'Calico GlobalNetworkPolicy',
+    CalicoStagedNetworkPolicy: 'Calico StagedNetworkPolicy',
+    CalicoStagedGlobalNetworkPolicy: 'Calico StagedGlobalNetworkPolicy',
+    CalicoStagedKubernetesNetworkPolicy: 'Calico StagedKubernetesNetworkPolicy',
   }
   return shortNames[kind] || kind
 }
@@ -258,6 +268,7 @@ export interface TopologyEdge {
   target: string
   type: EdgeType
   label?: string
+  partial?: boolean
   /** Hover tooltip for the edge label. Used by the Reachability view to keep the
    *  DECLARED route path available when the label shows an overridden tested path. */
   labelTitle?: string
@@ -1204,6 +1215,13 @@ export interface TrafficFlow {
   bytesSent: number
   bytesRecv: number
   connections: number
+  /** The conversation's initiator could not be established, so source and
+   *  destination are ordered arbitrarily rather than describing a caller. */
+  directionUnknown?: boolean
+  /** 5xx responses per second. How a rate-based source reports failures: it
+   *  measures a rate rather than observing individual responses, so it has a
+   *  status code for no single flow. */
+  errorRate?: number
   verdict: string // forwarded, dropped, error
   lastSeen: string // ISO date string
 }
@@ -1236,6 +1254,9 @@ export interface AggregatedFlow {
   bytesRecv: number
   connections: number
   lastSeen: string
+  /** The conversation's initiator could not be established, so the endpoints are
+   *  ordered arbitrarily and the edge is drawn without an arrowhead. */
+  directionUnknown?: boolean
   l7Protocol?: string // HTTP, gRPC, DNS
   requestCount?: number
   errorCount?: number

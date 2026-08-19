@@ -31,4 +31,5 @@ const (
 
 // Re-export functions from pkg/traffic.
 var AggregateFlows = pkgtraffic.AggregateFlows
+var RoundRate = pkgtraffic.RoundRate
 var DefaultFlowOptions = pkgtraffic.DefaultFlowOptions

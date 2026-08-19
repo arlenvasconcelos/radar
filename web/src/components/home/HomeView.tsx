@@ -14,6 +14,7 @@ import { GitOpsControllersCard } from './GitOpsControllersCard'
 import { CapacityCard } from './CapacityCard'
 import { useCapabilitiesContext } from '../../contexts/CapabilitiesContext'
 import { Tooltip } from '../ui/Tooltip'
+import { getNetworkPolicyResourceTarget } from '../../utils/navigation'
 import {
   AuditCard,
   FreshnessControl,
@@ -79,6 +80,7 @@ export function HomeView({ namespaces, topology, fallbackClusterLoadState, onNav
     // declined build as a namespace holding nothing.
     return { ...topology, nodes, edges }
   }, [topology, namespaces])
+  const networkPolicyTarget = getNetworkPolicyResourceTarget(scopedTopology)
   // CRDs and Helm load lazily after main dashboard to keep initial load fast
   const { data: crdsData } = useDashboardCRDs(namespaces)
   const { data: helmData } = useDashboardHelm(namespaces)
@@ -202,7 +204,13 @@ export function HomeView({ namespaces, topology, fallbackClusterLoadState, onNav
                   <BandItem>
                     <NetworkPolicyCoverageCard
                       data={data.networkPolicyCoverage}
-                      onNavigate={() => onNavigateToResourceKind('networkpolicies', 'networking.k8s.io')}
+                      onNavigate={() => {
+                        if (networkPolicyTarget) {
+                          onNavigateToResourceKind(networkPolicyTarget.kind, networkPolicyTarget.group)
+                        } else {
+                          onNavigateToView('resources')
+                        }
+                      }}
                     />
                   </BandItem>
                 )}

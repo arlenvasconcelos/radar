@@ -107,3 +107,70 @@ func TestDetectSources_CarriesWhyAnUnavailableSourceIsUnavailable(t *testing.T) 
 		t.Error("no source is usable, so a recommendation must still be offered")
 	}
 }
+
+// A source that stops being available must stop being active. Detection only ever
+// promoted, so a cluster whose source went away kept reporting that source as
+// active while the flows endpoint answered 200 with an empty graph — the one
+// outcome with no explanation attached to it.
+func TestDetectSources_DropsAnActiveSourceThatStoppedBeingAvailable(t *testing.T) {
+	beyla := &stubSource{name: "beyla", result: &DetectionResult{Available: true, Present: true}}
+	m := &Manager{
+		k8sClient: fake.NewSimpleClientset(),
+		sources:   map[string]TrafficSource{"beyla": beyla},
+	}
+
+	if _, err := m.DetectSources(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.GetActiveSourceName() != "beyla" {
+		t.Fatalf("an available source must become active, got %q", m.GetActiveSourceName())
+	}
+
+	// The network feature is turned off underneath a running Radar.
+	beyla.result = &DetectionResult{
+		Available: false,
+		Present:   true,
+		Message:   "Beyla is running, but Prometheus holds no network flow metrics for it.",
+	}
+
+	response, err := m.DetectSources(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if response.Active != "" {
+		t.Errorf("response must not report an unavailable source as active, got %q", response.Active)
+	}
+	if name := m.GetActiveSourceName(); name != "" {
+		t.Errorf("active source must be cleared, got %q", name)
+	}
+	// And the flows endpoint must say so rather than serving an unexplained blank.
+	if _, err := m.GetFlows(context.Background(), FlowOptions{}); err == nil {
+		t.Error("GetFlows must report that no source is available, not return an empty graph")
+	}
+}
+
+// Losing a lower-priority source must not strand the user when a working one is
+// still there.
+func TestDetectSources_FailsOverToAnotherAvailableSource(t *testing.T) {
+	hubble := &stubSource{name: "hubble", result: &DetectionResult{Available: true, Present: true}}
+	beyla := &stubSource{name: "beyla", result: &DetectionResult{Available: true, Present: true}}
+	m := &Manager{
+		k8sClient: fake.NewSimpleClientset(),
+		sources:   map[string]TrafficSource{"hubble": hubble, "beyla": beyla},
+	}
+
+	if _, err := m.DetectSources(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.GetActiveSourceName() != "hubble" {
+		t.Fatalf("priority order must pick hubble, got %q", m.GetActiveSourceName())
+	}
+
+	hubble.result = &DetectionResult{Available: false, Present: true, Message: "gone"}
+	if _, err := m.DetectSources(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if name := m.GetActiveSourceName(); name != "beyla" {
+		t.Errorf("must fall over to the remaining available source, got %q", name)
+	}
+}

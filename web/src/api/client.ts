@@ -503,7 +503,9 @@ export interface DashboardCertificateHealth {
 
 export interface DashboardNetworkPolicyCoverage {
   totalPolicies: number;
+  stagedPolicies?: number;
   coveredWorkloads: number;
+  coveredWorkloadsIfStaged?: number;
   totalWorkloads: number;
 }
 
@@ -6207,6 +6209,14 @@ export interface DiagErrorEntry {
   level: string;
 }
 
+export interface DiagEnvVar {
+  key: string;
+  value: string;
+  /** Whether the variable exists at all. An empty value with set=true is a
+   *  distinct state — it suppresses the desktop app's own WebKit defaults. */
+  set: boolean;
+}
+
 export type DiagSyncPhase =
   "not_started" | "syncing_critical" | "syncing_deferred" | "complete";
 
@@ -6356,6 +6366,17 @@ export interface DiagnosticsSnapshot {
     connectedClients: number;
   };
   perf?: DiagPerfSnapshot;
+  /** Desktop app on Linux only — the host rendering environment. */
+  desktop?: {
+    sessionType?: string;
+    desktopEnvironment?: string;
+    displayServer?: string;
+    /** Every override key, including ones the host never set. */
+    renderOverrides?: DiagEnvVar[];
+    sandbox?: DiagEnvVar[];
+    webkitLibrary?: string;
+    gpuPolicy?: string;
+  };
   runtime?: {
     heapMB: number;
     heapObjectsK: number;

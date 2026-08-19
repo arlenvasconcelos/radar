@@ -84,10 +84,6 @@ func (s *Server) handleGetTrafficFlows(w http.ResponseWriter, r *http.Request) {
 	if len(namespaces) == 1 {
 		opts.Namespace = namespaces[0]
 	}
-	// More than one allowed namespace means the source queries cluster-wide and
-	// the filtering below does the narrowing, so anything the source reports about
-	// specific traffic may describe namespaces this user cannot see.
-	opts.ResultWillBeFiltered = len(namespaces) > 1
 
 	if sinceStr != "" {
 		duration, err := time.ParseDuration(sinceStr)
