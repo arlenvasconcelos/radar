@@ -203,6 +203,16 @@ func TestHelpers(t *testing.T) {
 		}
 	})
 
+	t.Run("QuitOnWindowCloseOr", func(t *testing.T) {
+		if (Config{}).QuitOnWindowCloseOr(false) != false {
+			t.Error("nil QuitOnWindowClose should return default")
+		}
+		tr := true
+		if (Config{QuitOnWindowClose: &tr}).QuitOnWindowCloseOr(false) != true {
+			t.Error("true QuitOnWindowClose should return true")
+		}
+	})
+
 	t.Run("TimelineStorageOr", func(t *testing.T) {
 		if (Config{}).TimelineStorageOr("memory") != "memory" {
 			t.Error("empty TimelineStorage should return default")

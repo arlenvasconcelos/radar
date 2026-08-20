@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	goruntime "runtime"
 	"time"
 
 	"github.com/skyhook-io/radar/internal/app"
@@ -224,6 +225,7 @@ func main() {
 	windowTitle := formatWindowTitle(k8s.GetContextName())
 
 	desktopApp := NewDesktopApp(srv, timelineStoreCfg)
+	hideOnClose := hideWindowOnClose(goruntime.GOOS, fileCfg)
 
 	// Run Wails application
 	err = wails.Run(&options.App{
@@ -236,11 +238,15 @@ func main() {
 		MaxHeight:        4320,
 		WindowStartState: options.Maximised,
 
+		// Closing the window leaves the server running on macOS — see
+		// hideWindowOnClose. Quit is explicit (Cmd+Q / File → Quit).
+		HideWindowOnClose: hideOnClose,
+
 		AssetServer: &assetserver.Options{
 			Handler: NewRedirectHandler(srv.ActualAddr(), cfg.Namespace, cfg.Namespaces),
 		},
 
-		Menu: createMenu(desktopApp, version),
+		Menu: createMenu(desktopApp, version, goruntime.GOOS, hideOnClose),
 
 		BackgroundColour: options.NewRGBA(10, 10, 15, 255),
 
@@ -257,7 +263,7 @@ func main() {
 			TitleBar: mac.TitleBarDefault(),
 			About: &mac.AboutInfo{
 				Title:   "Radar",
-				Message: "Kubernetes Visibility Tool\nBuilt by Skyhook\n\nVersion: " + version,
+				Message: "Kubernetes Visibility Tool\nBuilt by Skyhook\n\nVersion: " + version + "\n\nhttps://github.com/skyhook-io/radar",
 			},
 		},
 

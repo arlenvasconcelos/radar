@@ -110,9 +110,12 @@ func (a *DesktopApp) domReady(ctx context.Context) {
 	a.updateWindowTitle(k8s.GetContextName())
 }
 
-// beforeClose is called before the window closes. Return true to prevent closing.
+// beforeClose is called before the app quits. Return true to prevent quitting.
+//
+// On macOS this no longer runs when the window is closed — HideWindowOnClose
+// hides the app instead, and shutdown only happens on an explicit quit.
 func (a *DesktopApp) beforeClose(ctx context.Context) bool {
-	return false // allow close
+	return false // allow quit
 }
 
 // shutdown is called when the application is shutting down.

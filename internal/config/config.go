@@ -61,6 +61,11 @@ type Config struct {
 	AIHistory *bool `json:"aiHistory,omitempty"`
 	// AIHistoryDBPath overrides the history DB location (default ~/.radar/ai-runs.db).
 	AIHistoryDBPath string `json:"aiHistoryDbPath,omitempty"`
+	// QuitOnWindowClose makes the desktop app exit when its window is closed
+	// rather than staying resident. macOS only: it is the one platform where a
+	// closed window can be reopened from the dock, so it is the only one where
+	// staying resident is offered at all. nil = default (stay resident).
+	QuitOnWindowClose *bool `json:"quitOnWindowClose,omitempty"`
 	// AIConsent records the acknowledged AI-diagnosis disclosure version per
 	// agent execution profile. Machine-scoped on purpose: consent gates a
 	// machine-scoped action (spawn this machine's agent CLI, persist transcripts
@@ -209,6 +214,15 @@ func (c Config) MCPEnabledOr(def bool) bool {
 func (c Config) AIHistoryOr(def bool) bool {
 	if c.AIHistory != nil {
 		return *c.AIHistory
+	}
+	return def
+}
+
+// QuitOnWindowCloseOr returns *c.QuitOnWindowClose if non-nil, otherwise the
+// provided default.
+func (c Config) QuitOnWindowCloseOr(def bool) bool {
+	if c.QuitOnWindowClose != nil {
+		return *c.QuitOnWindowClose
 	}
 	return def
 }

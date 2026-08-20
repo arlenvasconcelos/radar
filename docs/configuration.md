@@ -75,6 +75,19 @@ All fields are optional — omitted fields use built-in defaults.
 | `prometheusHeadersFromEnv` | Header values read from environment variables at startup — e.g. `{"Authorization": "PROMETHEUS_TOKEN"}`. Equivalent CLI: `--prometheus-header-from-env Key=ENV_VAR` (repeatable). Use this with Kubernetes Secret-backed env vars in Helm deployments. |
 | `mcp` | Enable/disable MCP server for AI tools (default: enabled) |
 | `debugImage` | Image for ephemeral debug containers and node debug pods (same as `--debug-image`). Empty = `busybox:latest`; point at a mirror for air-gapped / private-registry clusters. |
+| `quitOnWindowClose` | Desktop app, macOS only: exit when the window is closed instead of staying resident (default: stay resident). See [Closing the desktop window](#closing-the-desktop-window-macos). |
+
+### Closing the desktop window (macOS)
+
+On macOS, closing the Radar window hides the app and leaves it running: the dock icon stays, and clicking it (or Cmd+Tab) brings the window back with the session intact. The local server keeps serving while hidden, so MCP clients stay connected — and so do the cluster watches behind it, which keep consuming memory and API-server connections until you quit. Quit explicitly from Radar → Quit Radar (Cmd+Q); File → Close Window (Cmd+W) hides it the same way the close button does.
+
+To restore the old behaviour — closing the window exits the app — set `quitOnWindowClose` in `~/.radar/config.json` and restart:
+
+```json
+{ "quitOnWindowClose": true }
+```
+
+On Linux and Windows, closing the window always exits. Neither platform gives Radar a tray icon to reopen from, so a hidden window there would leave a running process with no way to reach it.
 
 ### Settings File (`~/.radar/settings.json`)
 
