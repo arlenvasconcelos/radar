@@ -24,6 +24,27 @@ listener must be reachable through a published container port or Kubernetes
 Service. Desktop Radar and temporary `radar diagnose` servers remain
 loopback-only.
 
+## Desktop Window Behavior
+
+On macOS, closing the Radar window hides the app rather than quitting it. The
+Dock icon stays; a Dock click, Cmd+Tab, or Radar → Show All brings the window
+back with the session intact. File → Close Window (Cmd+W) hides it the same way
+the close button does. To quit, use Radar → Quit Radar (Cmd+Q).
+
+Radar keeps running while hidden. That is the point — MCP clients stay
+connected across a window close — but it means a hidden Radar still:
+
+- serves its loopback HTTP and MCP endpoints, under your kubeconfig identity;
+- holds watches open against the API server for every cached resource kind;
+- holds the memory backing those caches.
+
+None of that stops until you quit. If you close the window expecting Radar to
+release its cluster access, quit explicitly.
+
+On Linux and Windows, closing the window always quits. Neither gives Radar
+anything to reopen from — no Dock, and Wails v2 ships no tray icon — so hiding
+there would leave a running process with no way to reach it.
+
 ## Persistent Configuration
 
 Radar stores configuration in two files under `~/.radar/`:
@@ -75,12 +96,6 @@ All fields are optional — omitted fields use built-in defaults.
 | `prometheusHeadersFromEnv` | Header values read from environment variables at startup — e.g. `{"Authorization": "PROMETHEUS_TOKEN"}`. Equivalent CLI: `--prometheus-header-from-env Key=ENV_VAR` (repeatable). Use this with Kubernetes Secret-backed env vars in Helm deployments. |
 | `mcp` | Enable/disable MCP server for AI tools (default: enabled) |
 | `debugImage` | Image for ephemeral debug containers and node debug pods (same as `--debug-image`). Empty = `busybox:latest`; point at a mirror for air-gapped / private-registry clusters. |
-
-### Closing the desktop window (macOS)
-
-On macOS, closing the Radar window hides the app and leaves it running: the dock icon stays, and clicking it (or Cmd+Tab) brings the window back with the session intact. The local server keeps serving while hidden, so MCP clients stay connected — and so do the cluster watches behind it, which keep consuming memory and API-server connections until you quit. Quit explicitly from Radar → Quit Radar (Cmd+Q); File → Close Window (Cmd+W) hides it the same way the close button does.
-
-On Linux and Windows, closing the window always exits. Neither platform gives Radar a tray icon to reopen from, so a hidden window there would leave a running process with no way to reach it.
 
 ### Settings File (`~/.radar/settings.json`)
 
