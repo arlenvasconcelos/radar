@@ -44,8 +44,8 @@ func TestCreateMenuMacDelegatesQuitToTheApplicationMenu(t *testing.T) {
 	appMenu := createMenu(&DesktopApp{}, "test", "darwin", true)
 
 	roles := topLevelRoles(appMenu)
-	if len(roles) != 2 || roles[0] != menu.AppMenuRole || roles[1] != menu.WindowMenuRole {
-		t.Fatalf("top-level roles = %v, want [AppMenuRole WindowMenuRole]", roles)
+	if len(roles) != 1 || roles[0] != menu.AppMenuRole {
+		t.Fatalf("top-level roles = %v, want [AppMenuRole]", roles)
 	}
 	if appMenu.Items[0].Role != menu.AppMenuRole {
 		t.Fatalf("first menu item role = %v, want the application menu", appMenu.Items[0].Role)

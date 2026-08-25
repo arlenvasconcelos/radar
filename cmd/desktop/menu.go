@@ -176,11 +176,6 @@ func createMenu(desktopApp *DesktopApp, version, goos string, hideOnClose bool) 
 		runtime.WindowExecJS(desktopApp.ctx, "document.body.style.zoom = '1';")
 	})
 
-	// Window menu (macOS role: Minimize, Zoom, Full Screen)
-	if mac {
-		appMenu.Append(menu.WindowMenu())
-	}
-
 	// Help menu
 	helpMenu := appMenu.AddSubmenu("Help")
 	helpMenu.AddText("Check for Updates...", nil, func(_ *menu.CallbackData) {
