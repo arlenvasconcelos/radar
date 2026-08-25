@@ -225,7 +225,12 @@ func main() {
 	windowTitle := formatWindowTitle(k8s.GetContextName())
 
 	desktopApp := NewDesktopApp(srv, timelineStoreCfg)
-	hideOnClose := hideWindowOnClose(goruntime.GOOS, fileCfg)
+	// macOS only. Wails maps this to `[NSApp hide:]`, which leaves the dock icon
+	// in place, so a dock click or Cmd+Tab brings the window back. The other
+	// platforms have no such affordance: GTK hides the window on delete-event and
+	// Windows drops the taskbar entry, and Wails v2 ships no tray icon, so a
+	// hidden window there is only recoverable by killing the process.
+	hideOnClose := goruntime.GOOS == "darwin"
 
 	// Run Wails application
 	err = wails.Run(&options.App{
@@ -238,8 +243,8 @@ func main() {
 		MaxHeight:        4320,
 		WindowStartState: options.Maximised,
 
-		// Closing the window leaves the server running on macOS — see
-		// hideWindowOnClose. Quit is explicit (Cmd+Q / File → Quit).
+		// Closing the window leaves the server running. Quit is explicit
+		// (Cmd+Q / File → Quit).
 		HideWindowOnClose: hideOnClose,
 
 		AssetServer: &assetserver.Options{

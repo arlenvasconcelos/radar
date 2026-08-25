@@ -39,7 +39,7 @@ func TestCreateMenuAddsCloseWindowOnlyWhenClosingHides(t *testing.T) {
 // macOS puts Quit in the application menu, and binding Cmd+Q on a File item too
 // would leave two menu entries racing for the same accelerator. The native
 // AppMenu role also carries Hide/Show All, which is how a hidden app is found
-// again — see hideWindowOnClose.
+// again.
 func TestCreateMenuMacDelegatesQuitToTheApplicationMenu(t *testing.T) {
 	appMenu := createMenu(&DesktopApp{}, "test", "darwin", true)
 
