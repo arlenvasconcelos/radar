@@ -84,32 +84,48 @@ func LoadChecked() (Settings, error) {
 	if path == "" {
 		return Settings{}, errors.New("settings path unavailable")
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return Settings{}, nil
-		}
-		log.Printf("[settings] Failed to read %s: %v", path, err)
-		return Settings{}, err
-	}
 	var s Settings
-	if err := json.Unmarshal(data, &s); err != nil {
-		log.Printf("[settings] Failed to parse %s: %v", path, err)
+	if err := readJSONFile(path, &s); err != nil {
 		return Settings{}, err
 	}
 	return s, nil
 }
 
+// readJSONFile decodes path into v, treating a missing file as "nothing
+// recorded yet" (v left untouched, nil error) and every other failure as an
+// error the caller must distinguish from absence.
+func readJSONFile(path string, v any) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		log.Printf("[settings] Failed to read %s: %v", path, err)
+		return err
+	}
+	if err := json.Unmarshal(data, v); err != nil {
+		log.Printf("[settings] Failed to parse %s: %v", path, err)
+		return err
+	}
+	return nil
+}
+
 // Save writes settings to disk using atomic rename.
 func Save(s Settings) error {
-	path := Path()
+	return writeJSONFile(Path(), s)
+}
+
+// writeJSONFile writes v to path via a temp file and an atomic rename, so a
+// crash mid-write leaves the previous contents intact rather than a truncated
+// file the next start refuses to parse.
+func writeJSONFile(path string, v any) error {
 	if path == "" {
 		return os.ErrNotExist
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(s, "", "  ")
+	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -126,10 +142,17 @@ func Save(s Settings) error {
 
 // Update atomically loads, applies a mutation, and saves settings.
 // This prevents concurrent PUTs from overwriting each other's changes.
+//
+// LoadChecked, not Load: a settings file we failed to read must not be
+// overwritten from a zero value, or saving one preference would silently erase
+// every other one the file still held.
 func Update(mutate func(*Settings)) (Settings, error) {
 	mu.Lock()
 	defer mu.Unlock()
-	s := Load()
+	s, err := LoadChecked()
+	if err != nil {
+		return s, err
+	}
 	mutate(&s)
 	return s, Save(s)
 }

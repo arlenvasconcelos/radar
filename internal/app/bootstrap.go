@@ -32,8 +32,17 @@ var clusterConnectionProbe = k8s.TestClusterConnection
 
 // AppConfig holds all parsed configuration for the Radar application.
 type AppConfig struct {
-	Kubeconfig               string
-	KubeconfigDirs           []string
+	Kubeconfig     string
+	KubeconfigDirs []string
+	// RestoreLastContext reopens on the cluster the last session was switched
+	// to instead of the kubeconfig's current-context, recording every switch so
+	// the next start finds it. Only cmd/desktop sets it: a window you reopen
+	// should come back where you left it, while a command typed right after
+	// `kubectl config use-context` must run where the shell says it will. The
+	// zero value is the deterministic one on purpose — an entrypoint that never
+	// mentions this field gets current-context rather than another session's
+	// state.
+	RestoreLastContext       bool
 	Namespace                string
 	Namespaces               []string
 	Port                     int
@@ -109,8 +118,9 @@ func validateNamespaceFanout(namespaces []string, ctxNs string, maxCandidates in
 // InitializeK8s creates and configures the Kubernetes client.
 func InitializeK8s(cfg AppConfig) error {
 	err := k8s.Initialize(k8s.InitOptions{
-		KubeconfigPath: cfg.Kubeconfig,
-		KubeconfigDirs: cfg.KubeconfigDirs,
+		KubeconfigPath:   cfg.Kubeconfig,
+		KubeconfigDirs:   cfg.KubeconfigDirs,
+		PreferredContext: startupContextPreference(cfg),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize K8s client: %w", err)
@@ -221,6 +231,8 @@ func BuildTimelineStoreConfig(cfg AppConfig) timeline.StoreConfig {
 func RegisterCallbacks(cfg AppConfig, timelineStoreCfg timeline.StoreConfig) {
 	k8s.RegisterHelmFuncs(helm.ResetClient, helm.ReinitClient)
 
+	RegisterLastContextMemory(cfg)
+
 	k8s.RegisterTimelineFuncs(func() {
 		// Reset the store AND the per-cluster event-pipeline metrics: RecentDrops
 		// name resources from the previous cluster and must not survive the switch.
@@ -264,6 +276,7 @@ func RegisterCallbacks(cfg AppConfig, timelineStoreCfg timeline.StoreConfig) {
 
 // CreateServer creates the HTTP server with the given configuration.
 func CreateServer(cfg AppConfig) *server.Server {
+	restoreLastContext := remembersLastContext(cfg)
 	effectiveCfg := &config.Config{
 		Kubeconfig:               cfg.Kubeconfig,
 		KubeconfigDirs:           cfg.KubeconfigDirs,
@@ -283,6 +296,7 @@ func CreateServer(cfg AppConfig) *server.Server {
 		DebugImage:               cfg.DebugImage,
 		ReachabilityImage:        cfg.ReachabilityImage,
 		MCP:                      &cfg.MCPEnabled,
+		RestoreLastContext:       &restoreLastContext,
 	}
 
 	serverCfg := server.Config{

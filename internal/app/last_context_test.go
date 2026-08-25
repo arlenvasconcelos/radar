@@ -1,0 +1,142 @@
+package app
+
+import (
+	"path/filepath"
+	"testing"
+
+	"github.com/skyhook-io/radar/internal/auth"
+	"github.com/skyhook-io/radar/internal/k8s"
+	"github.com/skyhook-io/radar/internal/settings"
+)
+
+func useTempHome(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	return dir
+}
+
+func TestPersistLastContextRemembersTheSwitch(t *testing.T) {
+	useTempHome(t)
+
+	persistLastContext(remembering(), "prod-eu")
+
+	if saved := rememberedName(); saved != "prod-eu" {
+		t.Errorf("remembered context = %q, want %q", saved, "prod-eu")
+	}
+}
+
+func TestPersistLastContextIgnoresEmptyName(t *testing.T) {
+	useTempHome(t)
+
+	persistLastContext(remembering(), "")
+
+	if saved := rememberedName(); saved != "" {
+		t.Errorf("remembered context = %q, want empty for an empty context name", saved)
+	}
+}
+
+// A shared server must not remember one user's cluster pick on disk — the
+// switch belongs to whoever made it, not to the machine.
+func TestPersistLastContextSkippedWhenAuthEnabled(t *testing.T) {
+	useTempHome(t)
+
+	persistLastContext(withAuth(auth.Config{Mode: "oidc"}), "prod-eu")
+
+	if saved := rememberedName(); saved != "" {
+		t.Errorf("remembered context = %q, want empty when auth is enabled", saved)
+	}
+}
+
+func TestPersistLastContextSkippedForCloudTunnel(t *testing.T) {
+	useTempHome(t)
+
+	persistLastContext(cloudTunnelled(), "prod-eu")
+
+	if saved := rememberedName(); saved != "" {
+		t.Errorf("remembered context = %q, want empty in cloud-tunnel mode", saved)
+	}
+}
+
+func TestStartupContextPreferenceReturnsLastUsedContext(t *testing.T) {
+	useTempHome(t)
+	remember(t, "prod-eu")
+
+	if got := startupContextPreference(remembering()); got.Name != "prod-eu" {
+		t.Errorf("startupContextPreference() = %q, want %q", got, "prod-eu")
+	}
+}
+
+func TestStartupContextPreferenceEmptyWithoutSavedContext(t *testing.T) {
+	useTempHome(t)
+
+	if got := startupContextPreference(remembering()); got.Name != "" {
+		t.Errorf("startupContextPreference() = %q, want empty", got.Name)
+	}
+}
+
+func TestStartupContextPreferenceSkippedWhenAuthEnabled(t *testing.T) {
+	useTempHome(t)
+	remember(t, "prod-eu")
+
+	if got := startupContextPreference(withAuth(auth.Config{Mode: "proxy"})); got.Name != "" {
+		t.Errorf("startupContextPreference() = %q, want empty when auth is enabled", got.Name)
+	}
+}
+
+// remembering returns the config of an entrypoint that opts into the memory —
+// Desktop's shape. The zero AppConfig deliberately does not.
+func remembering() AppConfig {
+	return AppConfig{RestoreLastContext: true}
+}
+
+func withAuth(c auth.Config) AppConfig {
+	cfg := remembering()
+	cfg.AuthConfig = c
+	return cfg
+}
+
+func cloudTunnelled() AppConfig {
+	cfg := remembering()
+	cfg.CloudTunnelConfigured = true
+	return cfg
+}
+
+// rememberedName reads back the recorded context name, treating "nothing
+// recorded" as the empty string.
+func rememberedName() string {
+	saved, _ := settings.LoadDesktopState()
+	if saved.LastContext != nil {
+		return saved.LastContext.Name
+	}
+	return ""
+}
+
+func remember(t *testing.T, name string) {
+	t.Helper()
+	if _, err := settings.UpdateDesktopState(func(st *settings.DesktopState) {
+		st.LastContext = &settings.LastContext{Name: name}
+	}); err != nil {
+		t.Fatalf("UpdateDesktopState: %v", err)
+	}
+}
+
+// The switch is recorded with the file it came from, not just the name the
+// header showed — see settings.LastContext for why the name alone is not a
+// stable handle across kubeconfigs.
+func TestPersistLastContextRecordsWhereTheContextCameFrom(t *testing.T) {
+	useTempHome(t)
+	path := filepath.Join(t.TempDir(), "team.yaml")
+	t.Cleanup(k8s.SetTestRegistryEntry("dev (team)", path, "dev"))
+
+	persistLastContext(remembering(), "dev (team)")
+
+	saved, _ := settings.LoadDesktopState()
+	if saved.LastContext == nil {
+		t.Fatal("nothing recorded")
+	}
+	if got := *saved.LastContext; got.Name != "dev (team)" || got.SourceFile != path || got.InFileName != "dev" {
+		t.Errorf("recorded %+v, want name/file/in-file-name all pinned", saved.LastContext)
+	}
+}

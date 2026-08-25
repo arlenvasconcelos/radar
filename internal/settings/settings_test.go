@@ -194,3 +194,22 @@ func TestRolloutKeyConcurrentMintResolvesToOneWinner(t *testing.T) {
 		t.Fatal("no identity persisted after the race")
 	}
 }
+
+func TestUpdateRefusesToOverwriteAnUnreadableFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+
+	path := filepath.Join(dir, ".radar", "settings.json")
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	os.WriteFile(path, []byte("{bad"), 0o644)
+
+	if _, err := Update(func(s *Settings) { s.Theme = "dark" }); err == nil {
+		t.Fatal("Update should fail when the existing settings cannot be read")
+	}
+
+	raw, _ := os.ReadFile(path)
+	if string(raw) != "{bad" {
+		t.Errorf("Update rewrote an unreadable settings file, losing every other preference: %s", raw)
+	}
+}

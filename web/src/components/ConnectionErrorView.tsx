@@ -404,6 +404,12 @@ export function ConnectionErrorView({ connection, onRetry, isRetrying }: Connect
                 Cluster: <span className="inline-code">{connection.clusterName}</span>
               </p>
             )}
+
+            {connection.restoredLastUsed && connection.errorType !== 'config' && (
+              <p className="text-sm text-theme-text-tertiary pt-1">
+                Radar reopened on the cluster you were last using — not your kubeconfig&apos;s current context.
+              </p>
+            )}
           </div>
 
           <div className="w-full bg-theme-surface border border-theme-border rounded-lg p-4 mb-5 text-left">

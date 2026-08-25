@@ -59,6 +59,7 @@ All fields are optional — omitted fields use built-in defaults.
 |-------|-------------|
 | `kubeconfig` | Primary kubeconfig file (same as `--kubeconfig`) |
 | `kubeconfigDirs` | Directories containing additional kubeconfig files (same as `--kubeconfig-dir`) |
+| `restoreLastContext` | Desktop app only: reopen on the cluster last used (default: enabled). `false` always opens on the kubeconfig's `current-context` — see [Startup Context](#startup-context) |
 | `namespace` | Initial namespace filter |
 | `namespaces` | Initial namespace filters as a list (same as `--namespaces ns1,ns2,ns3`) |
 | `port` | Server port (default 9280) |
@@ -95,6 +96,14 @@ User preferences for the UI. Managed via the Settings dialog or `PUT /api/settin
 |-------|--------|-------------|
 | `theme` | `light`, `dark`, `system` | UI theme preference |
 | `pinnedKinds` | Array of `{name, kind, group}` | Resource kinds pinned to the sidebar |
+
+### Desktop State File (`~/.radar/desktop-state.json`)
+
+Written by the Desktop app for itself — not served over the API, and never read by `kubectl radar` or the `radar` CLI.
+
+| Field | Values | Description |
+|-------|--------|-------------|
+| `lastContext` | `{name, sourceFile, inFileName}` | The cluster the Desktop window was last switched to, reopened on the next launch — see [Startup Context](#startup-context) |
 
 ## Cluster Connection Precedence
 
@@ -191,9 +200,38 @@ Radar supports switching between Kubernetes contexts at runtime through the UI. 
 
 When running in-cluster (using the pod's service account), context switching is disabled.
 
+Switching contexts in the UI never rewrites your kubeconfig — `kubectl` keeps pointing wherever it pointed before.
+
 ### Expired credentials
 
 If an active context's credentials expire or are rejected, Radar disconnects cluster-backed work and retries automatically. After you re-authenticate, exec-based credentials are re-probed and static credentials are reloaded from kubeconfig on disk, so Radar can reconnect without a restart. Retries start after 30 seconds and back off to 5 minutes; a credential plugin that stops responding is retried less frequently.
+
+## Startup Context
+
+Which cluster Radar comes up on depends on how you launched it.
+
+**The Desktop app reopens where you left off.** Every context switch is recorded in `~/.radar/desktop-state.json`, and the next launch reconnects to it — the natural behaviour for a window you closed and reopened.
+
+**`kubectl radar`, `radar`, and `radar diagnose --standalone` start on the kubeconfig's `current-context`**, as `kubectl` would. A command typed right after `kubectl config use-context staging` runs against staging, and a cluster picked in the Desktop app days ago never redirects it. Terminal runs don't record switches either, so nothing you do in one moves where the Desktop app reopens.
+
+The separation is structural, not a preference: the remembered cluster lives in a Desktop-owned file that the CLI never reads or writes, and there is no setting that opts the CLI in.
+
+To stop the Desktop app reopening on the last cluster, turn off **Reopen on the last used cluster** in Settings → Connection, or set in `~/.radar/config.json`:
+
+```json
+{
+  "restoreLastContext": false
+}
+```
+
+Details worth knowing:
+
+- The remembered context records the kubeconfig file it came from, not just its name — the name alone is not a stable handle. With several kubeconfigs loaded, two files can define the same context name, and which one keeps the unqualified name depends on the order the files are read, so adding a file can hand that name to a different cluster.
+- Radar reopens only on an exact match: the same context, in the same file. Anything else — the context renamed or deleted, the file moved or no longer loaded — opens the kubeconfig's `current-context` instead, and says so in Diagnostics. A same-named context in another file is not treated as evidence that it is the same cluster; losing the convenience costs a click, landing on the wrong cluster costs more.
+- If the remembered cluster is unreachable (VPN down, for instance), Radar reports the connection failure rather than silently connecting to a different cluster. Pick another cluster from the header.
+- Clusters connected through CAPI are never remembered: their kubeconfig is a temporary file that no longer exists on the next run.
+- Turning the memory off clears it as well as stopping new recording, so turning it back on later starts fresh rather than reopening a cluster you stopped using months ago.
+- When Radar cannot reach a cluster it restored, the connection screen says so — "reopened on the cluster you were last using" is a different problem from your `current-context` being unreachable.
 
 ## Namespace Picker
 

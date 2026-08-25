@@ -161,6 +161,7 @@ func main() {
 	cfg := app.AppConfig{
 		Kubeconfig:               resolvedKubeconfig,
 		KubeconfigDirs:           resolvedKubeconfigDirs,
+		RestoreLastContext:       fileCfg.RestoreLastContextOr(true),
 		Namespace:                resolvedNamespace,
 		Namespaces:               resolvedNamespaces,
 		Port:                     fileCfg.PortOr(0), // Configured port, or random to avoid conflicts with CLI
@@ -187,6 +188,10 @@ func main() {
 		MCPEnabled:               fileCfg.MCPEnabledOr(true),
 		AIHistory:                fileCfg.AIHistoryOr(true),
 		AIHistoryDBPath:          fileCfg.AIHistoryDBPath,
+	}
+
+	if !cfg.RestoreLastContext {
+		app.ForgetLastContext()
 	}
 
 	app.SetGlobals(cfg)
