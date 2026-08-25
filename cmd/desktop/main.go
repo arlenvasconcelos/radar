@@ -251,7 +251,7 @@ func main() {
 			Handler: NewRedirectHandler(srv.ActualAddr(), cfg.Namespace, cfg.Namespaces),
 		},
 
-		Menu: createMenu(desktopApp, version, goruntime.GOOS, hideOnClose),
+		Menu: createMenu(desktopApp, version, goruntime.GOOS),
 
 		BackgroundColour: options.NewRGBA(10, 10, 15, 255),
 

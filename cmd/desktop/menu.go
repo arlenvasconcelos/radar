@@ -66,11 +66,11 @@ func clipboardDelegate(goos string, desktopApp *DesktopApp, command string) func
 	}
 }
 
-// createMenu builds the native menubar. hideOnClose must be the same value the
-// window was configured with: Close Window hides the app rather than closing
-// anything, so the item only belongs in the menu when the close button does the
-// same — otherwise it would leave a running process with nothing to restore it.
-func createMenu(desktopApp *DesktopApp, version, goos string, hideOnClose bool) *menu.Menu {
+// createMenu builds the native menubar. macOS diverges throughout: the
+// application-menu role owns Quit and About there, and Close Window hides the
+// whole app rather than closing anything — which is only safe on the one
+// platform where the close button does the same and the Dock can bring it back.
+func createMenu(desktopApp *DesktopApp, version, goos string) *menu.Menu {
 	mac := goos == "darwin"
 
 	appMenu := menu.NewMenu()
@@ -87,7 +87,7 @@ func createMenu(desktopApp *DesktopApp, version, goos string, hideOnClose bool) 
 	fileMenu.AddText("Settings...", keys.CmdOrCtrl(","), func(_ *menu.CallbackData) {
 		runtime.WindowExecJS(desktopApp.ctx, `window.dispatchEvent(new Event('radar:open-settings'))`)
 	})
-	if hideOnClose {
+	if mac {
 		fileMenu.AddText("Close Window", keys.CmdOrCtrl("w"), func(_ *menu.CallbackData) {
 			runtime.Hide(desktopApp.ctx)
 		})
