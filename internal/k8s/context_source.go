@@ -2,25 +2,11 @@ package k8s
 
 import (
 	"log"
-	"sync/atomic"
 
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/skyhook-io/radar/internal/errorlog"
 )
-
-// restoredContextName is the context Radar came up on because the last session
-// was left there. A name rather than a flag: a switch away answers for itself,
-// while a retry against the same cluster — which runs the same switch path —
-// keeps it.
-var restoredContextName atomic.Value // string
-
-// ContextRestoredFromMemory reports whether the context Radar is on right now
-// is one it restored at startup rather than one the kubeconfig chose.
-func ContextRestoredFromMemory() bool {
-	name, _ := restoredContextName.Load().(string)
-	return name != "" && name == GetContextName()
-}
 
 // ContextRef identifies a kubeconfig context precisely enough to survive a
 // restart: the name Radar displays, plus the file it came from and the name it
@@ -106,7 +92,7 @@ func IsEphemeralContext(name string) bool {
 // place before the deferred loader builds its inner config — it captures
 // CurrentContext on the first RawConfig()/ClientConfig() call and caches it.
 func applyContextPreference(path string, preferred ContextRef, overrides *clientcmd.ConfigOverrides) {
-	if preferred.Empty() {
+	if preferred.Empty() || preferred.SourceFile != path {
 		reportContextPreferenceMiss(preferred)
 		return
 	}
@@ -115,14 +101,11 @@ func applyContextPreference(path string, preferred ContextRef, overrides *client
 		reportContextPreferenceMiss(preferred)
 		return
 	}
-	if preferred.SourceFile == path {
-		if _, ok := cfg.Contexts[preferred.InFileName]; ok {
-			overrides.CurrentContext = preferred.InFileName
-			restoredContextName.Store(preferred.InFileName)
-			return
-		}
+	if _, ok := cfg.Contexts[preferred.InFileName]; !ok {
+		reportContextPreferenceMiss(preferred)
+		return
 	}
-	reportContextPreferenceMiss(preferred)
+	overrides.CurrentContext = preferred.InFileName
 }
 
 // reportContextPreferenceMiss explains why Radar did not come up where the last

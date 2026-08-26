@@ -1,9 +1,9 @@
 package app
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
+
+	"github.com/skyhook-io/radar/internal/settings"
 )
 
 // The zero value is what a terminal entrypoint passes: `kubectl radar` and
@@ -64,12 +64,25 @@ func TestForgetLastContextClearsTheMemory(t *testing.T) {
 	}
 }
 
-func TestForgetLastContextLeavesOtherDesktopStateAlone(t *testing.T) {
-	dir := useTempHome(t)
+// The remembered cluster shares settings.json with every other preference, so
+// clearing it must leave the rest of the file untouched.
+func TestForgetLastContextLeavesOtherSettingsAlone(t *testing.T) {
+	useTempHome(t)
+	if _, err := settings.Update(func(st *settings.Settings) {
+		st.Theme = "dark"
+		st.HelmOCISources = []string{"oci://ghcr.io/acme/charts"}
+	}); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+	remember(t, "prod-eu")
 
 	ForgetLastContext()
 
-	if _, err := os.Stat(filepath.Join(dir, ".radar", "desktop-state.json")); !os.IsNotExist(err) {
-		t.Errorf("desktop-state.json exists after clearing nothing (err=%v)", err)
+	got := settings.Load()
+	if got.LastDesktopContext != nil {
+		t.Errorf("remembered context = %+v, want it cleared", got.LastDesktopContext)
+	}
+	if got.Theme != "dark" || len(got.HelmOCISources) != 1 {
+		t.Errorf("ForgetLastContext disturbed sibling settings: %+v", got)
 	}
 }

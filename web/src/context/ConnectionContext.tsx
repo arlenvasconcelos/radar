@@ -12,7 +12,6 @@ export interface ConnectionState {
   error?: string
   errorType?: string // config, auth, auth-rejected, auth-plugin-stuck, rbac, network, timeout, tls, unknown
   progressMessage?: string
-  restoredLastUsed?: boolean
 }
 
 interface ConnectionStatusResponse extends ConnectionState {
@@ -212,7 +211,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       error: data.error,
       errorType: data.errorType,
       progressMessage: data.progressMessage,
-      restoredLastUsed: data.restoredLastUsed,
     })
     if (becameConnected) {
       refreshCachesOnConnect()
@@ -236,7 +234,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       }))
     },
     onSuccess: (result) => {
-      setConnection(prev => ({ ...result, restoredLastUsed: prev.restoredLastUsed }))
+      setConnection(result)
       if (result.state === 'connected') {
         // Keep the first-connect bookkeeping and the double-refresh window
         // honest — the SSE frame that follows must not re-invalidate.
@@ -304,7 +302,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
             recovered = true
             autoRetryDelayRef.current = AUTO_RETRY_INITIAL_DELAY_MS
             sseActiveRef.current = false
-            setConnection(prev => ({ ...result, restoredLastUsed: prev.restoredLastUsed }))
+            setConnection(result)
             if (result.state === 'connected') {
               hasConnectedRef.current = true
               lastCacheRefreshAtRef.current = Date.now()

@@ -4367,7 +4367,6 @@ func (s *Server) handleConnectionStatus(w http.ResponseWriter, r *http.Request) 
 		// Lets the browser stand down its auto-retry for the whole auth-loss
 		// episode, even when the live errorType flips to non-auth values.
 		"authRecoveryOwed": k8s.RuntimeAuthRecoveryOwed(),
-		"restoredLastUsed": k8s.ContextRestoredFromMemory(),
 	}
 	// Context enumeration re-reads kubeconfig files (under the client write
 	// lock in multi-file mode) — too expensive for the UI's perpetual
@@ -5068,6 +5067,10 @@ func deploymentMode() k8s.DeploymentMode {
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	loaded := settings.Load()
+	// Desktop's own state, not the machine's — nothing that reads this endpoint
+	// has any use for it, and on a shared instance it would hand every viewer
+	// the cluster name from whenever this $HOME last ran the Desktop app.
+	loaded.LastDesktopContext = nil
 	if cloudMode() {
 		// Strip user-scoped fields — Cloud's intercept layer fills them from
 		// user_preferences. Audit stays because it's cluster-shared policy.
@@ -5105,6 +5108,9 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Same reason as handleGetSettings: the response echoes the merged struct,
+	// so Desktop's remembered cluster would ride back out on every save.
+	result.LastDesktopContext = nil
 	if cloudMode() {
 		result.Theme = ""
 		result.PinnedKinds = nil

@@ -252,7 +252,6 @@ func SetTestPolicyReportIndex(idx *policyreports.Index) *policyreports.Index {
 // This is intended for integration tests only.
 func ResetTestState() {
 	policyReportIndex.Store(nil)
-	restoredContextName.Store("")
 
 	// Reset resource cache
 	ResetResourceCache()

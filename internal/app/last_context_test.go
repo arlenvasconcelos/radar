@@ -106,19 +106,18 @@ func cloudTunnelled() AppConfig {
 // rememberedName reads back the recorded context name, treating "nothing
 // recorded" as the empty string.
 func rememberedName() string {
-	saved, _ := settings.LoadDesktopState()
-	if saved.LastContext != nil {
-		return saved.LastContext.Name
+	if saved := settings.Load().LastDesktopContext; saved != nil {
+		return saved.Name
 	}
 	return ""
 }
 
 func remember(t *testing.T, name string) {
 	t.Helper()
-	if _, err := settings.UpdateDesktopState(func(st *settings.DesktopState) {
-		st.LastContext = &settings.LastContext{Name: name}
+	if _, err := settings.Update(func(st *settings.Settings) {
+		st.LastDesktopContext = &settings.LastContext{Name: name}
 	}); err != nil {
-		t.Fatalf("UpdateDesktopState: %v", err)
+		t.Fatalf("Update: %v", err)
 	}
 }
 
@@ -132,11 +131,11 @@ func TestPersistLastContextRecordsWhereTheContextCameFrom(t *testing.T) {
 
 	persistLastContext(remembering(), "dev (team)")
 
-	saved, _ := settings.LoadDesktopState()
-	if saved.LastContext == nil {
+	saved := settings.Load().LastDesktopContext
+	if saved == nil {
 		t.Fatal("nothing recorded")
 	}
-	if got := *saved.LastContext; got.Name != "dev (team)" || got.SourceFile != path || got.InFileName != "dev" {
-		t.Errorf("recorded %+v, want name/file/in-file-name all pinned", saved.LastContext)
+	if got := *saved; got.Name != "dev (team)" || got.SourceFile != path || got.InFileName != "dev" {
+		t.Errorf("recorded %+v, want name/file/in-file-name all pinned", saved)
 	}
 }

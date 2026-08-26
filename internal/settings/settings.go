@@ -52,6 +52,28 @@ type Settings struct {
 	// cluster-scoped: a registry is where your charts live, independent of which
 	// cluster they're deployed to.
 	HelmOCISources []string `json:"helmOciSources,omitempty"`
+	// LastDesktopContext is the kubeconfig context the Desktop window was last
+	// switched to, reopened on the next launch so it comes back on the cluster
+	// the user was working in rather than the kubeconfig's current-context.
+	//
+	// The Desktop in the name is load-bearing, not decoration. `kubectl radar`
+	// shares this file, and a terminal command typed after
+	// `kubectl config use-context` must run where the shell says it will — so
+	// the CLI never reads this field. internal/app/last_context.go is the only
+	// thing that touches it, and only when RestoreLastContext is set.
+	LastDesktopContext *LastContext `json:"lastDesktopContext,omitempty"`
+}
+
+// LastContext identifies a kubeconfig context precisely enough to survive a
+// restart. The displayed name alone is not enough across multiple kubeconfig
+// files: which file owns the unqualified form depends on directory read order,
+// so dropping a new file into a watched directory can steal the name and point
+// the restore at a different cluster. SourceFile + InFileName pin the exact
+// context; Name is the label Radar shows.
+type LastContext struct {
+	Name       string `json:"name"`
+	SourceFile string `json:"sourceFile,omitempty"`
+	InFileName string `json:"inFileName,omitempty"`
 }
 
 // mu serializes Load-mutate-Save cycles to prevent concurrent PUTs from
@@ -84,48 +106,32 @@ func LoadChecked() (Settings, error) {
 	if path == "" {
 		return Settings{}, errors.New("settings path unavailable")
 	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Settings{}, nil
+		}
+		log.Printf("[settings] Failed to read %s: %v", path, err)
+		return Settings{}, err
+	}
 	var s Settings
-	if err := readJSONFile(path, &s); err != nil {
+	if err := json.Unmarshal(data, &s); err != nil {
+		log.Printf("[settings] Failed to parse %s: %v", path, err)
 		return Settings{}, err
 	}
 	return s, nil
 }
 
-// readJSONFile decodes path into v, treating a missing file as "nothing
-// recorded yet" (v left untouched, nil error) and every other failure as an
-// error the caller must distinguish from absence.
-func readJSONFile(path string, v any) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		log.Printf("[settings] Failed to read %s: %v", path, err)
-		return err
-	}
-	if err := json.Unmarshal(data, v); err != nil {
-		log.Printf("[settings] Failed to parse %s: %v", path, err)
-		return err
-	}
-	return nil
-}
-
 // Save writes settings to disk using atomic rename.
 func Save(s Settings) error {
-	return writeJSONFile(Path(), s)
-}
-
-// writeJSONFile writes v to path via a temp file and an atomic rename, so a
-// crash mid-write leaves the previous contents intact rather than a truncated
-// file the next start refuses to parse.
-func writeJSONFile(path string, v any) error {
+	path := Path()
 	if path == "" {
 		return os.ErrNotExist
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(v, "", "  ")
+	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -142,17 +148,10 @@ func writeJSONFile(path string, v any) error {
 
 // Update atomically loads, applies a mutation, and saves settings.
 // This prevents concurrent PUTs from overwriting each other's changes.
-//
-// LoadChecked, not Load: a settings file we failed to read must not be
-// overwritten from a zero value, or saving one preference would silently erase
-// every other one the file still held.
 func Update(mutate func(*Settings)) (Settings, error) {
 	mu.Lock()
 	defer mu.Unlock()
-	s, err := LoadChecked()
-	if err != nil {
-		return s, err
-	}
+	s := Load()
 	mutate(&s)
 	return s, Save(s)
 }

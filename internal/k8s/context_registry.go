@@ -232,7 +232,6 @@ func pickInitialContext(
 	// Preference pass: the context the last session ended on. It resolves only
 	// on an exact (file, in-file name) match — see matchPreferred.
 	if qName, entry, ok := matchPreferred(registry, preferred); ok {
-		restoredContextName.Store(qName)
 		return qName, entry, true
 	}
 	reportContextPreferenceMiss(preferred)

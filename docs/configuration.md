@@ -96,14 +96,7 @@ User preferences for the UI. Managed via the Settings dialog or `PUT /api/settin
 |-------|--------|-------------|
 | `theme` | `light`, `dark`, `system` | UI theme preference |
 | `pinnedKinds` | Array of `{name, kind, group}` | Resource kinds pinned to the sidebar |
-
-### Desktop State File (`~/.radar/desktop-state.json`)
-
-Written by the Desktop app for itself — not served over the API, and never read by `kubectl radar` or the `radar` CLI.
-
-| Field | Values | Description |
-|-------|--------|-------------|
-| `lastContext` | `{name, sourceFile, inFileName}` | The cluster the Desktop window was last switched to, reopened on the next launch — see [Startup Context](#startup-context) |
+| `lastDesktopContext` | `{name, sourceFile, inFileName}` | Written by the Desktop app for itself: the cluster its window was last switched to, reopened on the next launch. Stripped from `/api/settings`, and never read by `kubectl radar` or the `radar` CLI — see [Startup Context](#startup-context) |
 
 ## Cluster Connection Precedence
 
@@ -210,11 +203,11 @@ If an active context's credentials expire or are rejected, Radar disconnects clu
 
 Which cluster Radar comes up on depends on how you launched it.
 
-**The Desktop app reopens where you left off.** Every context switch is recorded in `~/.radar/desktop-state.json`, and the next launch reconnects to it — the natural behaviour for a window you closed and reopened.
+**The Desktop app reopens where you left off.** Every context switch is recorded as `lastDesktopContext` in `~/.radar/settings.json`, and the next launch reconnects to it — the natural behaviour for a window you closed and reopened.
 
 **`kubectl radar`, `radar`, and `radar diagnose --standalone` start on the kubeconfig's `current-context`**, as `kubectl` would. A command typed right after `kubectl config use-context staging` runs against staging, and a cluster picked in the Desktop app days ago never redirects it. Terminal runs don't record switches either, so nothing you do in one moves where the Desktop app reopens.
 
-The separation is structural, not a preference: the remembered cluster lives in a Desktop-owned file that the CLI never reads or writes, and there is no setting that opts the CLI in.
+The separation is not a preference: the remembered cluster is written under a Desktop-scoped key that the CLI never reads, and there is no setting that opts the CLI in.
 
 To stop the Desktop app reopening on the last cluster, turn off **Reopen on the last used cluster** in Settings → Connection, or set in `~/.radar/config.json`:
 
@@ -231,7 +224,6 @@ Details worth knowing:
 - If the remembered cluster is unreachable (VPN down, for instance), Radar reports the connection failure rather than silently connecting to a different cluster. Pick another cluster from the header.
 - Clusters connected through CAPI are never remembered: their kubeconfig is a temporary file that no longer exists on the next run.
 - Turning the memory off clears it as well as stopping new recording, so turning it back on later starts fresh rather than reopening a cluster you stopped using months ago.
-- When Radar cannot reach a cluster it restored, the connection screen says so — "reopened on the cluster you were last using" is a different problem from your `current-context` being unreachable.
 
 ## Namespace Picker
 
