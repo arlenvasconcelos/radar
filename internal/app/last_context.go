@@ -14,7 +14,7 @@ import (
 // neither. They stand guard on the invariant: the remembered cluster is one
 // user's pick, so a Desktop serving several viewers must not record it.
 func remembersLastContext(cfg AppConfig) bool {
-	return cfg.RestoreLastContext && !cfg.AuthConfig.Enabled() && !cfg.CloudTunnelConfigured
+	return cfg.RestoreLastDesktopContext && !cfg.AuthConfig.Enabled() && !cfg.CloudTunnelConfigured
 }
 
 // startupContextPreference resolves which context this run starts on: the one

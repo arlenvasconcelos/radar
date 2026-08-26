@@ -159,38 +159,38 @@ func main() {
 	}
 
 	cfg := app.AppConfig{
-		Kubeconfig:               resolvedKubeconfig,
-		KubeconfigDirs:           resolvedKubeconfigDirs,
-		RestoreLastContext:       fileCfg.RestoreLastContextOr(true),
-		Namespace:                resolvedNamespace,
-		Namespaces:               resolvedNamespaces,
-		Port:                     fileCfg.PortOr(0), // Configured port, or random to avoid conflicts with CLI
-		ListenAddress:            "127.0.0.1",
-		DevMode:                  false,
-		HistoryLimit:             *historyLimit,
-		DebugEvents:              *debugEvents,
-		FakeInCluster:            *fakeInCluster,
-		DisableHelmWrite:         *disableHelmWrite,
-		DisableExec:              *disableExec,
-		PodShellDefault:          *podShellDefault,
-		TimelineStorage:          *timelineStorage,
-		TimelineDBPath:           *timelineDBPath,
-		TimelineRetention:        *timelineRetention,
-		TimelineMaxSizeBytes:     timelineMaxSizeBytes,
-		PrometheusURL:            *prometheusURL,
-		OpenCostCurrency:         normalizedOpenCostCurrency,
-		OpenCostFlagSet:          openCostCurrencyFlagSet,
-		PrometheusHeaders:        resolvedPrometheusHeaders,
-		PrometheusHeadersFromEnv: fileCfg.PrometheusHeadersFromEnv,
-		Version:                  version,
-		HubAPIURL:                hubAPIURL,
-		HubAppURL:                hubAppURL,
-		MCPEnabled:               fileCfg.MCPEnabledOr(true),
-		AIHistory:                fileCfg.AIHistoryOr(true),
-		AIHistoryDBPath:          fileCfg.AIHistoryDBPath,
+		Kubeconfig:                resolvedKubeconfig,
+		KubeconfigDirs:            resolvedKubeconfigDirs,
+		RestoreLastDesktopContext: fileCfg.RestoreLastDesktopContextOr(true),
+		Namespace:                 resolvedNamespace,
+		Namespaces:                resolvedNamespaces,
+		Port:                      fileCfg.PortOr(0), // Configured port, or random to avoid conflicts with CLI
+		ListenAddress:             "127.0.0.1",
+		DevMode:                   false,
+		HistoryLimit:              *historyLimit,
+		DebugEvents:               *debugEvents,
+		FakeInCluster:             *fakeInCluster,
+		DisableHelmWrite:          *disableHelmWrite,
+		DisableExec:               *disableExec,
+		PodShellDefault:           *podShellDefault,
+		TimelineStorage:           *timelineStorage,
+		TimelineDBPath:            *timelineDBPath,
+		TimelineRetention:         *timelineRetention,
+		TimelineMaxSizeBytes:      timelineMaxSizeBytes,
+		PrometheusURL:             *prometheusURL,
+		OpenCostCurrency:          normalizedOpenCostCurrency,
+		OpenCostFlagSet:           openCostCurrencyFlagSet,
+		PrometheusHeaders:         resolvedPrometheusHeaders,
+		PrometheusHeadersFromEnv:  fileCfg.PrometheusHeadersFromEnv,
+		Version:                   version,
+		HubAPIURL:                 hubAPIURL,
+		HubAppURL:                 hubAppURL,
+		MCPEnabled:                fileCfg.MCPEnabledOr(true),
+		AIHistory:                 fileCfg.AIHistoryOr(true),
+		AIHistoryDBPath:           fileCfg.AIHistoryDBPath,
 	}
 
-	if !cfg.RestoreLastContext {
+	if !cfg.RestoreLastDesktopContext {
 		app.ForgetLastContext()
 	}
 

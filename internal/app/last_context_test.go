@@ -88,7 +88,7 @@ func TestStartupContextPreferenceSkippedWhenAuthEnabled(t *testing.T) {
 // remembering returns the config of an entrypoint that opts into the memory —
 // Desktop's shape. The zero AppConfig deliberately does not.
 func remembering() AppConfig {
-	return AppConfig{RestoreLastContext: true}
+	return AppConfig{RestoreLastDesktopContext: true}
 }
 
 func withAuth(c auth.Config) AppConfig {

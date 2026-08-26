@@ -34,7 +34,7 @@ func TestPersistLastContextSkippedWhenRestoreDisabled(t *testing.T) {
 	useTempHome(t)
 
 	cfg := remembering()
-	cfg.RestoreLastContext = false
+	cfg.RestoreLastDesktopContext = false
 	persistLastContext(cfg, "prod-eu")
 
 	if saved := rememberedName(); saved != "" {
@@ -47,7 +47,7 @@ func TestStartupContextPreferenceSkippedWhenRestoreDisabled(t *testing.T) {
 	remember(t, "prod-eu")
 
 	cfg := remembering()
-	cfg.RestoreLastContext = false
+	cfg.RestoreLastDesktopContext = false
 	if got := startupContextPreference(cfg); got.Name != "" {
 		t.Errorf("startupContextPreference() = %q, want empty when restore is turned off", got.Name)
 	}

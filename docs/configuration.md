@@ -59,7 +59,7 @@ All fields are optional — omitted fields use built-in defaults.
 |-------|-------------|
 | `kubeconfig` | Primary kubeconfig file (same as `--kubeconfig`) |
 | `kubeconfigDirs` | Directories containing additional kubeconfig files (same as `--kubeconfig-dir`) |
-| `restoreLastContext` | Desktop app only: reopen on the cluster last used (default: enabled). `false` always opens on the kubeconfig's `current-context` — see [Startup Context](#startup-context) |
+| `restoreLastDesktopContext` | Desktop app only: reopen on the cluster last used (default: enabled). `false` always opens on the kubeconfig's `current-context` — see [Startup Context](#startup-context) |
 | `namespace` | Initial namespace filter |
 | `namespaces` | Initial namespace filters as a list (same as `--namespaces ns1,ns2,ns3`) |
 | `port` | Server port (default 9280) |
@@ -213,7 +213,7 @@ To stop the Desktop app reopening on the last cluster, turn off **Reopen on the 
 
 ```json
 {
-  "restoreLastContext": false
+  "restoreLastDesktopContext": false
 }
 ```
 

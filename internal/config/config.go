@@ -16,25 +16,21 @@ import (
 type Config struct {
 	Kubeconfig     string   `json:"kubeconfig,omitempty"`
 	KubeconfigDirs []string `json:"kubeconfigDirs,omitempty"`
-	// RestoreLastContext turns off the Desktop app reopening on the cluster it
-	// was last switched to (nil = on). Desktop-only by design: the CLI always
-	// starts on the kubeconfig's current-context, so a command typed after
-	// `kubectl config use-context` runs where the shell says it will. There is
-	// deliberately no knob to opt the CLI in — that would put a Desktop switch
-	// back in the path of a later terminal command.
-	RestoreLastContext *bool    `json:"restoreLastContext,omitempty"`
-	Namespace          string   `json:"namespace,omitempty"`
-	Namespaces         []string `json:"namespaces,omitempty"`
-	Port               int      `json:"port,omitempty"`
-	NoBrowser          bool     `json:"noBrowser,omitempty"`
-	Browser            string   `json:"browser,omitempty"`
-	TimelineStorage    string   `json:"timelineStorage,omitempty"`
-	TimelineDBPath     string   `json:"timelineDbPath,omitempty"`
-	TimelineRetention  string   `json:"timelineRetention,omitempty"` // Go duration (e.g. "168h" for 7d); "0" disables age cleanup
-	TimelineMaxSize    string   `json:"timelineMaxSize,omitempty"`   // Byte size (e.g. "800Mi", "8Gi"); "0" disables
-	HistoryLimit       int      `json:"historyLimit,omitempty"`
-	PrometheusURL      string   `json:"prometheusUrl,omitempty"`
-	OpenCostCurrency   string   `json:"opencostCurrency,omitempty"`
+	// nil = on. No CLI equivalent, deliberately — that would put a Desktop
+	// switch in the path of a command typed after `kubectl config use-context`.
+	RestoreLastDesktopContext *bool    `json:"restoreLastDesktopContext,omitempty"`
+	Namespace                 string   `json:"namespace,omitempty"`
+	Namespaces                []string `json:"namespaces,omitempty"`
+	Port                      int      `json:"port,omitempty"`
+	NoBrowser                 bool     `json:"noBrowser,omitempty"`
+	Browser                   string   `json:"browser,omitempty"`
+	TimelineStorage           string   `json:"timelineStorage,omitempty"`
+	TimelineDBPath            string   `json:"timelineDbPath,omitempty"`
+	TimelineRetention         string   `json:"timelineRetention,omitempty"` // Go duration (e.g. "168h" for 7d); "0" disables age cleanup
+	TimelineMaxSize           string   `json:"timelineMaxSize,omitempty"`   // Byte size (e.g. "800Mi", "8Gi"); "0" disables
+	HistoryLimit              int      `json:"historyLimit,omitempty"`
+	PrometheusURL             string   `json:"prometheusUrl,omitempty"`
+	OpenCostCurrency          string   `json:"opencostCurrency,omitempty"`
 	// PrometheusHeaders are sent with every request to the Prometheus API.
 	// Required for auth-protected backends (Bearer tokens, X-Scope-OrgID, etc.).
 	// Stored in plain text in ~/.radar/config.json — protect the file accordingly.
@@ -222,11 +218,11 @@ func (c Config) MCPEnabledOr(def bool) bool {
 	return def
 }
 
-// RestoreLastContextOr returns *c.RestoreLastContext if non-nil, otherwise the
+// RestoreLastDesktopContextOr returns *c.RestoreLastDesktopContext if non-nil, otherwise the
 // provided default.
-func (c Config) RestoreLastContextOr(def bool) bool {
-	if c.RestoreLastContext != nil {
-		return *c.RestoreLastContext
+func (c Config) RestoreLastDesktopContextOr(def bool) bool {
+	if c.RestoreLastDesktopContext != nil {
+		return *c.RestoreLastDesktopContext
 	}
 	return def
 }

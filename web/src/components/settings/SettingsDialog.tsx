@@ -45,7 +45,7 @@ interface Config {
   argoCdUrl?: string
   argoCdInsecureTls?: boolean
   mcp?: boolean | null
-  restoreLastContext?: boolean | null
+  restoreLastDesktopContext?: boolean | null
 }
 
 interface ConfigResponse {
@@ -103,7 +103,7 @@ function normalizeStartup(c: Config) {
     historyLimit: c.historyLimit ?? null,
     mcp: c.mcp ?? true,
     opencostCurrency: c.opencostCurrency?.trim().toUpperCase() ?? '',
-    restoreLastContext: c.restoreLastContext ?? true,
+    restoreLastDesktopContext: c.restoreLastDesktopContext ?? true,
   }
 }
 
@@ -162,7 +162,7 @@ export function SettingsDialog({
     edN.kubeconfig !== svN.kubeconfig ||
     edN.kubeconfigDirs !== svN.kubeconfigDirs ||
     edN.namespace !== svN.namespace ||
-    edN.restoreLastContext !== svN.restoreLastContext
+    edN.restoreLastDesktopContext !== svN.restoreLastDesktopContext
   const serverDirty =
     edN.port !== svN.port || edN.noBrowser !== svN.noBrowser || edN.browser !== svN.browser
   const mcpDirty = edN.mcp !== svN.mcp
@@ -1097,8 +1097,8 @@ function ClusterSection({
         <ConfigToggle
           label="Reopen on the last used cluster"
           description="Come back to the cluster you were working in. Turn off to always start on your kubeconfig's current context."
-          value={config.restoreLastContext ?? true}
-          onChange={(v) => onChange('restoreLastContext', v ? undefined : false)}
+          value={config.restoreLastDesktopContext ?? true}
+          onChange={(v) => onChange('restoreLastDesktopContext', v ? undefined : false)}
         />
       )}
     </>

@@ -34,53 +34,47 @@ var clusterConnectionProbe = k8s.TestClusterConnection
 type AppConfig struct {
 	Kubeconfig     string
 	KubeconfigDirs []string
-	// RestoreLastContext reopens on the cluster the last session was switched
-	// to instead of the kubeconfig's current-context, recording every switch so
-	// the next start finds it. Only cmd/desktop sets it: a window you reopen
-	// should come back where you left it, while a command typed right after
-	// `kubectl config use-context` must run where the shell says it will. The
-	// zero value is the deterministic one on purpose — an entrypoint that never
-	// mentions this field gets current-context rather than another session's
-	// state.
-	RestoreLastContext       bool
-	Namespace                string
-	Namespaces               []string
-	Port                     int
-	ListenAddress            string
-	ShowRemoteAccessHint     bool
-	BasePath                 string
-	NoBrowser                bool
-	Browser                  string
-	DevMode                  bool
-	HistoryLimit             int
-	DebugEvents              bool
-	FakeInCluster            bool
-	DisableHelmWrite         bool
-	DisableExec              bool
-	DisableLocalTerminal     bool
-	PodShellDefault          string
-	DebugImage               string
-	ReachabilityImage        string
-	ListPageSize             int64
-	NamespaceScope           bool
-	TimelineStorage          string
-	TimelineDBPath           string
-	TimelineRetention        time.Duration
-	TimelineMaxSizeBytes     int64
-	PrometheusURL            string
-	OpenCostCurrency         string
-	OpenCostFlagSet          bool
-	PrometheusHeaders        map[string]string
-	PrometheusHeadersFromEnv map[string]string
-	BeylaJobSelector         string
-	Version                  string
-	MCPEnabled               bool
-	AIHistory                bool   // persist AI investigations across restarts
-	AIHistoryDBPath          string // "" = ~/.radar/ai-runs.db
-	AuthConfig               auth.Config
-	HubAPIURL                string // Hub API origin override ("" = hosted default)
-	HubAppURL                string // Hub frontend origin override ("" = derived)
-	CloudTunnelConfigured    bool   // --cloud-url was set on this process
+	// Zero value is the deliberate one: an entrypoint that never sets this
+	// starts on the kubeconfig's current-context. Only cmd/desktop opts in.
+	RestoreLastDesktopContext bool
+	Namespace                 string
+	Namespaces                []string
+	Port                      int
+	ListenAddress             string
+	ShowRemoteAccessHint      bool
+	BasePath                  string
+	NoBrowser                 bool
+	Browser                   string
+	DevMode                   bool
+	HistoryLimit              int
+	DebugEvents               bool
+	FakeInCluster             bool
+	DisableHelmWrite          bool
+	DisableExec               bool
+	DisableLocalTerminal      bool
+	PodShellDefault           string
+	DebugImage                string
+	ReachabilityImage         string
+	ListPageSize              int64
+	NamespaceScope            bool
+	TimelineStorage           string
+	TimelineDBPath            string
+	TimelineRetention         time.Duration
+	TimelineMaxSizeBytes      int64
+	PrometheusURL             string
+	OpenCostCurrency          string
+	OpenCostFlagSet           bool
+	PrometheusHeaders         map[string]string
+	PrometheusHeadersFromEnv  map[string]string
+	BeylaJobSelector          string
+	Version                   string
+	MCPEnabled                bool
+	AIHistory                 bool   // persist AI investigations across restarts
+	AIHistoryDBPath           string // "" = ~/.radar/ai-runs.db
+	AuthConfig                auth.Config
+	HubAPIURL                 string // Hub API origin override ("" = hosted default)
+	HubAppURL                 string // Hub frontend origin override ("" = derived)
+	CloudTunnelConfigured     bool   // --cloud-url was set on this process
 }
 
 // SetGlobals applies debug/test flags to global state.
@@ -276,27 +270,27 @@ func RegisterCallbacks(cfg AppConfig, timelineStoreCfg timeline.StoreConfig) {
 
 // CreateServer creates the HTTP server with the given configuration.
 func CreateServer(cfg AppConfig) *server.Server {
-	restoreLastContext := remembersLastContext(cfg)
+	restoreLastDesktopContext := remembersLastContext(cfg)
 	effectiveCfg := &config.Config{
-		Kubeconfig:               cfg.Kubeconfig,
-		KubeconfigDirs:           cfg.KubeconfigDirs,
-		Namespace:                cfg.Namespace,
-		Namespaces:               cfg.Namespaces,
-		Port:                     cfg.Port,
-		NoBrowser:                cfg.NoBrowser,
-		Browser:                  cfg.Browser,
-		TimelineStorage:          cfg.TimelineStorage,
-		TimelineDBPath:           cfg.TimelineDBPath,
-		TimelineMaxSize:          fmt.Sprintf("%d", cfg.TimelineMaxSizeBytes),
-		HistoryLimit:             cfg.HistoryLimit,
-		PrometheusURL:            cfg.PrometheusURL,
-		OpenCostCurrency:         cfg.OpenCostCurrency,
-		PrometheusHeaders:        cfg.PrometheusHeaders,
-		PrometheusHeadersFromEnv: cfg.PrometheusHeadersFromEnv,
-		DebugImage:               cfg.DebugImage,
-		ReachabilityImage:        cfg.ReachabilityImage,
-		MCP:                      &cfg.MCPEnabled,
-		RestoreLastContext:       &restoreLastContext,
+		Kubeconfig:                cfg.Kubeconfig,
+		KubeconfigDirs:            cfg.KubeconfigDirs,
+		Namespace:                 cfg.Namespace,
+		Namespaces:                cfg.Namespaces,
+		Port:                      cfg.Port,
+		NoBrowser:                 cfg.NoBrowser,
+		Browser:                   cfg.Browser,
+		TimelineStorage:           cfg.TimelineStorage,
+		TimelineDBPath:            cfg.TimelineDBPath,
+		TimelineMaxSize:           fmt.Sprintf("%d", cfg.TimelineMaxSizeBytes),
+		HistoryLimit:              cfg.HistoryLimit,
+		PrometheusURL:             cfg.PrometheusURL,
+		OpenCostCurrency:          cfg.OpenCostCurrency,
+		PrometheusHeaders:         cfg.PrometheusHeaders,
+		PrometheusHeadersFromEnv:  cfg.PrometheusHeadersFromEnv,
+		DebugImage:                cfg.DebugImage,
+		ReachabilityImage:         cfg.ReachabilityImage,
+		MCP:                       &cfg.MCPEnabled,
+		RestoreLastDesktopContext: &restoreLastDesktopContext,
 	}
 
 	serverCfg := server.Config{
