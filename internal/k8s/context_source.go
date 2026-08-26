@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"log"
+	"path/filepath"
 
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -32,6 +33,21 @@ func (r ContextRef) Empty() bool {
 	return r.SourceFile == "" || r.InFileName == ""
 }
 
+// canonicalKubeconfigPath resolves a path so the same file compares equal
+// across restarts: --kubeconfig-dir records relative entries, and a relative
+// path can also match a *different* file reached from another directory. Abs
+// rather than EvalSymlinks — the latter errors on a since-deleted file.
+func canonicalKubeconfigPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	return abs
+}
+
 // ContextSourceFor returns the full reference for a context Radar currently
 // knows, so callers persisting it can record where it came from. Outside the
 // registry there is only one kubeconfig loaded, and it is the only place the
@@ -41,11 +57,11 @@ func ContextSourceFor(name string) ContextRef {
 	defer clientMu.RUnlock()
 
 	if entry, ok := contextRegistry[name]; ok {
-		return ContextRef{Name: name, SourceFile: entry.SourceFile, InFileName: entry.InFileName}
+		return ContextRef{Name: name, SourceFile: canonicalKubeconfigPath(entry.SourceFile), InFileName: entry.InFileName}
 	}
 	if name != "" && name == contextName {
 		if path := singleLoadedKubeconfig(); path != "" {
-			return ContextRef{Name: name, SourceFile: path, InFileName: name}
+			return ContextRef{Name: name, SourceFile: canonicalKubeconfigPath(path), InFileName: name}
 		}
 	}
 	return ContextRef{Name: name}
@@ -92,7 +108,7 @@ func IsEphemeralContext(name string) bool {
 // place before the deferred loader builds its inner config — it captures
 // CurrentContext on the first RawConfig()/ClientConfig() call and caches it.
 func applyContextPreference(path string, preferred ContextRef, overrides *clientcmd.ConfigOverrides) {
-	if preferred.Empty() || preferred.SourceFile != path {
+	if preferred.Empty() || canonicalKubeconfigPath(preferred.SourceFile) != canonicalKubeconfigPath(path) {
 		reportContextPreferenceMiss(preferred)
 		return
 	}

@@ -64,8 +64,8 @@ func TestForgetLastContextClearsTheMemory(t *testing.T) {
 	}
 }
 
-// The remembered cluster shares settings.json with every other preference, so
-// clearing it must leave the rest of the file untouched.
+// It shares settings.json with every other preference — clearing it must
+// leave the rest untouched.
 func TestForgetLastContextLeavesOtherSettingsAlone(t *testing.T) {
 	useTempHome(t)
 	if _, err := settings.Update(func(st *settings.Settings) {

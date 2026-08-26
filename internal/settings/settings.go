@@ -52,24 +52,19 @@ type Settings struct {
 	// cluster-scoped: a registry is where your charts live, independent of which
 	// cluster they're deployed to.
 	HelmOCISources []string `json:"helmOciSources,omitempty"`
-	// LastDesktopContext is the kubeconfig context the Desktop window was last
-	// switched to, reopened on the next launch so it comes back on the cluster
-	// the user was working in rather than the kubeconfig's current-context.
-	//
-	// The Desktop in the name is load-bearing, not decoration. `kubectl radar`
-	// shares this file, and a terminal command typed after
-	// `kubectl config use-context` must run where the shell says it will — so
-	// the CLI never reads this field. internal/app/last_context.go is the only
-	// thing that touches it, and only when RestoreLastContext is set.
+	// LastDesktopContext is the context the Desktop window was last switched
+	// to, reopened on the next launch. Desktop-scoped by name because
+	// `kubectl radar` shares this file and must never follow it: a command
+	// typed after `kubectl config use-context` runs where the shell says it
+	// will.
 	LastDesktopContext *LastContext `json:"lastDesktopContext,omitempty"`
 }
 
-// LastContext identifies a kubeconfig context precisely enough to survive a
-// restart. The displayed name alone is not enough across multiple kubeconfig
-// files: which file owns the unqualified form depends on directory read order,
-// so dropping a new file into a watched directory can steal the name and point
-// the restore at a different cluster. SourceFile + InFileName pin the exact
-// context; Name is the label Radar shows.
+// LastContext identifies a context precisely enough to survive a restart.
+// Name alone is not enough: with several kubeconfigs, which file owns the
+// unqualified name depends on directory read order, so a new file can steal it
+// and point the restore at another cluster. SourceFile + InFileName are the
+// identity; Name is the label.
 type LastContext struct {
 	Name       string `json:"name"`
 	SourceFile string `json:"sourceFile,omitempty"`

@@ -8,15 +8,11 @@ import (
 )
 
 // remembersLastContext reports whether this process may record the active
-// cluster on disk and start on it next time. Only the Desktop app opts in —
-// see AppConfig.RestoreLastContext.
+// cluster and start on it next time. Only cmd/desktop opts in.
 //
-// The auth and cloud-tunnel checks cannot fire today: cmd/desktop is the only
-// entrypoint that sets RestoreLastContext, and it configures neither. They are
-// kept as a standing guard on the invariant rather than as live branches — the
-// remembered cluster is one user's pick, and the moment Desktop serves more
-// than one viewer, recording it would let one person's switch steer everyone
-// else's next start. Delete them only together with that invariant.
+// The auth and cloud-tunnel checks cannot fire today — Desktop configures
+// neither. They stand guard on the invariant: the remembered cluster is one
+// user's pick, so a Desktop serving several viewers must not record it.
 func remembersLastContext(cfg AppConfig) bool {
 	return cfg.RestoreLastContext && !cfg.AuthConfig.Enabled() && !cfg.CloudTunnelConfigured
 }

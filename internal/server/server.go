@@ -5067,8 +5067,7 @@ func deploymentMode() k8s.DeploymentMode {
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	loaded := settings.Load()
-	// Desktop's own state, not the machine's — nothing that reads this endpoint
-	// has any use for it, and on a shared instance it would hand every viewer
+	// Desktop's own state: on a shared instance this would hand every viewer
 	// the cluster name from whenever this $HOME last ran the Desktop app.
 	loaded.LastDesktopContext = nil
 	if cloudMode() {
@@ -5108,8 +5107,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Same reason as handleGetSettings: the response echoes the merged struct,
-	// so Desktop's remembered cluster would ride back out on every save.
+	// The response echoes the merged struct — same reason as handleGetSettings.
 	result.LastDesktopContext = nil
 	if cloudMode() {
 		result.Theme = ""

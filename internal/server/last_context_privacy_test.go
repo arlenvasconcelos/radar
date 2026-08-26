@@ -11,13 +11,11 @@ import (
 	"github.com/skyhook-io/radar/pkg/auth"
 )
 
-// The remembered cluster is Desktop's own state. It shares settings.json with
-// the user's preferences, so /api/settings must strip it — not on GET, not
-// echoed back from a PUT. Without that, every viewer of a shared instance
-// learns the cluster name from whenever this $HOME last ran the Desktop app.
-//
-// The PUT half also pins that handlePutSettings stays a field-by-field patch:
-// a body that never mentions lastDesktopContext must not erase it.
+// The remembered cluster shares settings.json with the user's preferences, so
+// /api/settings must strip it both ways — otherwise every viewer of a shared
+// instance learns which cluster this $HOME last ran Desktop against. The PUT
+// half also pins that handlePutSettings stays a patch: a body that never
+// mentions lastDesktopContext must not erase it.
 func TestSettingsEndpointNeverCarriesTheRememberedCluster(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
