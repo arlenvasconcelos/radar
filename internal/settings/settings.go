@@ -52,8 +52,8 @@ type Settings struct {
 	// cluster-scoped: a registry is where your charts live, independent of which
 	// cluster they're deployed to.
 	HelmOCISources []string `json:"helmOciSources,omitempty"`
-	// LastDesktopContext is the context the Desktop window was last switched
-	// to, reopened on the next launch. Desktop-scoped by name because
+	// LastDesktopContext is the context the Desktop window last used, reopened
+	// on the next launch. Desktop-scoped by name because
 	// `kubectl radar` shares this file and must never follow it: a command
 	// typed after `kubectl config use-context` runs where the shell says it
 	// will.
@@ -147,6 +147,20 @@ func Update(mutate func(*Settings)) (Settings, error) {
 	mu.Lock()
 	defer mu.Unlock()
 	s := Load()
+	mutate(&s)
+	return s, Save(s)
+}
+
+// UpdateChecked refuses to write when existing settings cannot be read. It is
+// for automatic writers, which must not replace a damaged or temporarily
+// unavailable file with a mutated zero value.
+func UpdateChecked(mutate func(*Settings)) (Settings, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	s, err := LoadChecked()
+	if err != nil {
+		return Settings{}, err
+	}
 	mutate(&s)
 	return s, Save(s)
 }

@@ -267,6 +267,13 @@ func ResetTestState() {
 	connectionCallbacks = nil
 	connectionCallbacksMu.Unlock()
 
+	contextSwitchMu.Lock()
+	beforeContextSwitchCallbacks = nil
+	contextSwitchCallbacks = nil
+	namespaceRescopeCallbacks = nil
+	contextSwitchProgressCallbacks = nil
+	contextSwitchMu.Unlock()
+
 	runtimeAuthChecksMu.Lock()
 	runtimeAuthChecks = make(map[uint64]struct{})
 	runtimeAuthCooldownGeneration = 0

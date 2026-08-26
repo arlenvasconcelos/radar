@@ -16,6 +16,7 @@ import (
 
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/internal/config"
+	"github.com/skyhook-io/radar/internal/errorlog"
 	"github.com/skyhook-io/radar/internal/helm"
 	"github.com/skyhook-io/radar/internal/k8s"
 	mcppkg "github.com/skyhook-io/radar/internal/mcp"
@@ -111,10 +112,16 @@ func validateNamespaceFanout(namespaces []string, ctxNs string, maxCandidates in
 
 // InitializeK8s creates and configures the Kubernetes client.
 func InitializeK8s(cfg AppConfig) error {
-	err := k8s.Initialize(k8s.InitOptions{
+	preferredContext, err := startupContextPreference(cfg)
+	if err != nil {
+		log.Printf("[context] failed to read the remembered Desktop context: %v", err)
+		errorlog.Record("k8s-init", "warning",
+			"could not read the Desktop cluster memory from local settings. Starting on the kubeconfig's current-context instead; check ~/.radar/settings.json.")
+	}
+	err = k8s.Initialize(k8s.InitOptions{
 		KubeconfigPath:   cfg.Kubeconfig,
 		KubeconfigDirs:   cfg.KubeconfigDirs,
-		PreferredContext: startupContextPreference(cfg),
+		PreferredContext: preferredContext,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize K8s client: %w", err)

@@ -9,7 +9,7 @@ import (
 
 // `--kubeconfig-dir ./configs` puts a relative path in the registry, so the
 // recorded ref and the live entry spell the same file two different ways.
-func TestPreferredContextResolvesAcrossWorkingDirectories(t *testing.T) {
+func TestPreferredContextMatchesAbsoluteRefAgainstRelativeRegistryPath(t *testing.T) {
 	home := t.TempDir()
 	t.Chdir(home)
 
@@ -24,6 +24,25 @@ func TestPreferredContextResolvesAcrossWorkingDirectories(t *testing.T) {
 
 	if _, _, ok := matchPreferred(registry, recorded); !ok {
 		t.Error("a ref recorded as an absolute path did not match the same file held relatively")
+	}
+}
+
+func TestPreferredContextDoesNotResolveRelativePathFromAnotherWorkingDirectory(t *testing.T) {
+	recordedFrom := t.TempDir()
+	loadedFrom := t.TempDir()
+	recorded := ContextRef{
+		Name:       "alpha",
+		SourceFile: filepath.Join(recordedFrom, "configs", "a.yaml"),
+		InFileName: "alpha",
+	}
+
+	t.Chdir(loadedFrom)
+	registry := map[string]contextEntry{
+		"alpha": {SourceFile: filepath.Join("configs", "a.yaml"), InFileName: "alpha"},
+	}
+
+	if _, _, ok := matchPreferred(registry, recorded); ok {
+		t.Error("a relative path from another working directory matched a different file")
 	}
 }
 

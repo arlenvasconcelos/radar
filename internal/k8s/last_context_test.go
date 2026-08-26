@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -12,22 +13,23 @@ func restoreClientGlobals(t *testing.T) {
 	t.Helper()
 	clientMu.Lock()
 	var (
-		savedPath      = kubeconfigPath
-		savedPaths     = kubeconfigPaths
-		savedMode      = kubeconfigMode
-		savedRegistry  = contextRegistry
-		savedConfigs   = perFileConfigs
-		savedMtimes    = perFileMtimes
-		savedContext   = contextName
-		savedCluster   = clusterName
-		savedNamespace = contextNamespace
-		savedUsesExec  = contextUsesExec
-		savedTotal     = totalContextCount
-		savedExecCmds  = execPluginCommands
-		savedClient    = k8sClient
-		savedConfig    = k8sConfig
-		savedDiscovery = discoveryClient
-		savedDynamic   = dynamicClient
+		savedPath       = kubeconfigPath
+		savedPaths      = kubeconfigPaths
+		savedMode       = kubeconfigMode
+		savedRegistry   = contextRegistry
+		savedConfigs    = perFileConfigs
+		savedMtimes     = perFileMtimes
+		savedContext    = contextName
+		savedCluster    = clusterName
+		savedNamespace  = contextNamespace
+		savedUsesExec   = contextUsesExec
+		savedTotal      = totalContextCount
+		savedExecCmds   = execPluginCommands
+		savedClient     = k8sClient
+		savedConfig     = k8sConfig
+		savedDiscovery  = discoveryClient
+		savedDynamic    = dynamicClient
+		savedGeneration = activeClientGeneration
 	)
 	clientMu.Unlock()
 
@@ -50,6 +52,7 @@ func restoreClientGlobals(t *testing.T) {
 		k8sConfig = savedConfig
 		discoveryClient = savedDiscovery
 		dynamicClient = savedDynamic
+		activeClientGeneration = savedGeneration
 	})
 }
 
@@ -78,6 +81,9 @@ func TestDoInitPrefersRequestedContext(t *testing.T) {
 	if host := GetConfig().Host; !strings.Contains(host, "cluster-beta") {
 		t.Errorf("rest config Host = %q, want it to point at cluster-beta", host)
 	}
+	if ContextReferenceKnownMissing(saved) {
+		t.Error("ContextReferenceKnownMissing(saved) = true for a context that resolved")
+	}
 }
 
 func TestDoInitFallsBackWhenPreferredContextMissing(t *testing.T) {
@@ -97,6 +103,25 @@ func TestDoInitFallsBackWhenPreferredContextMissing(t *testing.T) {
 	}
 	if host := GetConfig().Host; !strings.Contains(host, "cluster-alpha") {
 		t.Errorf("rest config Host = %q, want it to point at cluster-alpha", host)
+	}
+	if !ContextReferenceKnownMissing(saved) {
+		t.Error("ContextReferenceKnownMissing(saved) = false after the loaded file proved the context is gone")
+	}
+}
+
+func TestContextReferenceKnownMissingKeepsAnUnavailableFileInconclusive(t *testing.T) {
+	restoreClientGlobals(t)
+	dir := t.TempDir()
+	loaded := writeKubeconfig(t, dir, "config", "alpha", []kubeEntry{
+		{ctxName: "alpha", userName: "ua", clusterName: "cluster-alpha"},
+	})
+	if err := doInit(InitOptions{KubeconfigPath: loaded}); err != nil {
+		t.Fatalf("doInit() error = %v", err)
+	}
+
+	ref := ContextRef{Name: "prod", SourceFile: filepath.Join(dir, "unavailable"), InFileName: "prod"}
+	if ContextReferenceKnownMissing(ref) {
+		t.Error("ContextReferenceKnownMissing(ref) = true for a file this run never loaded")
 	}
 }
 

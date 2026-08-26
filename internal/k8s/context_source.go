@@ -67,6 +67,42 @@ func ContextSourceFor(name string) ContextRef {
 	return ContextRef{Name: name}
 }
 
+// ContextReferenceKnownMissing reports whether Radar successfully loaded the
+// recorded kubeconfig file and that file no longer defines the recorded
+// context. A false result is intentionally inconclusive: the file may only be
+// temporarily unavailable or outside this run's configured kubeconfig set.
+func ContextReferenceKnownMissing(ref ContextRef) bool {
+	if ref.Empty() {
+		return false
+	}
+
+	wantFile := canonicalKubeconfigPath(ref.SourceFile)
+	clientMu.RLock()
+	defer clientMu.RUnlock()
+
+	if contextRegistry != nil {
+		for path, cfg := range perFileConfigs {
+			if canonicalKubeconfigPath(path) != wantFile {
+				continue
+			}
+			_, exists := cfg.Contexts[ref.InFileName]
+			return !exists
+		}
+		return false
+	}
+
+	path := singleLoadedKubeconfig()
+	if path == "" || canonicalKubeconfigPath(path) != wantFile {
+		return false
+	}
+	cfg, err := clientcmd.LoadFromFile(path)
+	if err != nil {
+		return false
+	}
+	_, exists := cfg.Contexts[ref.InFileName]
+	return !exists
+}
+
 // singleLoadedKubeconfig returns the one kubeconfig backing this process, or ""
 // when several are loaded (the registry answers there) or none is (in-cluster).
 // --kubeconfig-dir records its find in kubeconfigPaths even when it finds

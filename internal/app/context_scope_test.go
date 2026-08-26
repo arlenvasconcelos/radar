@@ -24,7 +24,10 @@ func TestTerminalEntrypointStartsOnCurrentContext(t *testing.T) {
 	useTempHome(t)
 	remember(t, "prod-eu")
 
-	got := startupContextPreference(AppConfig{})
+	got, err := startupContextPreference(AppConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.Name != "" {
 		t.Errorf("startupContextPreference() = %q, want empty so current-context stands", got.Name)
 	}
@@ -48,7 +51,11 @@ func TestStartupContextPreferenceSkippedWhenRestoreDisabled(t *testing.T) {
 
 	cfg := remembering()
 	cfg.RestoreLastDesktopContext = false
-	if got := startupContextPreference(cfg); got.Name != "" {
+	got, err := startupContextPreference(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "" {
 		t.Errorf("startupContextPreference() = %q, want empty when restore is turned off", got.Name)
 	}
 }
