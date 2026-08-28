@@ -127,12 +127,19 @@ func (a *DesktopApp) saveStream(defaultFilename string, src io.Reader) (string, 
 	if err != nil {
 		return "", err
 	}
-	if _, err := io.Copy(f, src); err != nil {
-		f.Close()
-		os.Remove(path)
-		return "", err
+	// Buffered writes commonly report failure at close (ENOSPC, EIO on a
+	// network mount), so the close error matters as much as the copy error —
+	// either one has to take the partial file with it.
+	_, copyErr := io.Copy(f, src)
+	closeErr := f.Close()
+	if copyErr == nil {
+		copyErr = closeErr
 	}
-	return path, f.Close()
+	if copyErr != nil {
+		os.Remove(path)
+		return "", copyErr
+	}
+	return path, nil
 }
 
 // domReady is called when the webview DOM is ready.
