@@ -4,6 +4,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
 // restoreClientGlobals snapshots the package state doInit writes and puts it
@@ -156,6 +159,71 @@ func TestDoInitFallsBackWhenPreferredContextMissing(t *testing.T) {
 	}
 	if !ContextReferenceKnownMissing(saved) {
 		t.Error("ContextReferenceKnownMissing(saved) = false after the loaded file proved the context is gone")
+	}
+}
+
+func TestDoInitFallsBackWhenPreferredContextIsUnusable(t *testing.T) {
+	restoreClientGlobals(t)
+	dir := t.TempDir()
+	path := writeKubeconfig(t, dir, "config", "alpha", []kubeEntry{
+		{ctxName: "alpha", userName: "ua", clusterName: "cluster-alpha"},
+	})
+	addUnusableContext(t, path, "broken")
+
+	saved := ContextRef{Name: "broken", SourceFile: path, InFileName: "broken"}
+	if err := doInit(InitOptions{KubeconfigPath: path, PreferredContext: saved}); err != nil {
+		t.Fatalf("doInit() error = %v", err)
+	}
+
+	if got := GetContextName(); got != "alpha" {
+		t.Errorf("GetContextName() = %q, want the healthy current-context %q", got, "alpha")
+	}
+	if host := GetConfig().Host; !strings.Contains(host, "cluster-alpha") {
+		t.Errorf("rest config Host = %q, want it to point at cluster-alpha", host)
+	}
+}
+
+func TestDoInitCombinedSourcesFallsBackWhenPreferredContextIsUnusable(t *testing.T) {
+	restoreClientGlobals(t)
+	primaryDir := t.TempDir()
+	additionalDir := t.TempDir()
+	primary := writeKubeconfig(t, primaryDir, "primary.yaml", "alpha", []kubeEntry{
+		{ctxName: "alpha", userName: "ua", clusterName: "cluster-alpha"},
+	})
+	additional := writeKubeconfig(t, additionalDir, "additional.yaml", "broken", []kubeEntry{
+		{ctxName: "broken", userName: "ub", clusterName: "cluster-broken"},
+	})
+	addUnusableContext(t, additional, "broken")
+
+	saved := ContextRef{Name: "broken", SourceFile: additional, InFileName: "broken"}
+	if err := doInit(InitOptions{
+		KubeconfigPath:   primary,
+		KubeconfigDirs:   []string{additionalDir},
+		PreferredContext: saved,
+	}); err != nil {
+		t.Fatalf("doInit() error = %v", err)
+	}
+
+	if got := GetContextName(); got != "alpha" {
+		t.Errorf("GetContextName() = %q, want the healthy primary current-context %q", got, "alpha")
+	}
+	if host := GetConfig().Host; !strings.Contains(host, "cluster-alpha") {
+		t.Errorf("rest config Host = %q, want it to point at cluster-alpha", host)
+	}
+}
+
+func addUnusableContext(t *testing.T, path, name string) {
+	t.Helper()
+	cfg, err := clientcmd.LoadFromFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Contexts[name] = &clientcmdapi.Context{
+		Cluster:  "missing-cluster",
+		AuthInfo: "missing-user",
+	}
+	if err := clientcmd.WriteToFile(*cfg, path); err != nil {
+		t.Fatal(err)
 	}
 }
 

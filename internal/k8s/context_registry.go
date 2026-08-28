@@ -231,7 +231,7 @@ func pickInitialContext(
 ) (string, contextEntry, bool) {
 	// Preference pass: the context the last session ended on. It resolves only
 	// on an exact (file, in-file name) match — see matchPreferred.
-	if qName, entry, ok := matchPreferred(registry, preferred); ok {
+	if qName, entry, ok := matchPreferred(registry, fileConfigs, preferred); ok {
 		return qName, entry, true
 	}
 	reportContextPreferenceMiss(preferred)
@@ -273,14 +273,23 @@ func pickInitialContext(
 // since it was recorded, so following it would connect to a different cluster
 // under the name the user last used. Losing the convenience costs one click;
 // landing on the wrong cluster costs more than that.
-func matchPreferred(registry map[string]contextEntry, preferred ContextRef) (string, contextEntry, bool) {
+func matchPreferred(
+	registry map[string]contextEntry,
+	fileConfigs map[string]*clientcmdapi.Config,
+	preferred ContextRef,
+) (string, contextEntry, bool) {
 	if preferred.Empty() {
 		return "", contextEntry{}, false
 	}
 	for qName, entry := range registry {
-		if entry.SourceFile == preferred.SourceFile && entry.InFileName == preferred.InFileName {
-			return qName, entry, true
+		if entry.SourceFile != preferred.SourceFile || entry.InFileName != preferred.InFileName {
+			continue
 		}
+		cfg := fileConfigs[entry.SourceFile]
+		if cfg == nil || clientcmd.ConfirmUsable(*cfg, entry.InFileName) != nil {
+			return "", contextEntry{}, false
+		}
+		return qName, entry, true
 	}
 	return "", contextEntry{}, false
 }

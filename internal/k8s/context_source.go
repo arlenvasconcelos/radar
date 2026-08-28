@@ -98,7 +98,8 @@ func IsEphemeralContext(name string) bool {
 }
 
 // applyContextPreference points overrides at the preferred context when the
-// kubeconfig at path is the file it was recorded from and still defines it.
+// kubeconfig at path is the file it was recorded from and still defines a
+// usable context.
 // Validating first matters twice: a context that has since been renamed or
 // deleted would otherwise fail the whole startup, and the override has to be in
 // place before the deferred loader builds its inner config — it captures
@@ -113,7 +114,7 @@ func applyContextPreference(path string, preferred ContextRef, overrides *client
 		reportContextPreferenceMiss(preferred)
 		return
 	}
-	if _, ok := cfg.Contexts[preferred.InFileName]; !ok {
+	if clientcmd.ConfirmUsable(*cfg, preferred.InFileName) != nil {
 		reportContextPreferenceMiss(preferred)
 		return
 	}
@@ -133,8 +134,8 @@ func reportContextPreferenceMiss(preferred ContextRef) {
 	if name == "" {
 		return
 	}
-	log.Printf("[k8s-init] last used context %q not found where it was recorded; using current-context", name)
+	log.Printf("[k8s-init] last used context %q is missing or unusable where it was recorded; using current-context", name)
 	errorlog.Record("k8s-init", "warning",
-		"could not reopen on %q: that context is no longer in the kubeconfig it was recorded from. Starting on the kubeconfig's current-context instead.",
+		"could not reopen on %q: that context is missing or unusable in the kubeconfig it was recorded from. Starting on the kubeconfig's current-context instead.",
 		name)
 }

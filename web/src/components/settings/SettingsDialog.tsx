@@ -1096,7 +1096,7 @@ function ClusterSection({
       {isDesktop && (
         <ConfigToggle
           label="Reopen on the last used cluster"
-          description="Come back to the cluster you were working in. Turn off to always start on your kubeconfig's current context."
+          description="Come back to the cluster you were working in. Turn off to use your kubeconfig's current context on the next Desktop start."
           value={config.restoreLastDesktopContext ?? true}
           onChange={(v) => onChange('restoreLastDesktopContext', v ? undefined : false)}
         />
