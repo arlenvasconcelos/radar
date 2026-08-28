@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -268,17 +269,50 @@ func (s *Server) handlePodFileDownload(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if header.Typeflag == tar.TypeReg {
-			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fileName))
-			w.Header().Set("Content-Length", strconv.FormatInt(header.Size, 10))
-			if n, err := io.CopyN(w, tr, header.Size); err != nil {
-				// Headers are already sent; ending the body short of
-				// Content-Length makes the client fail the download visibly.
-				log.Printf("[copy] streaming %s from %s/%s aborted after %d of %d bytes: %v", filePath, namespace, podName, n, header.Size, err)
-				errorlog.Record("copy", "error", "file download for %s/%s path=%s aborted after %d of %d bytes: %v", namespace, podName, filePath, n, header.Size, err)
-			}
+			s.deliverPodFile(w, r, tr, fileName, header.Size, namespace, podName, filePath)
 			return
 		}
+	}
+}
+
+// deliverPodFile hands an extracted file to the caller: written straight to
+// disk in the desktop app, streamed to the HTTP response otherwise. src must
+// yield at least size bytes; reads stop there.
+//
+// The desktop app saves natively because blob URL downloads are swallowed by
+// its webview. Routing the bytes back through /desktop/save-file would make
+// the webview buffer and base64 the whole file, so the server writes it here
+// instead — constant memory, no size ceiling. saveStreamFunc is set only by
+// the desktop app, so `save=native` does nothing in server or browser mode.
+func (s *Server) deliverPodFile(w http.ResponseWriter, r *http.Request, src io.Reader, fileName string, size int64, namespace, podName, filePath string) {
+	if s.saveStreamFunc != nil && r.URL.Query().Get("save") == "native" {
+		name := sanitizeFilename(fileName)
+		if name == "" {
+			s.writeError(w, http.StatusBadRequest, "invalid filename")
+			return
+		}
+		savedPath, err := s.saveStreamFunc(name, io.LimitReader(src, size))
+		if err != nil {
+			log.Printf("[copy] native save of %s from %s/%s failed: %v", filePath, namespace, podName, err)
+			errorlog.Record("copy", "error", "native save failed for %s/%s path=%s: %v", namespace, podName, filePath, err)
+			s.writeError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to save file: %v", err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]string{"path": savedPath}); err != nil {
+			log.Printf("[copy] failed to write native save response: %v", err)
+		}
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fileName))
+	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	if n, err := io.CopyN(w, src, size); err != nil {
+		// Headers are already sent; ending the body short of
+		// Content-Length makes the client fail the download visibly.
+		log.Printf("[copy] streaming %s from %s/%s aborted after %d of %d bytes: %v", filePath, namespace, podName, n, size, err)
+		errorlog.Record("copy", "error", "file download for %s/%s path=%s aborted after %d of %d bytes: %v", namespace, podName, filePath, n, size, err)
 	}
 }
 
