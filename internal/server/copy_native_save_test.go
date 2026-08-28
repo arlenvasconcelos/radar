@@ -129,6 +129,78 @@ func TestDeliverPodFileNativeSaveReportsFailure(t *testing.T) {
 	}
 }
 
+// save=native writes to the user's disk from a GET, which a page on another
+// origin can fire without a preflight. Only the native branch is gated; the
+// streaming path is an ordinary read.
+func TestDeliverPodFileNativeSaveRejectsCrossOrigin(t *testing.T) {
+	called := false
+	s := &Server{saveStreamFunc: func(string, io.Reader) (string, error) {
+		called = true
+		return "/home/u/Downloads/a.txt", nil
+	}}
+	w := httptest.NewRecorder()
+
+	req := newDeliverRequest("path=/tmp/a.txt&save=native")
+	req.Header.Set("Origin", "https://evil.example.com")
+	s.deliverPodFile(w, req, strings.NewReader("hello world"), "a.txt", 11, "ns", "pod", "/tmp/a.txt")
+
+	if called {
+		t.Fatal("saveStreamFunc was called for a cross-origin request")
+	}
+	if res := w.Result(); res.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", res.StatusCode)
+	}
+}
+
+// The desktop webview runs on the loopback server itself, and the Vite dev
+// proxy forwards its own loopback origin.
+func TestDeliverPodFileNativeSaveAllowsLoopbackOrigin(t *testing.T) {
+	called := false
+	s := &Server{saveStreamFunc: func(name string, src io.Reader) (string, error) {
+		called = true
+		_, err := io.ReadAll(src)
+		return "/home/u/Downloads/" + name, err
+	}}
+	w := httptest.NewRecorder()
+
+	req := newDeliverRequest("path=/tmp/a.txt&save=native")
+	req.Header.Set("Origin", "http://localhost:9273")
+	s.deliverPodFile(w, req, strings.NewReader("hello world"), "a.txt", 11, "ns", "pod", "/tmp/a.txt")
+
+	if !called {
+		t.Fatal("a loopback origin must still be able to save")
+	}
+	if res := w.Result(); res.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", res.StatusCode)
+	}
+}
+
+// Reading a file cross-origin is not a side effect — the origin check must not
+// leak onto the streaming path.
+func TestDeliverPodFileCrossOriginStreamsWithoutNativeSave(t *testing.T) {
+	s := &Server{saveStreamFunc: func(string, io.Reader) (string, error) {
+		t.Fatal("saveStreamFunc must not be reached without save=native")
+		return "", nil
+	}}
+	w := httptest.NewRecorder()
+
+	req := newDeliverRequest("path=/tmp/a.txt")
+	req.Header.Set("Origin", "https://evil.example.com")
+	s.deliverPodFile(w, req, strings.NewReader("hello world"), "a.txt", 11, "ns", "pod", "/tmp/a.txt")
+
+	res := w.Result()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	if got := res.Header.Get("Content-Type"); got != "application/octet-stream" {
+		t.Errorf("Content-Type = %q, want application/octet-stream", got)
+	}
+	body, _ := io.ReadAll(res.Body)
+	if string(body) != "hello world" {
+		t.Errorf("body = %q, want %q", body, "hello world")
+	}
+}
+
 func TestSanitizeFilename(t *testing.T) {
 	tests := []struct {
 		in, want string

@@ -186,7 +186,7 @@ func (s *Server) handlePodFileDownload(w http.ResponseWriter, r *http.Request) {
 	runAttempt := func(ctx context.Context, offset uint64, stdout io.Writer) error {
 		var cmd []string
 		if offset == 0 {
-			cmd = []string{"tar", "cf", "-", "-C", dir, base}
+			cmd = []string{"tar", "cf", "-", "-C", dir, "--", base}
 		} else {
 			// tail -c+N is 1-based: resume at the first byte not yet delivered.
 			// The header block stays 512 bytes however large the size field
@@ -196,7 +196,7 @@ func (s *Server) handlePodFileDownload(w http.ResponseWriter, r *http.Request) {
 			// the trick kubectl cp --retries relies on. A file rotated or
 			// rewritten mid-transfer splices two different archives, which
 			// nothing downstream can detect.
-			cmd = []string{"/bin/sh", "-c", fmt.Sprintf("tar cf - -C %s %s | tail -c+%d", shellQuote(dir), shellQuote(base), offset+1)}
+			cmd = []string{"/bin/sh", "-c", fmt.Sprintf("tar cf - -C %s -- %s | tail -c+%d", shellQuote(dir), shellQuote(base), offset+1)}
 		}
 
 		req := client.CoreV1().RESTClient().Post().
@@ -286,6 +286,13 @@ func (s *Server) handlePodFileDownload(w http.ResponseWriter, r *http.Request) {
 // the desktop app, so `save=native` does nothing in server or browser mode.
 func (s *Server) deliverPodFile(w http.ResponseWriter, r *http.Request, src io.Reader, fileName string, size int64, namespace, podName, filePath string) {
 	if s.saveStreamFunc != nil && r.URL.Query().Get("save") == "native" {
+		// Writing to the user's disk is a side effect, and a GET reaches the
+		// loopback listener cross-origin with no preflight — an <img> tag is
+		// enough. The streaming path below is an ordinary read and stays open.
+		if !localOriginOK(r) {
+			s.writeError(w, http.StatusForbidden, "cross-origin request rejected")
+			return
+		}
 		name := sanitizeFilename(fileName)
 		if name == "" {
 			s.writeError(w, http.StatusBadRequest, "invalid filename")
