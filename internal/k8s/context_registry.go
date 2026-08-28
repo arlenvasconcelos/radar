@@ -277,9 +277,8 @@ func matchPreferred(registry map[string]contextEntry, preferred ContextRef) (str
 	if preferred.Empty() {
 		return "", contextEntry{}, false
 	}
-	wantFile := canonicalKubeconfigPath(preferred.SourceFile)
 	for qName, entry := range registry {
-		if canonicalKubeconfigPath(entry.SourceFile) == wantFile && entry.InFileName == preferred.InFileName {
+		if entry.SourceFile == preferred.SourceFile && entry.InFileName == preferred.InFileName {
 			return qName, entry, true
 		}
 	}

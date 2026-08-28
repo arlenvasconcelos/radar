@@ -2,7 +2,6 @@ package k8s
 
 import (
 	"log"
-	"path/filepath"
 
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -33,36 +32,14 @@ func (r ContextRef) Empty() bool {
 	return r.SourceFile == "" || r.InFileName == ""
 }
 
-// canonicalKubeconfigPath resolves a path so the same file compares equal
-// across restarts: --kubeconfig-dir records relative entries, and a relative
-// path can also match a *different* file reached from another directory. Abs
-// rather than EvalSymlinks — the latter errors on a since-deleted file.
-func canonicalKubeconfigPath(p string) string {
-	if p == "" {
-		return ""
-	}
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return filepath.Clean(p)
-	}
-	return abs
-}
-
 // ContextSourceFor returns the full reference for a context Radar currently
 // knows, so callers persisting it can record where it came from. Outside the
 // registry there is only one kubeconfig loaded, and it is the only place the
 // active context can have come from.
 func ContextSourceFor(name string) ContextRef {
-	clientMu.RLock()
-	defer clientMu.RUnlock()
-
-	if entry, ok := contextRegistry[name]; ok {
-		return ContextRef{Name: name, SourceFile: canonicalKubeconfigPath(entry.SourceFile), InFileName: entry.InFileName}
-	}
-	if name != "" && name == contextName {
-		if path := singleLoadedKubeconfig(); path != "" {
-			return ContextRef{Name: name, SourceFile: canonicalKubeconfigPath(path), InFileName: name}
-		}
+	sourceFile, inFileName, ok := GetContextSource(name)
+	if ok {
+		return ContextRef{Name: name, SourceFile: sourceFile, InFileName: inFileName}
 	}
 	return ContextRef{Name: name}
 }
@@ -76,13 +53,12 @@ func ContextReferenceKnownMissing(ref ContextRef) bool {
 		return false
 	}
 
-	wantFile := canonicalKubeconfigPath(ref.SourceFile)
 	clientMu.RLock()
 	defer clientMu.RUnlock()
 
 	if contextRegistry != nil {
 		for path, cfg := range perFileConfigs {
-			if canonicalKubeconfigPath(path) != wantFile {
+			if path != ref.SourceFile {
 				continue
 			}
 			_, exists := cfg.Contexts[ref.InFileName]
@@ -91,31 +67,15 @@ func ContextReferenceKnownMissing(ref ContextRef) bool {
 		return false
 	}
 
-	path := singleLoadedKubeconfig()
-	if path == "" || canonicalKubeconfigPath(path) != wantFile {
+	if kubeconfigPath == "" || kubeconfigPath != ref.SourceFile {
 		return false
 	}
-	cfg, err := clientcmd.LoadFromFile(path)
+	cfg, err := clientcmd.LoadFromFile(kubeconfigPath)
 	if err != nil {
 		return false
 	}
 	_, exists := cfg.Contexts[ref.InFileName]
 	return !exists
-}
-
-// singleLoadedKubeconfig returns the one kubeconfig backing this process, or ""
-// when several are loaded (the registry answers there) or none is (in-cluster).
-// --kubeconfig-dir records its find in kubeconfigPaths even when it finds
-// exactly one file, so both globals have to be consulted. Callers must hold
-// clientMu.
-func singleLoadedKubeconfig() string {
-	if kubeconfigPath != "" {
-		return kubeconfigPath
-	}
-	if len(kubeconfigPaths) == 1 {
-		return kubeconfigPaths[0]
-	}
-	return ""
 }
 
 // IsEphemeralContext reports whether a context lives in a temp kubeconfig Radar
@@ -144,7 +104,7 @@ func IsEphemeralContext(name string) bool {
 // place before the deferred loader builds its inner config — it captures
 // CurrentContext on the first RawConfig()/ClientConfig() call and caches it.
 func applyContextPreference(path string, preferred ContextRef, overrides *clientcmd.ConfigOverrides) {
-	if preferred.Empty() || canonicalKubeconfigPath(preferred.SourceFile) != canonicalKubeconfigPath(path) {
+	if preferred.Empty() || preferred.SourceFile != path {
 		reportContextPreferenceMiss(preferred)
 		return
 	}

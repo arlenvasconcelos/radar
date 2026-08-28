@@ -20,6 +20,10 @@ func restoreClientGlobals(t *testing.T) {
 		savedConfigs    = perFileConfigs
 		savedMtimes     = perFileMtimes
 		savedContext    = contextName
+		savedBinding    = contextBinding
+		savedActiveFile = activeSourceFile
+		savedActiveName = activeSourceName
+		savedActiveCfg  = activeSourceConfig
 		savedCluster    = clusterName
 		savedNamespace  = contextNamespace
 		savedUsesExec   = contextUsesExec
@@ -30,6 +34,11 @@ func restoreClientGlobals(t *testing.T) {
 		savedDiscovery  = discoveryClient
 		savedDynamic    = dynamicClient
 		savedGeneration = activeClientGeneration
+		savedInit       = initializationStarted
+		savedDirCount   = kubeconfigDirectoryFileCount
+		savedDirPaths   = kubeconfigDirectoryPaths
+		savedEnvIgnored = kubeconfigEnvWasIgnored
+		savedEnvReason  = kubeconfigEnvIgnoredReason
 	)
 	clientMu.Unlock()
 
@@ -43,6 +52,10 @@ func restoreClientGlobals(t *testing.T) {
 		perFileConfigs = savedConfigs
 		perFileMtimes = savedMtimes
 		contextName = savedContext
+		contextBinding = savedBinding
+		activeSourceFile = savedActiveFile
+		activeSourceName = savedActiveName
+		activeSourceConfig = savedActiveCfg
 		clusterName = savedCluster
 		contextNamespace = savedNamespace
 		contextUsesExec = savedUsesExec
@@ -53,6 +66,11 @@ func restoreClientGlobals(t *testing.T) {
 		discoveryClient = savedDiscovery
 		dynamicClient = savedDynamic
 		activeClientGeneration = savedGeneration
+		initializationStarted = savedInit
+		kubeconfigDirectoryFileCount = savedDirCount
+		kubeconfigDirectoryPaths = savedDirPaths
+		kubeconfigEnvWasIgnored = savedEnvIgnored
+		kubeconfigEnvIgnoredReason = savedEnvReason
 	})
 }
 
@@ -83,6 +101,38 @@ func TestDoInitPrefersRequestedContext(t *testing.T) {
 	}
 	if ContextReferenceKnownMissing(saved) {
 		t.Error("ContextReferenceKnownMissing(saved) = true for a context that resolved")
+	}
+}
+
+func TestDoInitPrefersRecordedSourceAcrossCombinedKubeconfigs(t *testing.T) {
+	restoreClientGlobals(t)
+	primaryDir := t.TempDir()
+	additionalDir := t.TempDir()
+	primary := writeKubeconfig(t, primaryDir, "primary.yaml", "prod", []kubeEntry{
+		{ctxName: "prod", userName: "primary-user", clusterName: "primary-cluster"},
+	})
+	additional := writeKubeconfig(t, additionalDir, "additional.yaml", "prod", []kubeEntry{
+		{ctxName: "prod", userName: "additional-user", clusterName: "additional-cluster"},
+	})
+
+	saved := ContextRef{Name: "prod", SourceFile: additional, InFileName: "prod"}
+	if err := doInit(InitOptions{
+		KubeconfigPath:   primary,
+		KubeconfigDirs:   []string{additionalDir},
+		PreferredContext: saved,
+	}); err != nil {
+		t.Fatalf("doInit() error = %v", err)
+	}
+
+	if got := GetKubeconfigSummary().Mode; got != "multi-source" {
+		t.Fatalf("kubeconfig mode = %q, want multi-source", got)
+	}
+	if host := GetConfig().Host; !strings.Contains(host, "additional-cluster") {
+		t.Errorf("rest config Host = %q, want the recorded additional source", host)
+	}
+	ref := ContextSourceFor(GetContextName())
+	if ref.SourceFile != additional || ref.InFileName != "prod" {
+		t.Errorf("active context source = %+v, want %q / prod", ref, additional)
 	}
 }
 
@@ -172,16 +222,13 @@ func TestIsEphemeralContextReportsCAPIContext(t *testing.T) {
 	}
 }
 
-// --kubeconfig-dir records its find in kubeconfigPaths even when it discovers
-// exactly one file, and builds no registry because there is nothing to
-// disambiguate. Without consulting both globals the source file would never be
-// recorded, and a restore that requires an exact match could never resolve.
-func TestContextSourceForRecordsTheFileFoundInAKubeconfigDir(t *testing.T) {
+func TestContextSourceForUsesTheRegistrySource(t *testing.T) {
 	restoreClientGlobals(t)
 	clientMu.Lock()
 	kubeconfigPath = ""
-	kubeconfigPaths = []string{"/home/user/.kube/configs/prod.yaml"}
-	contextRegistry = nil
+	contextRegistry = map[string]contextEntry{
+		"prod": {SourceFile: "/home/user/.kube/configs/prod.yaml", InFileName: "prod"},
+	}
 	contextName = "prod"
 	clientMu.Unlock()
 
