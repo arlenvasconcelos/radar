@@ -343,6 +343,10 @@ func InitResourceCache(ctx context.Context) error {
 			initErr = ctx.Err()
 			return
 		}
+		if permResult == nil {
+			initErr = fmt.Errorf("resource permission probe superseded during initialization")
+			return
+		}
 
 		// scopes drives which informers are created and at what scope.
 		// k8score routes each kind through the matching factory (cluster-wide

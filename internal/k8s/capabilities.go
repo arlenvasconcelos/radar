@@ -711,6 +711,12 @@ var (
 	resourcePermsExpiry   time.Time
 	resourcePermsTTL      = 60 * time.Second
 	resourcePermsErrorTTL = 5 * time.Second // Short TTL when API errors caused fail-closed results
+	// resourcePermsGeneration (guarded by resourcePermsMu) fences in-flight
+	// probes against invalidation: probes run without the lock, so a context
+	// switch can invalidate mid-probe and the old cluster's result would
+	// otherwise republish with a fresh TTL. Probes capture the generation
+	// before starting and publish only if it is unchanged.
+	resourcePermsGeneration uint64
 )
 
 // resourceProbe describes one typed-resource probe target. The probe issues
@@ -940,6 +946,7 @@ func CheckResourcePermissions(ctx context.Context) *PermissionCheckResult {
 		resourcePermsMu.RUnlock()
 		return result
 	}
+	observedGeneration := resourcePermsGeneration
 	resourcePermsMu.RUnlock()
 
 	// Compute probes WITHOUT holding the write lock — concurrent callers
@@ -964,15 +971,21 @@ func CheckResourcePermissions(ctx context.Context) *PermissionCheckResult {
 
 	result, hadErrors := probeResourceAccess(ctx, GetDynamicClient(), scopeNamespaces, forceNamespace)
 
-	resourcePermsMu.Lock()
-	cachedPermResult = result
 	ttl := resourcePermsTTL
 	if hadErrors {
 		ttl = resourcePermsErrorTTL
 		log.Printf("Warning: resource access probes had API errors, using short cache TTL (%v)", ttl)
 	}
-	resourcePermsExpiry = time.Now().Add(ttl)
-	resourcePermsMu.Unlock()
+	resourcePermsMu.Lock()
+	if resourcePermsGeneration == observedGeneration {
+		cachedPermResult = result
+		resourcePermsExpiry = time.Now().Add(ttl)
+		resourcePermsMu.Unlock()
+	} else {
+		resourcePermsMu.Unlock()
+		log.Printf("RBAC: dropping resource permission probe result — cache invalidated while the probe was in flight")
+		return nil
+	}
 
 	return result
 }
@@ -1364,9 +1377,13 @@ func GetCachedPermissionResult() *PermissionCheckResult {
 	}
 }
 
-// InvalidateResourcePermissionsCache forces the next CheckResourcePermissions call to refresh
+// InvalidateResourcePermissionsCache forces the next CheckResourcePermissions
+// call to refresh. Bumping the generation also fences out any probe already
+// in flight — its result belongs to the pre-invalidation cluster/scope and
+// must not be republished.
 func InvalidateResourcePermissionsCache() {
 	resourcePermsMu.Lock()
 	defer resourcePermsMu.Unlock()
 	cachedPermResult = nil
+	resourcePermsGeneration++
 }

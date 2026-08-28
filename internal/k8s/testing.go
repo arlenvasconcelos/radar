@@ -302,10 +302,8 @@ func ResetTestState() {
 	cachedCapabilities = nil
 	capabilitiesMu.Unlock()
 
-	// Reset resource permissions cache
-	resourcePermsMu.Lock()
-	cachedPermResult = nil
-	resourcePermsMu.Unlock()
+	// Reset resource permissions cache (generation bump fences in-flight probes)
+	InvalidateResourcePermissionsCache()
 	ForceNamespaceScope = false
 	SetFallbackNamespace("")
 	ClearNamespaceScopeOverride()
