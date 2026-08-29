@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -35,9 +36,9 @@ import (
 type cursorAgent struct {
 	bin string
 
-	trustMu    sync.Mutex
-	trustKnown bool
-	trustArg   string // resolved workspace-trust flag: "--trust" | "--force" | ""
+	approvalMu    sync.Mutex
+	approvalKnown bool
+	approvalArgs  []string // resolved approval flags, e.g. {"--force", "--trust"}
 }
 
 func (a *cursorAgent) Name() string { return "cursor-agent" }
@@ -79,20 +80,29 @@ func (a *cursorAgent) command(ctx context.Context, s turnSpec) (*exec.Cmd, func(
 		"--sandbox", "enabled", // sandbox Cursor's own shell/file tools; MCP calls run server-side in radar
 		"--approve-mcps", // auto-approve the radar server for this headless run
 	}
-	// Headless (-p) runs get no TTY, so Cursor can't prompt the workspace-trust
-	// gate — without a trust flag it aborts with "Workspace Trust Required", and
-	// the per-run throwaway workdir means a one-time manual trust never carries
-	// over. Which flag grants trust varies across Cursor releases (--trust was
-	// removed, then re-added), so probe --help and pass what's supported,
-	// preferring the narrowest. --force/--yolo also auto-approve command runs, but
-	// --sandbox enabled already contains Cursor's own shell/file tools and cluster
-	// writes stay gated by the read-only MCP mount, so the extra grant is bounded.
-	trustArg, err := a.resolveTrustFlag()
+	// Headless (-p) runs get no TTY, so nothing can answer Cursor's approval
+	// prompts: without an approval flag the run aborts at the workspace-trust gate,
+	// and the per-run throwaway workdir means a one-time manual trust never carries
+	// over. --force/--yolo is the load-bearing grant — it approves tool calls, and
+	// observably clears the workspace gate as well (the force-only shim run pins
+	// that). --trust clears only the gate: --approve-mcps registers the radar server
+	// but does NOT approve its invocations, so a run granted trust alone has every
+	// MCP call auto-denied and ends with no evidence. Trust is still passed when
+	// advertised, since no help text promises force subsumes it; an unsupported flag
+	// aborts the run, so the set comes from probing --help.
+	//
+	// What --force does NOT bound: it approves tool calls for every MCP server
+	// Cursor loaded, the user's own from ~/.cursor/mcp.json included, and Cursor
+	// offers no way to exclude those. --sandbox enabled contains Cursor's own
+	// shell/file tools and radar's mount is read-only, but neither constrains a
+	// third-party server. That residual is what the full-local consent gate
+	// discloses.
+	approvalArgs, err := a.resolveApprovalFlags()
 	if err != nil {
 		cleanup()
 		return nil, nil, err
 	}
-	args = append(args, trustArg)
+	args = append(args, approvalArgs...)
 	if s.model != "" {
 		args = append(args, "--model", s.model) // free-form Cursor model slug; "" = the user's default
 	}
@@ -109,54 +119,66 @@ func (a *cursorAgent) command(ctx context.Context, s turnSpec) (*exec.Cmd, func(
 	return cmd, cleanup, nil
 }
 
-// resolveTrustFlag returns the workspace-trust flag to pass this cursor-agent,
-// probing --help once and caching. Prefers --trust (workspace trust only); falls
-// back to --force (also skips command approvals, bounded by --sandbox). Errors if
-// the probe is inconclusive or no known trust flag is supported.
-func (a *cursorAgent) resolveTrustFlag() (string, error) {
-	a.trustMu.Lock()
-	defer a.trustMu.Unlock()
-	if a.trustKnown {
-		if a.trustArg == "" {
-			return "", errNoCursorTrustFlag
+// resolveApprovalFlags returns every approval flag this cursor-agent supports,
+// probing --help once and caching. Errors if the probe is inconclusive or the CLI
+// offers no known flag.
+func (a *cursorAgent) resolveApprovalFlags() ([]string, error) {
+	a.approvalMu.Lock()
+	defer a.approvalMu.Unlock()
+	if a.approvalKnown {
+		if !hasCursorForceGrant(a.approvalArgs) {
+			return nil, errNoCursorApprovalFlag
 		}
-		return a.trustArg, nil
+		return a.approvalArgs, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	out, _ := exec.CommandContext(ctx, a.bin, "--help").CombinedOutput()
 	if ctx.Err() != nil {
-		return "", fmt.Errorf("ai: Cursor Agent capability probe timed out")
+		return nil, fmt.Errorf("ai: Cursor Agent capability probe timed out")
 	}
 	if len(bytes.TrimSpace(out)) == 0 {
-		return "", fmt.Errorf("ai: Cursor Agent capability probe returned no help output")
+		return nil, fmt.Errorf("ai: Cursor Agent capability probe returned no help output")
 	}
-	a.trustArg = cursorHelpTrustFlag(string(out))
-	a.trustKnown = true
-	log.Printf("[ai] cursor-agent trust flag=%q", a.trustArg)
-	if a.trustArg == "" {
-		return "", errNoCursorTrustFlag
+	a.approvalArgs = cursorHelpApprovalFlags(string(out))
+	a.approvalKnown = true
+	log.Printf("[ai] cursor-agent approval flags=%v", a.approvalArgs)
+	if !hasCursorForceGrant(a.approvalArgs) {
+		return nil, errNoCursorApprovalFlag
 	}
-	return a.trustArg, nil
+	return a.approvalArgs, nil
 }
 
-var errNoCursorTrustFlag = fmt.Errorf("ai: installed cursor-agent supports no known workspace-trust flag (--trust/--force/--yolo); upgrade cursor-agent")
+// hasCursorForceGrant reports whether the resolved set carries the tool-approval
+// grant. --trust alone is not enough: it clears the workspace gate, so the run
+// starts and looks healthy, then auto-denies every MCP call and ends with no
+// evidence. Failing here costs nothing; spawning burns a full agent turn.
+func hasCursorForceGrant(flags []string) bool {
+	return slices.Contains(flags, "--force") || slices.Contains(flags, "--yolo")
+}
+
+var errNoCursorApprovalFlag = fmt.Errorf("ai: installed cursor-agent supports no tool-approval flag (--force/--yolo); upgrade cursor-agent")
 
 var (
 	cursorTrustFlag = regexp.MustCompile(`(?m)^[[:space:]]*(-[[:alnum:]],?[[:space:]]+)?--trust([[:space:],=]|$)`)
-	cursorForceFlag = regexp.MustCompile(`(?m)^[[:space:]]*(-[[:alnum:]],?[[:space:]]+)?(--force|--yolo)([[:space:],=]|$)`)
+	cursorForceFlag = regexp.MustCompile(`(?m)^[[:space:]]*(-[[:alnum:]],?[[:space:]]+)?--force([[:space:],=]|$)`)
+	cursorYoloFlag  = regexp.MustCompile(`(?m)^[[:space:]]*(-[[:alnum:]],?[[:space:]]+)?--yolo([[:space:],=]|$)`)
 )
 
-// cursorHelpTrustFlag returns the narrowest supported trust flag, or "" if none.
-func cursorHelpTrustFlag(help string) string {
+// cursorHelpApprovalFlags returns the supported approval flags, empty if none.
+// --yolo is documented as an alias of --force, so only one of the pair is taken.
+func cursorHelpApprovalFlags(help string) []string {
+	var flags []string
 	switch {
-	case cursorTrustFlag.MatchString(help):
-		return "--trust"
 	case cursorForceFlag.MatchString(help):
-		return "--force"
-	default:
-		return ""
+		flags = append(flags, "--force")
+	case cursorYoloFlag.MatchString(help):
+		flags = append(flags, "--yolo")
 	}
+	if cursorTrustFlag.MatchString(help) {
+		flags = append(flags, "--trust")
+	}
+	return flags
 }
 
 // writeCursorMCPConfig points Cursor at radar's MCP via the workspace-local config

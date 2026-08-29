@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -47,11 +48,11 @@ exit 0
 	return path
 }
 
-// TestCursorTrustFallbackEndToEnd is the regression guard for issue #1272: against
-// a cursor-agent without --trust, dropping the flag entirely leaves the headless
-// run stuck at the workspace-trust gate. command() must probe --help, fall back to
-// --force, and the spawned run must clear the gate and produce stream-json.
-func TestCursorTrustFallbackEndToEnd(t *testing.T) {
+// Against a cursor-agent that advertises no --trust, command() must probe --help,
+// pass --force alone, and the spawned run must clear the workspace-trust gate and
+// produce stream-json — passing an unadvertised --trust aborts it with "unknown
+// option", and passing no grant at all leaves it stuck at the gate.
+func TestCursorForceGrantEndToEnd(t *testing.T) {
 	a := &cursorAgent{bin: writeCursorShim(t)}
 	cmd, cleanup, err := a.command(context.Background(), turnSpec{
 		mcpURL: "http://localhost:9/mcp-readonly", prompt: "investigate",
@@ -159,7 +160,7 @@ func TestCursorParseStream_ErrorResultNotVerdict(t *testing.T) {
 // stream-json output, sandboxed shell, MCP auto-approval, a workspace-local
 // mcp.json pointed at radar, and --resume only on a continued session.
 func TestCursorCommandFlags(t *testing.T) {
-	a := &cursorAgent{bin: "cursor-agent", trustKnown: true, trustArg: "--trust"}
+	a := &cursorAgent{bin: "cursor-agent", approvalKnown: true, approvalArgs: []string{"--force", "--trust"}}
 	dir := t.TempDir()
 	const url = "http://localhost:9/mcp-readonly"
 
@@ -174,7 +175,7 @@ func TestCursorCommandFlags(t *testing.T) {
 	args := strings.Join(cmd.Args, " ")
 	for _, want := range []string{
 		"-p", "--output-format stream-json", "--sandbox enabled",
-		"--approve-mcps", "--trust", "--workspace " + dir, "--model sonnet-4.5",
+		"--approve-mcps", "--force", "--trust", "--workspace " + dir, "--model sonnet-4.5",
 	} {
 		if !strings.Contains(args, want) {
 			t.Errorf("expected flag %q in args; got %q", want, args)
@@ -222,41 +223,66 @@ func TestCursorCommandFlags(t *testing.T) {
 	}
 }
 
-// A Cursor without --trust must fall back to --force so the headless run can
-// clear the workspace-trust gate — omitting a trust flag entirely aborts the run.
-func TestCursorCommandFallsBackToForceWhenTrustUnsupported(t *testing.T) {
-	a := &cursorAgent{bin: "cursor-agent", trustKnown: true, trustArg: "--force"}
-	cmd, cleanup, err := a.command(context.Background(), turnSpec{
-		mcpURL: "http://localhost:9/mcp-readonly", prompt: "go", workdir: t.TempDir(),
-		profile: ExecutionProfileFullLocal,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cleanup()
-	args := strings.Join(cmd.Args, " ")
-	if strings.Contains(args, "--trust") {
-		t.Errorf("Cursor without --trust must not receive --trust: %q", args)
-	}
-	if !strings.Contains(args, "--force") {
-		t.Errorf("Cursor without --trust must fall back to --force: %q", args)
+// Only the flags the installed CLI actually supports may be passed — an
+// unsupported one aborts the run with "unknown option". A Cursor advertising the
+// force grant alone gets exactly that one.
+func TestCursorCommandPassesOnlySupportedApprovalFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		resolved []string
+		absent   string
+	}{
+		{"force only", []string{"--force"}, "--trust"},
+		{"yolo only", []string{"--yolo"}, "--trust"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &cursorAgent{bin: "cursor-agent", approvalKnown: true, approvalArgs: tc.resolved}
+			cmd, cleanup, err := a.command(context.Background(), turnSpec{
+				mcpURL: "http://localhost:9/mcp-readonly", prompt: "go", workdir: t.TempDir(),
+				profile: ExecutionProfileFullLocal,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cleanup()
+			args := strings.Join(cmd.Args, " ")
+			if strings.Contains(args, tc.absent) {
+				t.Errorf("must not pass unsupported %s: %q", tc.absent, args)
+			}
+			if !strings.Contains(args, tc.resolved[0]) {
+				t.Errorf("must pass supported %s: %q", tc.resolved[0], args)
+			}
+		})
 	}
 }
 
-// When no known trust flag is supported, command() must error rather than spawn a
-// run that will abort at the trust gate.
-func TestCursorCommandErrorsWhenNoTrustFlag(t *testing.T) {
-	a := &cursorAgent{bin: "cursor-agent", trustKnown: true, trustArg: ""}
-	if _, _, err := a.command(context.Background(), turnSpec{
-		mcpURL: "http://localhost:9/mcp-readonly", prompt: "go", workdir: t.TempDir(),
-		profile: ExecutionProfileFullLocal,
-	}); err == nil || !strings.Contains(err.Error(), "trust flag") {
-		t.Fatalf("no supported trust flag = %v, want trust-flag error", err)
+// A CLI advertising --trust but no force grant must be refused, not spawned: trust
+// clears the workspace gate, so the run starts, auto-denies every MCP call and
+// ends with no evidence — the failure this whole resolver exists to prevent.
+// Guards against future flag churn renaming or relocating --force/--yolo.
+func TestCursorCommandErrorsWhenTrustGrantIsAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		resolved []string
+	}{
+		{"no approval flag at all", nil},
+		{"trust only", []string{"--trust"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &cursorAgent{bin: "cursor-agent", approvalKnown: true, approvalArgs: tc.resolved}
+			_, _, err := a.command(context.Background(), turnSpec{
+				mcpURL: "http://localhost:9/mcp-readonly", prompt: "go", workdir: t.TempDir(),
+				profile: ExecutionProfileFullLocal,
+			})
+			if err == nil || !strings.Contains(err.Error(), "tool-approval flag") {
+				t.Fatalf("resolved %v = %v, want tool-approval-flag error", tc.resolved, err)
+			}
+		})
 	}
 }
 
 func TestCursorCommandRejectsUnsupportedProfile(t *testing.T) {
-	a := &cursorAgent{bin: "cursor-agent", trustKnown: true}
+	a := &cursorAgent{bin: "cursor-agent", approvalKnown: true, approvalArgs: []string{"--force"}}
 	if _, _, err := a.command(context.Background(), turnSpec{
 		mcpURL: "http://localhost:9/mcp-readonly", prompt: "go",
 		profile: ExecutionProfileSafeguarded,
@@ -265,7 +291,7 @@ func TestCursorCommandRejectsUnsupportedProfile(t *testing.T) {
 	}
 }
 
-func TestCursorCommandRejectsInconclusiveTrustProbe(t *testing.T) {
+func TestCursorCommandRejectsInconclusiveApprovalProbe(t *testing.T) {
 	a := &cursorAgent{bin: filepath.Join(t.TempDir(), "missing-cursor-agent")}
 	if _, _, err := a.command(context.Background(), turnSpec{
 		mcpURL: "http://localhost:9/mcp-readonly", prompt: "go",
@@ -275,18 +301,21 @@ func TestCursorCommandRejectsInconclusiveTrustProbe(t *testing.T) {
 	}
 }
 
-func TestCursorHelpTrustFlag(t *testing.T) {
-	// --trust present => prefer it (narrowest grant).
-	if got := cursorHelpTrustFlag("  --trust  Trust the current workspace without prompting"); got != "--trust" {
-		t.Fatalf("expected --trust detected, got %q", got)
+func TestCursorHelpApprovalFlags(t *testing.T) {
+	// The two grants are independent — trust clears the workspace gate, force
+	// auto-approves MCP tool calls — so a CLI offering both gets both.
+	both := "  -f, --force  Force allow commands unless explicitly denied\n  --yolo  Alias for --force\n  --trust  Trust the current workspace"
+	if got := cursorHelpApprovalFlags(both); !slices.Equal(got, []string{"--force", "--trust"}) {
+		t.Fatalf("expected both grants, got %v", got)
 	}
-	// --trust gone, --force/-f present => fall back to --force.
-	for _, help := range []string{
-		"  -f, --force  Force allow commands unless explicitly denied",
-		"  --yolo  Alias for --force (Run Everything)",
+	// Only one advertised => only that one; passing the other aborts the run.
+	for help, want := range map[string][]string{
+		"  -f, --force  Force allow commands unless explicitly denied": {"--force"},
+		"  --yolo  Alias for --force (Run Everything)":                 {"--yolo"},
+		"  --trust  Trust the current workspace without prompting":     {"--trust"},
 	} {
-		if got := cursorHelpTrustFlag(help); got != "--force" {
-			t.Fatalf("expected --force fallback from %q, got %q", help, got)
+		if got := cursorHelpApprovalFlags(help); !slices.Equal(got, want) {
+			t.Fatalf("from %q: got %v, want %v", help, got, want)
 		}
 	}
 	// Neither a real trust nor a force flag => empty (caller errors).
@@ -296,8 +325,24 @@ func TestCursorHelpTrustFlag(t *testing.T) {
 		"Removed: --trust is no longer supported",
 		"  --enforce  something unrelated",
 	} {
-		if got := cursorHelpTrustFlag(help); got != "" {
-			t.Fatalf("must not infer a trust flag from %q, got %q", help, got)
+		if got := cursorHelpApprovalFlags(help); len(got) != 0 {
+			t.Fatalf("must not infer an approval flag from %q, got %v", help, got)
+		}
+	}
+	// The parser reports what is advertised; sufficiency is a separate question.
+	// Only the force grant approves MCP tool calls, so trust alone is not enough.
+	for _, tc := range []struct {
+		flags []string
+		want  bool
+	}{
+		{[]string{"--force", "--trust"}, true},
+		{[]string{"--force"}, true},
+		{[]string{"--yolo"}, true},
+		{[]string{"--trust"}, false},
+		{nil, false},
+	} {
+		if got := hasCursorForceGrant(tc.flags); got != tc.want {
+			t.Errorf("hasCursorForceGrant(%v) = %v, want %v", tc.flags, got, tc.want)
 		}
 	}
 }
