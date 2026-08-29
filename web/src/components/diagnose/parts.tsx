@@ -33,6 +33,9 @@ import {
 import { StatusDot } from "@skyhook-io/k8s-ui";
 import { Markdown } from "../ui/Markdown";
 
+const CURSOR_FULL_LOCAL_WARNING =
+  "Radar passes Cursor --force, which auto-approves its built-in tools and every MCP server it loads, including your global servers. Cursor’s sandbox does not reliably confine those tools to Radar’s temporary workspace.";
+
 // Segmented two-or-more-way selector — shared shape for the agent and execution
 // profile pickers.
 function Segmented<T extends string | boolean>({
@@ -309,9 +312,11 @@ export function AgentControls({
                     configured tools and MCP servers. Radar cannot constrain that
                     external tooling; it may access local files or the network
                     and may be able to change your cluster.{" "}
-                    {isClaude
-                      ? "Claude uses the permissions from your setup; Radar does not override them."
-                      : "Radar still enables the agent CLI’s own sandbox, but that sandbox does not constrain external MCP servers."}{" "}
+                    {isCursor
+                      ? CURSOR_FULL_LOCAL_WARNING
+                      : isClaude
+                        ? "Claude uses the permissions from your setup; Radar does not override them."
+                        : "Radar still enables the agent CLI’s own sandbox, but that sandbox does not constrain external MCP servers."}{" "}
                     Choose this only when you need that setup.
                   </span>
                 </div>
@@ -336,10 +341,14 @@ export function AgentControls({
                 Radar must use this agent&apos;s normal setup. Radar cannot
                 constrain its external tools or MCP servers; they may access
                 local files or the network and may be able to change your
-                cluster. Radar still enables the agent CLI&apos;s own sandbox,
-                but that sandbox does not constrain external MCP servers.
-                {isCursor &&
-                  " Cursor always loads your global MCP servers, so Radar cannot exclude them."}
+                cluster. {isCursor ? (
+                  CURSOR_FULL_LOCAL_WARNING
+                ) : (
+                  <>
+                    Radar still enables the agent CLI&apos;s own sandbox, but that
+                    sandbox does not constrain external MCP servers.
+                  </>
+                )}
               </span>
             </div>
           )}
@@ -832,7 +841,9 @@ export function ConsentCard({
                 MCP servers. They may access local files or the network and may
                 be able to change your cluster.
               </>,
-              agent === "claude" ? (
+              agent === "cursor-agent" ? (
+                CURSOR_FULL_LOCAL_WARNING
+              ) : agent === "claude" ? (
                 <>
                   Claude uses the permissions from your setup; Radar does not
                   override them.
@@ -841,13 +852,6 @@ export function ConsentCard({
                 <>
                   Radar still enables the agent CLI&apos;s own sandbox, but that
                   sandbox does not constrain external MCP servers.
-                  {agent === "cursor-agent" && (
-                    <>
-                      {" "}
-                      Cursor always loads your global MCP servers; Radar cannot
-                      exclude them.
-                    </>
-                  )}
                 </>
               ),
             ]

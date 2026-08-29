@@ -81,7 +81,7 @@ var aiConsentVersions = map[string]string{
 	"claude:full-local":       "v1",
 	"codex:safeguarded":       "v1",
 	"codex:full-local":        "v1",
-	"cursor-agent:full-local": "v1",
+	"cursor-agent:full-local": "v2",
 }
 
 // AIConsentVersion returns the current disclosure version for a surface

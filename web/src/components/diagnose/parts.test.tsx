@@ -41,9 +41,12 @@ describe("AgentControls execution profile explanation", () => {
     const html = renderAgent("cursor-agent", ["full-local"], "safeguarded");
     expect(html).toContain("must use this agent");
     expect(html).toContain("normal setup");
-    expect(html).toContain("always loads your global MCP servers");
-    expect(html).toContain("still enables the agent CLI");
-    expect(html).toContain("does not constrain external MCP servers");
+    expect(html).toContain("--force");
+    expect(html).toContain("auto-approves its built-in tools");
+    expect(html).toContain("including your global servers");
+    expect(html).toContain("does not reliably confine those tools");
+    expect(html).not.toContain("still enables the agent CLI");
+    expect(html).not.toContain("does not constrain external MCP servers");
     expect(html).not.toContain("always runs this agent with safeguards");
   });
 
@@ -104,7 +107,12 @@ describe("ConsentCard execution profile treatment", () => {
     expect(html).toContain("border-amber-500/40");
     expect(html).toContain("text-amber-500");
     expect(html).toContain("Radar cannot constrain");
-    expect(html).toContain("always loads your global MCP servers");
+    expect(html).toContain("--force");
+    expect(html).toContain("auto-approves its built-in tools");
+    expect(html).toContain("including your global servers");
+    expect(html).toContain("does not reliably confine those tools");
+    expect(html).not.toContain("still enables the agent CLI");
+    expect(html).not.toContain("does not constrain external MCP servers");
     expect(html).not.toContain("text-accent");
   });
 

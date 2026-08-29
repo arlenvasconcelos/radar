@@ -23,6 +23,29 @@ func TestLoadMissing(t *testing.T) {
 	}
 }
 
+func TestCursorConsentRequiresCurrentDisclosureVersion(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+
+	const surface = "cursor-agent:full-local"
+	if got := AIConsentVersion(surface); got != "v2" {
+		t.Fatalf("AIConsentVersion(%q) = %q, want v2", surface, got)
+	}
+	if err := Save(Config{AIConsent: map[string]string{surface: "v1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if AIConsentGiven(surface) {
+		t.Fatal("the previous Cursor disclosure must require consent again")
+	}
+	if err := RecordAIConsent(surface); err != nil {
+		t.Fatal(err)
+	}
+	if !AIConsentGiven(surface) {
+		t.Fatal("the current Cursor disclosure should satisfy consent")
+	}
+}
+
 func TestSaveAndLoad(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)

@@ -357,12 +357,7 @@ func executionProfile(agent, requested string) (ai.ExecutionProfile, error) {
 	return profile, nil
 }
 
-// promptConsent mirrors the UI's one-time consent card. Interactive terminals
-// get a real y/N gate; non-interactive callers (CI) get the disclosure on
-// stderr and proceed — an explicit `radar diagnose` invocation in a script is
-// already an informed act, and a blocking prompt there would just break CI.
-// record persists the acknowledgment to the shared machine-scoped store.
-func promptConsent(agent string, profile ai.ExecutionProfile, surface string, record func(surface string) error) bool {
+func consentNotice(agent string, profile ai.ExecutionProfile) string {
 	agentLabel := consentLabel(agent)
 	notice := fmt.Sprintf(`This runs your own %s on your machine — no Radar cloud, no API key.
 Radar sends the resource's spec, recent events, and pod logs to it (and on to
@@ -374,16 +369,18 @@ history until cleared.
 tools and MCP servers. Radar cannot constrain that external tooling; it may
 access local files or the network and may be able to change your cluster.
 `, agentLabel)
-		if agent == "claude" {
+		if agent == "cursor-agent" {
+			notice += `Radar passes Cursor --force so headless tool calls can run. This
+auto-approves Cursor's built-in tools and every MCP server it loads, including
+your global servers. Cursor's sandbox does not reliably confine those tools to
+Radar's temporary workspace.
+`
+		} else if agent == "claude" {
 			notice += `Claude uses the permissions from your setup; Radar does not override them.
 `
 		} else {
 			notice += `Radar still enables the agent CLI's own sandbox, but that sandbox does not
 constrain external MCP servers.
-`
-		}
-		if agent == "cursor-agent" {
-			notice += `Cursor always loads your global MCP servers; Radar cannot exclude them.
 `
 		}
 	} else {
@@ -401,7 +398,16 @@ write or reach the network.
 `
 		}
 	}
-	fmt.Fprint(os.Stderr, notice)
+	return notice
+}
+
+// promptConsent mirrors the UI's one-time consent card. Interactive terminals
+// get a real y/N gate; non-interactive callers (CI) get the disclosure on
+// stderr and proceed — an explicit `radar diagnose` invocation in a script is
+// already an informed act, and a blocking prompt there would just break CI.
+// record persists the acknowledgment to the shared machine-scoped store.
+func promptConsent(agent string, profile ai.ExecutionProfile, surface string, record func(surface string) error) bool {
+	fmt.Fprint(os.Stderr, consentNotice(agent, profile))
 	// A real ioctl-backed check — os.ModeCharDevice would misread /dev/null
 	// (and daemon-inherited stdin) as an interactive terminal.
 	if !term.IsTerminal(int(os.Stdin.Fd())) {

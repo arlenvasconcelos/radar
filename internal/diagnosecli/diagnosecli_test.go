@@ -7,7 +7,24 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/skyhook-io/radar/internal/ai"
 )
+
+func TestCursorConsentNoticeDisclosesAutoApprovedTools(t *testing.T) {
+	notice := strings.Join(strings.Fields(consentNotice("cursor-agent", ai.ExecutionProfileFullLocal)), " ")
+	for _, want := range []string{
+		"passes Cursor --force",
+		"auto-approves Cursor's built-in tools",
+		"every MCP server it loads",
+		"including your global servers",
+		"does not reliably confine those tools",
+	} {
+		if !strings.Contains(notice, want) {
+			t.Errorf("Cursor consent notice missing %q:\n%s", want, notice)
+		}
+	}
+}
 
 func TestNormalizeKind(t *testing.T) {
 	cases := map[string]string{

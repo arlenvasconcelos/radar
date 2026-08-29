@@ -18,21 +18,17 @@ import (
 	"time"
 )
 
-// cursorAgent drives the Cursor CLI (`cursor-agent -p`). Containment differs from
-// Claude/Codex and is weaker by necessity: Cursor has NO flag to suppress the
-// user's global ~/.cursor/mcp.json, so the user's other MCP servers also load and
-// --approve-mcps approves all of them. There is no hermetic read-only mode. What
-// we DO contain:
-//   - cluster WRITE access is gated by the read-only MCP MOUNT (radar passes
-//     /mcp-readonly on investigation turns, full /mcp only on a confirmed apply) —
-//     same server-side gate Claude/Codex rely on;
-//   - --sandbox enabled blocks Cursor's own shell/file tools from writing;
-//   - the workspace is a throwaway per-run temp dir, not the user's project.
+// cursorAgent drives the Cursor CLI (`cursor-agent -p`). Cursor has no hermetic
+// read-only mode: it always loads the user's global ~/.cursor/mcp.json, and the
+// --force grant required for headless MCP calls also approves its built-in tools
+// and every loaded MCP server. --sandbox enabled is still requested, but Cursor's
+// tools can write outside the supplied workspace, so neither it nor the
+// throwaway workspace is treated as a security boundary. Radar's investigation
+// MCP mount remains read-only; Cursor's other tools are outside Radar's control.
+// This exposure is explicit in the versioned full-local consent surface.
 //
-// The residual exposure (the user's other MCP servers are reachable during a run)
-// is disclosed in the consent UI — this is a BYO "your own setup" mode, not a
-// hermetic one. Cursor's --resume is workspace-scoped, so every turn of a run must
-// share one workspace dir (RunManager supplies a stable per-run dir via turnSpec).
+// Cursor's --resume is workspace-scoped, so every turn of a run must share one
+// workspace dir (RunManager supplies a stable per-run dir via turnSpec).
 type cursorAgent struct {
 	bin string
 
@@ -77,7 +73,7 @@ func (a *cursorAgent) command(ctx context.Context, s turnSpec) (*exec.Cmd, func(
 	args := []string{
 		"-p", "--output-format", "stream-json",
 		"--workspace", workdir,
-		"--sandbox", "enabled", // sandbox Cursor's own shell/file tools; MCP calls run server-side in radar
+		"--sandbox", "enabled", // request Cursor's sandbox; full-local consent does not treat it as a security boundary
 		"--approve-mcps", // auto-approve the radar server for this headless run
 	}
 	// Headless (-p) runs get no TTY, so nothing can answer Cursor's approval
@@ -91,12 +87,10 @@ func (a *cursorAgent) command(ctx context.Context, s turnSpec) (*exec.Cmd, func(
 	// advertised, since no help text promises force subsumes it; an unsupported flag
 	// aborts the run, so the set comes from probing --help.
 	//
-	// What --force does NOT bound: it approves tool calls for every MCP server
-	// Cursor loaded, the user's own from ~/.cursor/mcp.json included, and Cursor
-	// offers no way to exclude those. --sandbox enabled contains Cursor's own
-	// shell/file tools and radar's mount is read-only, but neither constrains a
-	// third-party server. That residual is what the full-local consent gate
-	// discloses.
+	// --force also approves Cursor's built-in tools and every MCP server it loaded,
+	// the user's own from ~/.cursor/mcp.json included. Cursor offers no way to
+	// exclude those servers, and its sandbox is not a reliable workspace boundary.
+	// The versioned full-local consent gate discloses that wider grant.
 	approvalArgs, err := a.resolveApprovalFlags()
 	if err != nil {
 		cleanup()
