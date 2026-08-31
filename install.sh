@@ -27,6 +27,11 @@ case "$INSTALL_DIR" in
     ;;
 esac
 
+if [ -e "$INSTALL_DIR" ] && [ ! -d "$INSTALL_DIR" ]; then
+  echo "INSTALL_DIR is not a directory: ${INSTALL_DIR}" >&2
+  exit 1
+fi
+
 # Detect OS and architecture
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
