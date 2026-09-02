@@ -960,6 +960,16 @@ func (s *Server) cloudConnectCapability() *k8s.CloudConnectCapability {
 // Loopback-to-loopback is additionally allowed for the Vite dev proxy, which
 // forwards its own :9273 origin to the backend on :9280.
 func sameOriginOK(r *http.Request) bool {
+	return originAllowed(r, true)
+}
+
+// originAllowed reports whether the request's Origin matches the authority the
+// client actually used. allowLoopbackPair additionally admits a loopback
+// origin reaching a loopback listener — needed by the Vite dev proxy, which
+// rewrites Host (changeOrigin: true) so the forwarded :9273 origin never
+// matches; callers protecting credentials must not grant it in production,
+// where any local page would qualify.
+func originAllowed(r *http.Request, allowLoopbackPair bool) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return true // same-origin navigation or a non-browser client
@@ -970,6 +980,9 @@ func sameOriginOK(r *http.Request) bool {
 	}
 	if u.Host == r.Host {
 		return true
+	}
+	if !allowLoopbackPair {
+		return false
 	}
 	requestHost := r.Host
 	if h, _, splitErr := net.SplitHostPort(requestHost); splitErr == nil {

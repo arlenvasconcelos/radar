@@ -11,6 +11,7 @@ type Config = pkgauth.Config
 type User = pkgauth.User
 type Session = pkgauth.Session
 type SessionRevoker = pkgauth.SessionRevoker
+type APIKey = pkgauth.APIKey
 type UserPermissions = pkgauth.UserPermissions
 type PermissionCache = pkgauth.PermissionCache
 type CloudRole = pkgauth.CloudRole

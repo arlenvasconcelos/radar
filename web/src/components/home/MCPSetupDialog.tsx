@@ -1,7 +1,13 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
-import { X, Copy, Check, Radio, Terminal, MessageSquare, Code2, ChevronRight, Pin } from 'lucide-react'
+import {
+  X, Copy, Check, Radio, Terminal, MessageSquare, Code2, ChevronRight, Pin,
+  AlertTriangle, Loader2, Plus,
+} from 'lucide-react'
 import { apiUrl, getAuthHeaders, getCredentialsMode } from '../../api/config'
+import { useAuthMe } from '../../api/client'
+import { useCreateAPIKey } from '../../api/apiKeys'
 import { MCP_TOOL_CATALOG } from './mcpToolCatalog'
+import { API_KEY_PLACEHOLDER, buildMCPClientConfigs } from './mcpClientConfigs'
 import { Tooltip } from '../ui/Tooltip'
 
 interface MCPSetupDialogProps {
@@ -10,26 +16,45 @@ interface MCPSetupDialogProps {
   mcpUrl: string
 }
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false)
+// A snippet here can carry a freshly minted API key, which the server never
+// returns again. `navigator.clipboard` is undefined on insecure origins, so a
+// fire-and-forget write would silently lose that credential — failure is
+// surfaced instead, and the snippet text stays selectable as the fallback.
+function CopyButton({ text, className }: { text: string; className?: string }) {
+  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setState('copied')
+    } catch {
+      setState('failed')
+    }
+    setTimeout(() => setState('idle'), 2500)
   }
 
+  const label =
+    state === 'failed' ? 'Copy failed — select the text and copy manually' : 'Copy to clipboard'
+
   return (
-    <Tooltip content="Copy to clipboard" position="left" wrapperClassName="absolute top-2 right-2">
+    <Tooltip content={label} position="left" wrapperClassName={className ?? 'absolute top-2 right-2'}>
     <button
       onClick={handleCopy}
+      aria-label={label}
       className="p-1.5 rounded-md bg-theme-elevated/50 hover:bg-theme-elevated text-theme-text-tertiary hover:text-theme-text-secondary transition-colors"
     >
-      {copied ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
+      {state === 'copied' && <Check className="w-3.5 h-3.5 text-green-500" />}
+      {state === 'failed' && <AlertTriangle className="w-3.5 h-3.5 text-red-500" />}
+      {state === 'idle' && <Copy className="w-3.5 h-3.5" />}
     </button>
     </Tooltip>
   )
 }
+
+// A stray quote or newline carried in on a paste yields a snippet that reads
+// fine but is broken TOML or shell quoting, so the key is reduced to its own
+// charset before it reaches one.
+const sanitizeKey = (value: string) => value.replace(/["'\s]/g, '')
 
 function CodeBlock({ children }: { children: string }) {
   return (
@@ -96,14 +121,31 @@ export function MCPSetupDialog({ open, onClose, mcpUrl }: MCPSetupDialogProps) {
     }
   }, [])
 
+  const { data: authMe } = useAuthMe()
+  const createKey = useCreateAPIKey()
+  // Held in component state only, and dropped when the dialog closes: the
+  // plaintext is unrecoverable, so it must not outlive the surface showing it.
+  const [mintedKey, setMintedKey] = useState<string | null>(null)
+  const [pastedKey, setPastedKey] = useState('')
+
+  // Closing drops the plaintext: it is unrecoverable, so it must not survive
+  // the surface that showed it and reappear on the next open.
+  const resetCreateKey = createKey.reset
+  const handleClose = useCallback(() => {
+    setMintedKey(null)
+    setPastedKey('')
+    resetCreateKey()
+    onClose()
+  }, [onClose, resetCreateKey])
+
   useEffect(() => {
     if (!open) return
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') handleClose()
     }
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [open, onClose])
+  }, [open, handleClose])
 
   useEffect(() => {
     if (open && dialogRef.current) {
@@ -113,71 +155,35 @@ export function MCPSetupDialog({ open, onClose, mcpUrl }: MCPSetupDialogProps) {
 
   if (!open) return null
 
+  // /mcp sits behind the auth middleware, so on a protected Radar every snippet
+  // below needs a credential. A browser-less MCP client can't complete the
+  // login, which is exactly what an API key is for.
+  const needsAuth = authMe?.authEnabled === true
+  const canMintKeys = needsAuth && authMe?.apiKeysEnabled === true
+  const apiKey = mintedKey ?? (pastedKey || null)
+  // Keep the shape right even before the user has a key, so the snippet is
+  // copy-then-substitute rather than copy-then-discover-it-401s.
+  const snippetKey = canMintKeys ? (apiKey ?? API_KEY_PLACEHOLDER) : null
+
+  const handleCreateKey = () => {
+    if (createKey.isPending) return
+    createKey.mutate('MCP client', { onSuccess: (key) => setMintedKey(key.key) })
+  }
+
+  const openKeySettings = () => {
+    handleClose()
+    window.dispatchEvent(
+      new CustomEvent('radar:open-settings', { detail: { section: 'apikeys' } }),
+    )
+  }
+
   const currentPort = Number(window.location.port) || 80
 
-  const claudeDesktopConfig = JSON.stringify({
-    mcpServers: {
-      radar: {
-        type: "http",
-        url: mcpUrl,
-      }
-    }
-  }, null, 2)
-
-  const cursorConfig = JSON.stringify({
-    mcpServers: {
-      radar: {
-        url: mcpUrl,
-      }
-    }
-  }, null, 2)
-
-  const windsurfConfig = JSON.stringify({
-    mcpServers: {
-      radar: {
-        serverUrl: mcpUrl,
-      }
-    }
-  }, null, 2)
-
-  const vsCodeConfig = JSON.stringify({
-    servers: {
-      radar: {
-        type: "http",
-        url: mcpUrl,
-      }
-    }
-  }, null, 2)
-
-  const geminiConfig = JSON.stringify({
-    mcpServers: {
-      radar: {
-        httpUrl: mcpUrl,
-      }
-    }
-  }, null, 2)
-
-  const codexConfig = `[mcp_servers.radar]\nurl = "${mcpUrl}"`
-
-  const clineConfig = JSON.stringify({
-    mcpServers: {
-      radar: {
-        url: mcpUrl,
-      }
-    }
-  }, null, 2)
-
-  const jetbrainsConfig = JSON.stringify({
-    mcpServers: {
-      radar: {
-        url: mcpUrl,
-      }
-    }
-  }, null, 2)
+  const configs = buildMCPClientConfigs(mcpUrl, snippetKey)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleClose} />
       <div
         ref={dialogRef}
         tabIndex={-1}
@@ -189,7 +195,7 @@ export function MCPSetupDialog({ open, onClose, mcpUrl }: MCPSetupDialogProps) {
             <Radio className="w-5 h-5 text-purple-400" />
             <h3 className="text-lg font-semibold text-theme-text-primary">MCP Server</h3>
           </div>
-          <button onClick={onClose} className="p-1.5 hover:bg-theme-elevated rounded-md transition-colors">
+          <button onClick={handleClose} className="p-1.5 hover:bg-theme-elevated rounded-md transition-colors">
             <X className="w-5 h-5 text-theme-text-tertiary" />
           </button>
         </div>
@@ -260,7 +266,7 @@ export function MCPSetupDialog({ open, onClose, mcpUrl }: MCPSetupDialogProps) {
               <p className="text-xs text-theme-text-tertiary px-0.5">
                 You can change the port in{' '}
                 <button
-                  onClick={() => { onClose(); window.dispatchEvent(new Event('radar:open-settings')) }}
+                  onClick={() => { handleClose(); window.dispatchEvent(new Event('radar:open-settings')) }}
                   className="text-purple-500 dark:text-purple-400 hover:underline underline-offset-2"
                 >
                   Settings
@@ -269,20 +275,105 @@ export function MCPSetupDialog({ open, onClose, mcpUrl }: MCPSetupDialogProps) {
             )}
           </div>
 
+          {/* Authentication — /mcp sits behind the auth middleware, so on a
+              protected Radar the snippets below are useless without a credential. */}
+          {needsAuth && (
+            <div className="space-y-2">
+              <h4 className="text-sm font-semibold text-theme-text-primary">Authentication</h4>
+
+              {canMintKeys ? (
+                <>
+                  <p className="text-sm text-theme-text-secondary leading-relaxed">
+                    This Radar requires a sign-in, and an MCP client has no browser to complete one.
+                    Give it an API key instead — the key acts as you, so your agent sees exactly the
+                    namespaces and resources your own account sees.
+                  </p>
+
+                  {!mintedKey && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleCreateKey}
+                        disabled={createKey.isPending}
+                        className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium btn-brand rounded-md disabled:opacity-60"
+                      >
+                        {createKey.isPending
+                          ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          : <Plus className="w-3.5 h-3.5" />}
+                        Create a key
+                      </button>
+                      <span className="text-xs text-theme-text-tertiary shrink-0">or paste one</span>
+                      <input
+                        value={pastedKey}
+                        onChange={(e) => setPastedKey(sanitizeKey(e.target.value))}
+                        placeholder="rk_…"
+                        aria-label="Existing API key"
+                        spellCheck={false}
+                        className="flex-1 min-w-0 px-2 py-1.5 text-xs font-mono bg-theme-base border border-theme-border rounded text-theme-text-primary placeholder:text-theme-text-tertiary focus:outline-none focus:border-purple-500"
+                      />
+                    </div>
+                  )}
+
+                  {mintedKey && (
+                    <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2">
+                      <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
+                      <p className="text-xs text-amber-800 dark:text-amber-200 leading-relaxed">
+                        Key created, and written into every snippet below. Radar shows it once and
+                        keeps only a hash — copy the config for your client now, or you will have to
+                        create another key.
+                      </p>
+                    </div>
+                  )}
+
+                  {createKey.isError && (
+                    <p className="text-xs text-red-600 dark:text-red-400">
+                      Could not create a key: {createKey.error.message}
+                    </p>
+                  )}
+
+                  {!apiKey && !createKey.isError && (
+                    <p className="text-xs text-theme-text-tertiary">
+                      Until then the snippets below carry a{' '}
+                      <code className="inline-code">{API_KEY_PLACEHOLDER}</code> placeholder.
+                    </p>
+                  )}
+
+                  <p className="text-xs text-theme-text-tertiary">
+                    Keys do not expire —{' '}
+                    <button
+                      onClick={openKeySettings}
+                      className="text-purple-500 dark:text-purple-400 hover:underline underline-offset-2"
+                    >
+                      manage your keys
+                    </button>{' '}
+                    to revoke one when its client is retired.
+                  </p>
+                </>
+              ) : (
+                <p className="text-sm text-theme-text-secondary leading-relaxed">
+                  This Radar requires a sign-in, so the endpoint above rejects clients that send no
+                  credential. Per-user API keys — the usual way to connect an MCP client that has no
+                  browser — are not enabled here; ask whoever runs this server about{' '}
+                  <code className="inline-code">--auth-api-keys-file</code>, or use the token your
+                  identity provider issues.
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Setup instructions */}
           <div className="space-y-2">
             <h4 className="text-sm font-semibold text-theme-text-primary">Connect your AI tool</h4>
 
             {[
-              { icon: Terminal, name: 'Claude Code', path: '', config: `claude mcp add radar --transport http ${mcpUrl}` },
-              { icon: MessageSquare, name: 'Claude Desktop', path: '~/Library/Application Support/Claude/claude_desktop_config.json', config: claudeDesktopConfig },
-              { icon: Code2, name: 'Cursor', path: '~/.cursor/mcp.json', config: cursorConfig },
-              { icon: Code2, name: 'Windsurf', path: '~/.codeium/windsurf/mcp_config.json', config: windsurfConfig },
-              { icon: Code2, name: 'VS Code Copilot', path: '.vscode/mcp.json', config: vsCodeConfig },
-              { icon: Code2, name: 'Cline', path: 'Cline MCP settings (via UI)', config: clineConfig },
-              { icon: Code2, name: 'JetBrains AI', path: 'Settings → Tools → AI Assistant → MCP', config: jetbrainsConfig },
-              { icon: Terminal, name: 'OpenAI Codex', path: '~/.codex/config.toml', config: codexConfig },
-              { icon: Terminal, name: 'Gemini CLI', path: '~/.gemini/settings.json', config: geminiConfig },
+              { icon: Terminal, name: 'Claude Code', path: '', config: configs.claudeCode },
+              { icon: MessageSquare, name: 'Claude Desktop', path: '~/Library/Application Support/Claude/claude_desktop_config.json', config: configs.claudeDesktop },
+              { icon: Code2, name: 'Cursor', path: '~/.cursor/mcp.json', config: configs.cursor },
+              { icon: Code2, name: 'Windsurf', path: '~/.codeium/windsurf/mcp_config.json', config: configs.windsurf },
+              { icon: Code2, name: 'VS Code Copilot', path: '.vscode/mcp.json', config: configs.vsCode },
+              { icon: Code2, name: 'Cline', path: 'Cline MCP settings (via UI)', config: configs.cline },
+              { icon: Code2, name: 'JetBrains AI', path: 'Settings → Tools → AI Assistant → MCP', config: configs.jetbrains },
+              { icon: Terminal, name: 'OpenAI Codex', path: '~/.codex/config.toml', config: configs.codex },
+              { icon: Terminal, name: 'Gemini CLI', path: '~/.gemini/settings.json', config: configs.gemini },
             ].map((agent) => (
               <details key={agent.name} className="group rounded-md border border-theme-border/50 bg-theme-base/30">
                 <summary className="flex items-center gap-2 px-3 py-2 select-none list-none hover:bg-theme-hover/50 rounded-md transition-colors [&::-webkit-details-marker]:hidden">
@@ -347,7 +438,7 @@ export function MCPSetupDialog({ open, onClose, mcpUrl }: MCPSetupDialogProps) {
             Documentation
           </a>
           <button
-            onClick={onClose}
+            onClick={handleClose}
             className="px-4 py-2 text-sm font-medium rounded-lg hover:bg-theme-elevated transition-colors text-theme-text-secondary"
           >
             Close

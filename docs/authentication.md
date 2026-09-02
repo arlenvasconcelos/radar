@@ -425,11 +425,120 @@ Radar uses stateless HMAC-SHA256 signed cookies for sessions. The cookie contain
 - **Session secret**: Set `auth.secret` or `RADAR_AUTH_SECRET` env var. If empty, a random key is generated at startup (sessions won't survive pod restarts)
 - **For production**: Use `auth.existingSecret` to reference a K8s Secret, so sessions survive restarts
 
+## API Keys (headless clients)
+
+MCP tools, CI pipelines and scripts can't complete a browser login. An API key gives them a long-lived credential **bound to the identity of the user who created it** — the key sees exactly what that user sees, because Radar impersonates the same username and groups.
+
+Enable them by pointing Radar at a key database:
+
+```
+--auth-api-keys-file /var/lib/radar/api-keys.db   # default when auth is enabled: ~/.radar/api-keys.db
+```
+
+Keys require `--auth-mode=proxy` or `--auth-mode=oidc`. With `--auth-mode=none` there is no identity to bind a key to, so the flag is ignored and key creation is refused.
+
+They are also unavailable under Radar Cloud, where the Hub owns identity and issues its own tokens for headless clients — the flag is ignored and the endpoints are not registered.
+
+### In-cluster: the database needs a volume
+
+The key database is a local SQLite file, so an in-cluster Radar needs somewhere durable to put it. `/home/nonroot` is an `emptyDir`: leave the default path there and **every issued key stops authenticating** the moment the pod restarts, reschedules, or you `helm upgrade` — with nothing in the logs to explain the sudden 401s.
+
+The chart puts it on the same PVC the timeline uses:
+
+```yaml
+auth:
+  mode: proxy
+  apiKeys:
+    persist: true          # default — writes to /data/api-keys.db
+persistence:
+  enabled: true
+  size: 1Gi
+```
+
+`persistence.enabled` is the switch: with it off, the chart deliberately leaves `--auth-api-keys-file` unset rather than pointing it at an unmounted `/data`, and keys stay ephemeral. Set `auth.apiKeys.persist: false` to keep them ephemeral even when the volume exists.
+
+**Single replica only.** SQLite is single-writer, so the chart hard-fails `replicaCount > 1` whenever the volume is in use and switches the Deployment to the `Recreate` strategy (a rolling upgrade would otherwise ask for two attachments of a `ReadWriteOnce` volume at once). Do not work around this with a `ReadWriteMany` volume: it mounts on several nodes happily, and SQLite's WAL coordination — a shared-memory index each node maps privately — does not survive that. Two pods writing one WAL corrupts the file.
+
+Without the volume, multi-replica is worse than it looks: each pod gets its own empty database on its own `emptyDir`, so a key minted through one pod returns 401 whenever the Service routes you to another.
+
+### Managing keys
+
+```bash
+# Create — the plaintext key is returned exactly once, in "key"
+curl -X POST https://radar.example.com/api/auth/api-keys \
+  -H "Cookie: radar_session=<your-session>" \
+  -H "Content-Type: application/json" \
+  -d '{"description": "MCP tool"}'
+
+# List your keys (no plaintext, no hash)
+curl https://radar.example.com/api/auth/api-keys -H "Cookie: radar_session=<your-session>"
+
+# Revoke
+curl -X DELETE https://radar.example.com/api/auth/api-keys/<id> -H "Cookie: radar_session=<your-session>"
+```
+
+Each endpoint is scoped to the caller: you can only see and revoke your own keys.
+
+### Administrative revocation (`radar api-keys`)
+
+The endpoints above are owner-scoped by design, so nobody can revoke a key on
+someone else's behalf — including after that person's IdP account is disabled
+and they can no longer sign in. Offboarding is handled from the command line
+instead, run where the key database lives:
+
+```bash
+# In-cluster: exec into the Radar pod
+kubectl exec deploy/radar -- radar api-keys list
+kubectl exec deploy/radar -- radar api-keys revoke --user dana --yes
+
+# Revoke one key, whoever owns it
+radar api-keys revoke --id <id> --yes
+
+# Revoke everything (e.g. after a suspected database compromise)
+radar api-keys revoke --all --yes
+```
+
+`--file PATH` points at a non-default `--auth-api-keys-file`. The database must
+already exist — the CLI never creates one, so a mistyped path reports an error
+instead of an empty "no keys" answer.
+
+Authorization is filesystem access to the database, not a Radar identity:
+Radar has no admin role, since it delegates authorization to Kubernetes RBAC.
+Reaching the file already requires `exec` into the pod (governed by your RBAC)
+or root on the host — and anyone with that can already read every cached Secret
+and the session signing key.
+
+Revocation takes effect on the very next request that uses the key. It is
+irreversible: keys cannot be recovered, only re-minted by their owner. Without
+`-y`/`--yes` the command asks for confirmation, and it refuses to run
+unconfirmed when stdin is not a terminal (`kubectl exec` without `-it`).
+
+### Using a key
+
+```bash
+curl https://radar.example.com/api/dashboard -H "Authorization: Bearer rk_..."
+# or, when Authorization is already taken:
+curl https://radar.example.com/api/dashboard -H "X-Api-Key: rk_..."
+```
+
+The same headers work against `/mcp`, which is what lets a headless MCP client talk to an OIDC-protected Radar.
+
+### Security properties
+
+- Only `hex(sha256(key))` is stored. The plaintext is shown once at creation and cannot be recovered — lose it and you mint a new one.
+- The database file is created `0600` — owner-only — and an existing file is tightened to the same mode on startup. Its parent directory is created `0700` only when Radar has to create it; a directory that already exists keeps its own mode, and both default parents do (`~/.radar` is created `0755` by Radar's settings store, and in-cluster the parent is the mounted data volume, whose mode the chart controls). The file mode is what protects the hashes — treat it like a credential store and don't place it on a shared path.
+- API key requests are stateless: no session cookie is issued, so a leaked key can't be turned into a browser session.
+- A key **cannot manage keys**. Creating, listing and revoking all require an interactive session (cookie or proxy identity), so revoking a key ends its lineage — and a leaked key can neither mint a replacement nor enumerate and revoke the other keys its owner would rotate with.
+- A valid session cookie takes precedence over a key on the same request — browser traffic is never re-identified by a stray header.
+- Keys don't expire. Revoke them when a person leaves — with `radar api-keys revoke --user <name>`, since the HTTP routes are owner-scoped and a disabled account can no longer reach them. The identity inside a key is a snapshot of their username and groups at creation time, so it does **not** follow later group changes in your IdP.
+
 ## Configuration Reference
 
 | Parameter | CLI Flag | Helm Value | Default |
 |-----------|----------|------------|---------|
 | Auth mode | `--auth-mode` | `auth.mode` | `none` |
+| API key database | `--auth-api-keys-file` | `auth.apiKeys.dbPath` | `~/.radar/api-keys.db` when auth is enabled; `/data/api-keys.db` in the chart |
+| Persist API keys | — | `auth.apiKeys.persist` | `true` (needs `persistence.enabled`) |
 | Session secret | `--auth-secret` | `auth.secret` | auto-generated |
 | Cookie TTL | `--auth-cookie-ttl` | `auth.cookieTTL` | `4h` (sliding) |
 | User header (proxy) | `--auth-user-header` | `auth.proxy.userHeader` | `X-Forwarded-User` |

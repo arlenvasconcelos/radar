@@ -293,6 +293,18 @@ auth:
   existingSecretKey: "auth-secret"
   # Session cookie TTL (sliding — extends on activity, idle sessions expire after this duration)
   cookieTTL: "4h"
+  # Per-user API keys for headless clients (MCP, CI, scripts). They exist only
+  # when mode != none: a key carries the identity of whoever created it, and
+  # without auth there is no such identity.
+  apiKeys:
+    # Keep the key database on the data volume so keys survive a pod restart.
+    # Needs persistence.enabled=true — with no volume mounted the database falls
+    # back to ~/.radar/api-keys.db on the pod's emptyDir, and every issued key
+    # starts returning 401 after a restart, reschedule, or helm upgrade.
+    # Set false to accept ephemeral keys even when a volume is available.
+    persist: true
+    # Path on the data volume. Must be under /data.
+    dbPath: /data/api-keys.db
   # Proxy mode settings
   proxy:
     userHeader: "X-Forwarded-User"
@@ -520,8 +532,16 @@ argocd:
   # interception on the path to argocd-server.
   insecureTls: false
 
-# Persistence for SQLite timeline storage
-# Required when timeline.storage is "sqlite" (readOnlyRootFilesystem prevents local writes)
+# Persistence for the local SQLite databases: the timeline
+# (timeline.storage=sqlite) and the API key store (auth.apiKeys.persist with
+# auth enabled). Both share one PVC mounted at /data — required, because
+# readOnlyRootFilesystem prevents local writes anywhere else.
+#
+# SQLite is single-writer, so the volume cannot be shared. Whenever it is in
+# use the chart hard-fails replicaCount > 1 and switches the Deployment to the
+# Recreate strategy, so a rolling upgrade never asks for two attachments of an
+# RWO volume at once. Leave accessMode as ReadWriteOnce: an RWX volume mounts
+# on several nodes at once and SQLite's WAL coordination does not survive that.
 persistence:
   enabled: false
   # storageClassName: ""

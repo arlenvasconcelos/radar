@@ -1,4 +1,4 @@
-{{- if and .Values.persistence.enabled (eq .Values.timeline.storage "sqlite") -}}
+{{- if include "radar.dataVolume" . -}}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

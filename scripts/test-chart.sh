@@ -45,6 +45,16 @@ render() {
   }
 }
 
+# Renders a case that MUST be rejected by a template `fail` guard.
+render_expect_fail() {
+  CASE="$1"; shift
+  echo "  Case: $CASE"
+  if OUT=$(helm template radar "$CHART_DIR" "$@" 2>&1); then
+    fail "helm template unexpectedly succeeded"
+    OUT=""
+  fi
+}
+
 echo "Running chart template tests against $CHART_DIR"
 echo
 
@@ -289,6 +299,80 @@ echo
 render "OSS mode (cloud disabled): no cloud RBAC at all"
 assert_not_contains 'name: radar-cluster-read$'                 "no cluster-read outside cloud mode"
 assert_not_contains 'name: radar-cloud-viewer-cluster-read$'    "no tier bindings outside cloud mode"
+echo
+
+# The API key database and the timeline share one PVC. Keys are minted at
+# runtime by users, so there is nothing to inject declaratively the way the
+# session HMAC key or the Argo CD token are — the volume is the only thing
+# standing between a pod restart and every issued key returning 401.
+
+render "defaults — no data volume, no API key flag"
+assert_not_contains 'kind: PersistentVolumeClaim'   "no PVC without persistence"
+assert_not_contains 'auth-api-keys-file'            "no API key path without a volume"
+
+echo
+
+render "auth on, persistence off — flag stays unset so the binary keeps its ~/.radar fallback" \
+  --set auth.mode=proxy
+assert_not_contains 'kind: PersistentVolumeClaim'   "no PVC"
+assert_not_contains 'auth-api-keys-file'            "no /data path pointing at an unmounted volume"
+assert_contains '--auth-mode=proxy'                 "auth still enabled"
+
+echo
+
+# The volume used to require timeline.storage=sqlite; API keys must be able to
+# claim it on their own, with the timeline left in memory.
+render "auth on + persistence — PVC, /data mount and the API key flag, timeline still in memory" \
+  --set auth.mode=proxy --set persistence.enabled=true
+assert_contains 'kind: PersistentVolumeClaim'       "PVC provisioned for API keys alone"
+assert_contains 'mountPath: /data'                  "data volume mounted"
+assert_contains 'auth-api-keys-file=/data/api-keys.db' "API key database on the volume"
+assert_contains 'type: Recreate'                    "rolling upgrade cannot double-attach the RWO volume"
+assert_not_contains 'timeline-db'                   "timeline untouched"
+
+echo
+
+render "both databases share the one volume" \
+  --set auth.mode=proxy --set persistence.enabled=true --set timeline.storage=sqlite
+assert_contains 'auth-api-keys-file=/data/api-keys.db' "API key database on the volume"
+assert_contains 'timeline-db=/data/timeline.db'     "timeline database on the same volume"
+assert_contains 'claimName: radar'                  "one PVC, not two"
+
+echo
+
+render "auth.apiKeys.persist=false opts out while the timeline keeps the volume" \
+  --set auth.mode=proxy --set persistence.enabled=true --set timeline.storage=sqlite \
+  --set auth.apiKeys.persist=false
+assert_not_contains 'auth-api-keys-file'            "keys deliberately ephemeral"
+assert_contains 'timeline-db=/data/timeline.db'     "timeline still persisted"
+
+echo
+
+render "auth.apiKeys.persist=false with an in-memory timeline provisions nothing" \
+  --set auth.mode=proxy --set persistence.enabled=true --set auth.apiKeys.persist=false
+assert_not_contains 'kind: PersistentVolumeClaim'   "no orphan PVC"
+
+echo
+
+# SQLite is single-writer: two pods on an RWX volume corrupt the file, and an
+# RWO volume will not attach to the second pod at all.
+render_expect_fail "replicaCount > 1 is rejected when API keys claim the volume" \
+  --set auth.mode=proxy --set persistence.enabled=true --set replicaCount=2
+assert_contains 'replicaCount must be 1'            "guard fires for an API-keys-only volume"
+
+echo
+
+render "replicaCount > 1 without the volume still renders (no forced upgrade break)" \
+  --set auth.mode=proxy --set replicaCount=3
+assert_contains 'replicas: 3'                       "existing multi-replica auth installs keep rendering"
+
+echo
+
+# `helm upgrade` from a chart that predates auth.apiKeys leaves the key absent.
+render "values predating auth.apiKeys render the default, no nil dereference" \
+  --set auth.mode=proxy --set persistence.enabled=true --set auth.apiKeys=null
+assert_contains 'auth-api-keys-file=/data/api-keys.db' "default path survives a nil block"
+
 echo
 
 if [[ $FAIL -eq 0 ]]; then

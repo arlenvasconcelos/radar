@@ -1916,6 +1916,11 @@ export interface AuthMe {
    *  When false, logout clears Radar's cookie but the proxy may re-auth
    *  the same user on the next request. */
   proxyLogoutConfigured?: boolean;
+  /** Whether the per-user API key endpoints are mounted. They exist only when
+   *  a key store is configured, which needs auth on and rules out Radar Cloud
+   *  (the Hub issues its own tokens). Gate the settings section on this rather
+   *  than probing for a 404 — embedders would otherwise render a dead page. */
+  apiKeysEnabled?: boolean;
 }
 
 export function useAuthMe() {

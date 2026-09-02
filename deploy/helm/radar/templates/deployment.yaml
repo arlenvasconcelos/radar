@@ -1,5 +1,5 @@
-{{- if and .Values.persistence.enabled (eq .Values.timeline.storage "sqlite") (gt (int .Values.replicaCount) 1) }}
-{{- fail "replicaCount must be 1 when persistence.enabled=true and timeline.storage=sqlite: a single PVC cannot be safely shared across pods (RWO volumes won't attach to a second pod, RWX volumes risk SQLite corruption)" }}
+{{- if and (include "radar.dataVolume" .) (gt (int .Values.replicaCount) 1) }}
+{{- fail "replicaCount must be 1 when the data volume is in use (persistence.enabled=true with timeline.storage=sqlite and/or auth.apiKeys.persist): a single PVC cannot be safely shared across pods (RWO volumes won't attach to a second pod, RWX volumes risk SQLite corruption)" }}
 {{- end }}
 {{- $basePath := "" -}}
 {{- $trimmedBasePath := trimAll "/" (default "" .Values.basePath) -}}
@@ -34,7 +34,7 @@ metadata:
     {{- include "radar.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
-  {{- if and .Values.persistence.enabled (eq .Values.timeline.storage "sqlite") }}
+  {{- if include "radar.dataVolume" . }}
   strategy:
     type: Recreate
   {{- end }}
@@ -112,6 +112,9 @@ spec:
             {{- if ne .Values.auth.mode "none" }}
             - {{ printf "--auth-mode=%s" .Values.auth.mode | quote }}
             - {{ printf "--auth-cookie-ttl=%s" .Values.auth.cookieTTL | quote }}
+            {{- if include "radar.apiKeysPersisted" . }}
+            - {{ printf "--auth-api-keys-file=%s" (include "radar.apiKeysDbPath" .) | quote }}
+            {{- end }}
             {{- if .Values.auth.proxy.userHeader }}
             - {{ printf "--auth-user-header=%s" .Values.auth.proxy.userHeader | quote }}
             {{- end }}
@@ -313,7 +316,7 @@ spec:
               mountPath: /tmp
             - name: home
               mountPath: /home/nonroot
-            {{- if and .Values.persistence.enabled (eq .Values.timeline.storage "sqlite") }}
+            {{- if include "radar.dataVolume" . }}
             - name: data
               mountPath: /data
             {{- end }}
@@ -325,7 +328,7 @@ spec:
           emptyDir: {}
         - name: home
           emptyDir: {}
-        {{- if and .Values.persistence.enabled (eq .Values.timeline.storage "sqlite") }}
+        {{- if include "radar.dataVolume" . }}
         - name: data
           persistentVolumeClaim:
             claimName: {{ include "radar.fullname" . }}

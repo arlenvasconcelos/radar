@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import {
   Settings, X, RotateCcw, RotateCw, Loader2, Copy, Check, Pin, Shield, Lock, Plug,
   Plus, Terminal, Boxes, Activity, GitBranch, Sparkles, SlidersHorizontal, Zap,
-  LayoutDashboard, ChevronRight, ExternalLink, Download, AlertTriangle, Coins,
+  LayoutDashboard, ChevronRight, ExternalLink, Download, AlertTriangle, Coins, KeyRound,
   type LucideIcon,
 } from 'lucide-react'
 import { clsx } from 'clsx'
@@ -12,13 +12,14 @@ import { useAnimatedUnmount } from '../../hooks/useAnimatedUnmount'
 import { TRANSITION_BACKDROP, TRANSITION_PANEL } from '../../utils/animation'
 import { apiUrl, getAuthHeaders, getCredentialsMode, routePath } from '../../api/config'
 import {
-  useCloudRole, useVersionCheck, useClusterInfo, usePrometheusStatus, useArgoStatus,
+  useCloudRole, useVersionCheck, useClusterInfo, usePrometheusStatus, useArgoStatus, useAuthMe,
 } from '../../api/client'
 import { useCapabilitiesContext } from '../../contexts/CapabilitiesContext'
 import { Input, SelectMenu } from '@skyhook-io/k8s-ui'
 import { Tooltip } from '../ui/Tooltip'
 import { AISettingsSection, type AIDraft } from '../diagnose/AISettings'
 import { MyPermissionsContent } from './MyPermissionsDialog'
+import { APIKeysContent } from './APIKeysSection'
 import { useDiagnose } from '../diagnose/DiagnoseContext'
 import { currencyOptionsForValue } from './currency-options'
 
@@ -83,7 +84,7 @@ interface SettingsDialogProps {
 //     re-point the running server; effect immediately, NOT part of footer dirty.
 //   • AI diagnose — client-side prefs, self-saving, editable by everyone.
 export type SettingsSectionId =
-  | 'overview' | 'perms' | 'connection' | 'prometheus' | 'cost' | 'argocd' | 'ai' | 'advanced'
+  | 'overview' | 'perms' | 'apikeys' | 'connection' | 'prometheus' | 'cost' | 'argocd' | 'ai' | 'advanced'
 
 // Persisted footer fields include startup settings plus the live currency override.
 // Integration fields (prometheusUrl, argoCdUrl, argoCdInsecureTls) apply through
@@ -120,6 +121,7 @@ export function SettingsDialog({
   // callers (OSS, OIDC, kubectl plugin) have no role and pass — single-user
   // laptops are never locked out of their own config. Backend enforces this too.
   const { canAtLeast } = useCloudRole()
+  const { data: authMe } = useAuthMe()
   const capabilities = useCapabilitiesContext()
   const canEditConfig = canAtLeast('owner')
 
@@ -356,6 +358,11 @@ export function SettingsDialog({
   const navItems: NavItemDef[] = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard, ownerOnly: false, dirty: false },
     { id: 'perms', label: 'My permissions', icon: Shield, ownerOnly: false, dirty: false },
+    // Only when the server mounts the endpoints: no store (or Radar Cloud,
+    // where the Hub issues tokens) means the tab would open onto 404s.
+    ...(authMe?.apiKeysEnabled
+      ? [{ id: 'apikeys' as const, label: 'API keys', icon: KeyRound, ownerOnly: false, dirty: false }]
+      : []),
     { id: 'connection', label: 'Connection', icon: Boxes, ownerOnly: true, dirty: connectionDirty },
     { id: 'prometheus', label: 'Prometheus', icon: Activity, ownerOnly: true, dirty: false },
     { id: 'cost', label: 'Cost', icon: Coins, ownerOnly: true, dirty: costDirty },
@@ -488,6 +495,19 @@ export function SettingsDialog({
               </div>
               <div className="mt-3">
                 <MyPermissionsContent active={section === 'perms'} />
+              </div>
+            </div>
+
+            <div className={clsx(section !== 'apikeys' && 'hidden')} role="tabpanel">
+              <div className="mb-1">
+                <h3 className="text-base font-semibold text-theme-text-primary">API keys</h3>
+                <p className="mt-0.5 text-xs text-theme-text-tertiary">
+                  Long-lived credentials for clients that cannot complete a browser login — MCP
+                  clients, CI pipelines, scripts. Each key carries your identity.
+                </p>
+              </div>
+              <div className="mt-3">
+                <APIKeysContent active={section === 'apikeys'} />
               </div>
             </div>
 

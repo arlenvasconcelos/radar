@@ -88,6 +88,7 @@ type Server struct {
 	authConfig         auth.Config
 	permCache          *auth.PermissionCache
 	oidcHandler        *auth.OIDCHandler
+	apiKeyHandler      *auth.APIKeyHandler
 	saveFileFunc       func(defaultFilename string, data []byte) (string, error)
 	cloudConnectCfg    CloudConnectConfig
 	cloudInstall       *cloudInstallManager
@@ -325,6 +326,9 @@ func New(cfg Config) *Server {
 			s.oidcHandler = oidcHandler
 		}
 
+		if s.authConfig.APIKeys != nil {
+			s.apiKeyHandler = auth.NewAPIKeyHandler(s.authConfig)
+		}
 	}
 
 	// Set up static file system
@@ -417,7 +421,8 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins: []string{"http://localhost:*", "http://127.0.0.1:*"},
 		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders: []string{"Accept", "Content-Type"},
+		// Authorization / X-Api-Key carry Radar API keys for headless clients.
+		AllowedHeaders: []string{"Accept", "Content-Type", "Authorization", auth.APIKeyHeader},
 		// Without an expose entry, cross-origin JS reads these as "" and the
 		// timeline client silently falls back to full-ring refetches.
 		ExposedHeaders:   []string{"X-Radar-Timeline-Epoch", "X-Radar-Timeline-Max-Seq", "X-Radar-Timeline-Min-Seq"},
@@ -506,6 +511,14 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 			r.Post("/diagnose/consent", s.handleDiagnoseConsent)
 			r.Get("/diagnostics", s.handleDiagnostics)
 			r.Get("/auth/me", s.handleAuthMe)
+			// Per-user API keys for headless clients (MCP, CI, scripts).
+			// Registered only when a key store is configured — which requires
+			// auth to be enabled, since a key binds to a real identity.
+			if s.apiKeyHandler != nil {
+				r.Get("/auth/api-keys", s.apiKeyHandler.HandleList)
+				r.Post("/auth/api-keys", s.sameOriginOnly(s.apiKeyHandler.HandleCreate))
+				r.Delete("/auth/api-keys/{id}", s.sameOriginOnly(s.apiKeyHandler.HandleDelete))
+			}
 			r.Get("/version-check", s.handleVersionCheck)
 			r.Get("/dashboard", s.handleDashboard)
 			r.Get("/vitals", s.handleVitals)
@@ -4665,6 +4678,25 @@ func (s *Server) requireConnected(w http.ResponseWriter) bool {
 
 // Auth handlers and helpers
 
+// sameOriginOnly is CSRF protection for routes that mint or revoke
+// credentials. The CORS allowlist admits any localhost origin with
+// credentials, and SameSite=Lax treats different localhost ports as same-site
+// (a port-forwarded Radar included), so without this guard any local page
+// could mint an API key — and read the plaintext — with the operator's
+// session. Non-browser clients send no Origin and pass. The loopback-pair
+// allowance sameOriginOK grants is admitted only under --dev, where the Vite
+// proxy needs it; in production it would qualify exactly the attacker this
+// guard exists to stop.
+func (s *Server) sameOriginOnly(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !originAllowed(r, s.devMode) {
+			s.writeError(w, http.StatusForbidden, "cross-origin requests are not allowed")
+			return
+		}
+		h(w, r)
+	}
+}
+
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	for _, c := range auth.ClearSessionCookie(r) {
 		http.SetCookie(w, c)
@@ -4690,6 +4722,11 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	if s.authConfig.Mode == "proxy" {
 		resp["proxyLogoutConfigured"] = s.authConfig.ProxyLogoutURL != ""
 	}
+	// Whether the per-user API key surface exists. The routes are registered
+	// only alongside a store, so without this the UI would have to probe a
+	// 404 to discover the feature is off — and Radar Hub, which embeds this
+	// frontend, would render a dead credential page next to its own tokens.
+	resp["apiKeysEnabled"] = s.apiKeyHandler != nil
 	if user := auth.UserFromContext(r.Context()); user != nil {
 		resp["username"] = user.Username
 		resp["groups"] = user.Groups

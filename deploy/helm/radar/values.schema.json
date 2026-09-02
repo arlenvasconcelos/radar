@@ -218,6 +218,14 @@
         "existingSecret": { "type": "string" },
         "existingSecretKey": { "type": "string" },
         "cookieTTL": { "type": "string", "description": "Go duration string, e.g. \"4h\"." },
+        "apiKeys": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "persist": { "type": "boolean", "description": "Keep the API key database on the data volume (requires persistence.enabled and auth.mode != none)." },
+            "dbPath": { "type": "string", "description": "Path to the API key database on the data volume." }
+          }
+        },
         "proxy": {
           "type": "object",
           "additionalProperties": false,

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/skyhook-io/radar/internal/cloud"
+	pkgauth "github.com/skyhook-io/radar/pkg/auth"
 )
 
 // cloudMode reports whether Radar is running under Radar Cloud. Reads
@@ -98,6 +100,46 @@ func Authenticate(cfg Config) func(http.Handler) http.Handler {
 				return
 			}
 
+			// API keys, for clients that cannot run a browser login (MCP, CI,
+			// scripts). Checked after the cookie so browser sessions stay
+			// authoritative, and before proxy headers so a key presented to a
+			// reverse proxy can't be shadowed by a header identity. No session
+			// cookie is issued — the key is the whole credential.
+			// Not consulted under Cloud proxy mode: the Hub owns identity there.
+			if !cloudProxyMode && cfg.APIKeys != nil {
+				if presented := extractAPIKey(r); presented != "" {
+					key, err := cfg.APIKeys.Lookup(presented)
+					if err != nil {
+						// Fail closed. Falling through would evaluate the
+						// request as if no key were presented: in proxy mode
+						// it would then be served as the header identity —
+						// a silent identity swap on a store outage — and in
+						// oidc mode it would 401, indistinguishable from
+						// revocation, sending the operator to re-mint keys
+						// instead of fixing the database.
+						log.Printf("[auth] API key lookup failed: %v", err)
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusServiceUnavailable)
+						json.NewEncoder(w).Encode(map[string]string{
+							"error":    "API key verification is temporarily unavailable",
+							"authMode": cfg.Mode,
+						})
+						return
+					}
+					if key != nil {
+						user := &User{Username: key.Username, Groups: key.Groups}
+						ctx := ContextWithUser(contextWithAPIKeyAuth(r.Context()), user)
+						next.ServeHTTP(w, r.WithContext(ctx))
+						return
+					}
+					// %q escapes control characters: r.URL.Path is decoded, so
+					// a crafted %0A would otherwise forge or split log lines.
+					// Only well-formed keys reach here, so this line means a
+					// revoked or forged key — not every stray bearer token.
+					log.Printf("[auth] Rejected unknown API key on %q %q", r.Method, r.URL.Path)
+				}
+			}
+
 			// In proxy mode, extract identity from headers. Standalone proxy mode
 			// caches it in a session cookie; Cloud proxy mode stays header-only.
 			if cfg.Mode == "proxy" {
@@ -159,6 +201,52 @@ func Authenticate(cfg Config) func(http.Handler) http.Handler {
 			})
 		})
 	}
+}
+
+// APIKeyHeader is the alternative to Authorization: Bearer, for clients whose
+// Authorization header is already spoken for.
+const APIKeyHeader = "X-Api-Key"
+
+// extractAPIKey returns the API key presented on the request, or "" when none
+// is. Bearer is matched case-insensitively per RFC 7235.
+//
+// Only values shaped like a Radar key are returned, so the credential path is
+// never entered by an OIDC access token that happens to ride the same header,
+// nor by a scanner's junk — neither reaches the store, and neither produces a
+// rejection log line.
+func extractAPIKey(r *http.Request) string {
+	if v := strings.TrimSpace(r.Header.Get(APIKeyHeader)); v != "" {
+		if pkgauth.LooksLikeAPIKey(v) {
+			return v
+		}
+		return ""
+	}
+	authorization := r.Header.Get("Authorization")
+	scheme, value, found := strings.Cut(authorization, " ")
+	if !found || !strings.EqualFold(scheme, "Bearer") {
+		return ""
+	}
+	if value = strings.TrimSpace(value); pkgauth.LooksLikeAPIKey(value) {
+		return value
+	}
+	return ""
+}
+
+// apiKeyContextKey marks a request as authenticated by an API key rather than
+// an interactive session.
+type apiKeyContextKey struct{}
+
+func contextWithAPIKeyAuth(ctx context.Context) context.Context {
+	return context.WithValue(ctx, apiKeyContextKey{}, true)
+}
+
+// isAPIKeyAuthenticated reports whether the request's identity came from an
+// API key. The whole key-management plane is refused on such requests, so a
+// leaked key can neither mint replacements that outlive its revocation nor
+// enumerate and revoke the keys its owner would rotate with.
+func isAPIKeyAuthenticated(ctx context.Context) bool {
+	authed, _ := ctx.Value(apiKeyContextKey{}).(bool)
+	return authed
 }
 
 // isExemptPath returns true for paths that don't require authentication

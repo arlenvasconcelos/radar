@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { User, LogOut } from 'lucide-react'
+import { User, LogOut, KeyRound } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAuthMe } from '../api/client'
 import { routePath } from '../api/config'
@@ -117,6 +117,22 @@ export function UserMenu({ variant = 'topbar', pinned = true }: UserMenuProps = 
               </p>
             )}
           </div>
+          {authMe.apiKeysEnabled && (
+            <button
+              onClick={() => {
+                setIsOpen(false)
+                // The Settings dialog owns this surface; App.tsx listens for the
+                // event so the menu doesn't have to thread an opener prop down.
+                window.dispatchEvent(
+                  new CustomEvent('radar:open-settings', { detail: { section: 'apikeys' } }),
+                )
+              }}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-theme-text-secondary hover:bg-theme-hover transition-colors"
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              API keys
+            </button>
+          )}
           <button
             onClick={handleLogout}
             className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-theme-text-secondary hover:bg-theme-hover transition-colors"

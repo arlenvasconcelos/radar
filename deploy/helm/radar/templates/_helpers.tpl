@@ -60,3 +60,41 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Whether the timeline SQLite database is written to the shared data volume.
+*/}}
+{{- define "radar.timelinePersisted" -}}
+{{- if and .Values.persistence.enabled (eq .Values.timeline.storage "sqlite") -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+Whether the API key database is written to the shared data volume. Keys only
+exist when auth is on, and without the volume the database lands on the pod's
+emptyDir home — every key stops authenticating the moment the pod cycles.
+*/}}
+{{- define "radar.apiKeysPersisted" -}}
+{{- if and .Values.persistence.enabled (ne .Values.auth.mode "none") (dig "apiKeys" "persist" true .Values.auth) -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+Path to the API key database on the data volume.
+*/}}
+{{- define "radar.apiKeysDbPath" -}}
+{{- dig "apiKeys" "dbPath" "/data/api-keys.db" .Values.auth -}}
+{{- end }}
+
+{{/*
+Whether the pod mounts the PVC at /data. Both SQLite databases share one
+volume: an RWO volume cannot be split across pods anyway, so a second PVC
+would add a provisioning failure mode without buying any concurrency.
+*/}}
+{{- define "radar.dataVolume" -}}
+{{- if or (include "radar.timelinePersisted" .) (include "radar.apiKeysPersisted" .) -}}
+true
+{{- end -}}
+{{- end }}

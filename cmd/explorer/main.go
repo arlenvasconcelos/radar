@@ -63,6 +63,14 @@ func main() {
 		os.Exit(runProbeCommand(os.Args[2:]))
 	}
 
+	// Subcommand dispatch: `radar api-keys …` administers the API key database
+	// in place — no server, no cluster client. Run inside the pod or on the
+	// host of a VM install; see apikeys_cmd.go for why authorization is
+	// filesystem access rather than an identity check.
+	if len(os.Args) > 1 && os.Args[1] == "api-keys" {
+		os.Exit(runAPIKeysSubcommand(os.Args[2:], os.Stdout, os.Stderr))
+	}
+
 	// Propagate the build-time version to the cloud dialer so the agent
 	// advertises the real version (e.g. "1.5.5") on the tunnel handshake
 	// instead of the "dev" default. Dockerfile + Makefile inject
@@ -170,6 +178,7 @@ func main() {
 	authOIDCCACert := flag.String("auth-oidc-ca-cert", "", "Path to CA certificate file for OIDC provider TLS verification")
 	authOIDCBackchannelLogout := flag.Bool("auth-oidc-backchannel-logout", false, "Enable OIDC Back-Channel Logout endpoint (single-replica only)")
 	authOIDCEnablePKCE := flag.Bool("auth-oidc-enable-pkce", false, "Enable PKCE (S256) for the OIDC authorization-code flow (opt-in)")
+	authAPIKeysFile := flag.String("auth-api-keys-file", "", "Path to the per-user API key database for headless clients (MCP, CI, scripts). Ignored when --auth-mode=none. Default when auth is enabled: ~/.radar/api-keys.db")
 	// Radar Hub flags — enable connected mode when --cloud-url is set.
 	// Local-binary behavior is unchanged when these flags are empty. Each
 	// flag falls back to an env var so Kubernetes deployments can source
@@ -248,6 +257,15 @@ func main() {
 	default:
 		log.Fatalf("Invalid --auth-mode %q: must be none, proxy, or oidc", *authMode)
 	}
+
+	// Per-user API keys. A key binds to the identity that created it, so this
+	// is only meaningful once auth is on; with --auth-mode=none there is no
+	// identity to bind and the store stays closed.
+	apiKeyStore := openAPIKeyStore(*authMode, *authAPIKeysFile)
+	if apiKeyStore != nil {
+		defer apiKeyStore.Close()
+	}
+
 	normalizedListenAddress, err := server.NormalizeListenAddress(*listenAddress)
 	if err != nil {
 		log.Fatalf("Invalid --listen-address %q: %v", *listenAddress, err)
@@ -401,6 +419,11 @@ func main() {
 			OIDCBackchannelLogout:     *authOIDCBackchannelLogout,
 			OIDCEnablePKCE:            *authOIDCEnablePKCE,
 		},
+	}
+	// Assigned outside the literal so a nil *SQLiteAPIKeyStore never becomes a
+	// non-nil interface value that the middleware would then call into.
+	if apiKeyStore != nil {
+		cfg.AuthConfig.APIKeys = apiKeyStore
 	}
 
 	// Set global flags
@@ -589,6 +612,43 @@ func parseCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// openAPIKeyStore opens the per-user API key database, or returns nil when
+// API keys don't apply. Returns nil under --auth-mode=none: a key carries the
+// identity of whoever created it, and without auth there is no such identity.
+func openAPIKeyStore(authMode, path string) *auth.SQLiteAPIKeyStore {
+	// Under Cloud the Hub owns identity, and the middleware ignores keys on
+	// tunneled requests — so a store here could only mint credentials that
+	// never authenticate. Returning nil leaves the routes unregistered, which
+	// keeps the invariant: if the store exists, the middleware honours it.
+	// Radar Hub issues its own tokens for headless clients.
+	if cloud.Mode() {
+		if path != "" {
+			log.Printf("[auth] --auth-api-keys-file ignored under Radar Cloud: the Hub issues tokens for headless clients")
+		}
+		return nil
+	}
+	if authMode == "" || authMode == "none" {
+		if path != "" {
+			log.Printf("[auth] --auth-api-keys-file ignored: API keys require --auth-mode=proxy or --auth-mode=oidc")
+		}
+		return nil
+	}
+	if path == "" {
+		resolved, err := defaultAPIKeyStorePath()
+		if err != nil {
+			log.Printf("[auth] Cannot determine home directory: %v — API keys disabled (set --auth-api-keys-file to enable)", err)
+			return nil
+		}
+		path = resolved
+	}
+	store, err := auth.NewAPIKeyStore(path)
+	if err != nil {
+		log.Fatalf("[auth] Failed to open API key database %s: %v", path, err)
+	}
+	log.Printf("[auth] API keys enabled (%s)", path)
+	return store
 }
 
 // headerFlag is a flag.Value that accumulates repeated --prometheus-header

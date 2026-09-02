@@ -25,6 +25,11 @@ type Config struct {
 	// Session revocation (optional, used by backchannel logout)
 	Revoker SessionRevoker
 
+	// API keys for headless clients (optional, nil disables the feature).
+	// Keys carry the identity of the user who created them, so RBAC applies
+	// unchanged.
+	APIKeys APIKeyStore
+
 	// OIDC mode
 	OIDCIssuer                string
 	OIDCInternalIssuer        string

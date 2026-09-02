@@ -172,6 +172,8 @@ lands in the Helm release state. Rotation requires a pod restart. See
 | `timeline.retention` | SQLite retention (Go duration; `0` disables) | `168h` |
 | `timeline.maxSize` | SQLite max DB + WAL size before oldest events are pruned (`0` disables) | `800Mi` |
 | `persistence.enabled` | Enable PVC for SQLite | `false` |
+| `auth.apiKeys.persist` | Keep the API key database on the PVC so keys survive pod restarts | `true` |
+| `auth.apiKeys.dbPath` | Path to the API key database on the PVC | `/data/api-keys.db` |
 | `cost.currency` | Optional ISO 4217 override for OpenCost/Kubecost values; empty auto-detects, then uses USD | `""` |
 | `traffic.prometheusUrl` | Manual Prometheus/VictoriaMetrics URL (skips auto-discovery) | `""` |
 | `traffic.prometheusHeaders` | HTTP headers sent with every Prometheus request (auth-protected backends) | `{}` |
