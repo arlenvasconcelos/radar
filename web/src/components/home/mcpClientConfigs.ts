@@ -27,9 +27,10 @@ export interface MCPClientConfigs {
  *
  * `apiKey` null means the server needs no credential (a local, auth-disabled
  * install): the snippets stay exactly as they were, with no auth stanza at all.
- * Otherwise every snippet carries the key — pass {@link API_KEY_PLACEHOLDER}
- * when the user has not minted one yet, so the config is copy-then-substitute
- * rather than copy-then-discover-it-401s.
+ * Otherwise every snippet carries the value in the auth stanza its client
+ * expects. Callers pass {@link API_KEY_PLACEHOLDER} rather than a live key, so
+ * the config is copy-then-substitute instead of copy-then-discover-it-401s —
+ * and a snippet that ends up in a ticket or a chat carries no secret.
  */
 export function buildMCPClientConfigs(mcpUrl: string, apiKey: string | null): MCPClientConfigs {
   const headers = apiKey ? { headers: { Authorization: `Bearer ${apiKey}` } } : {}

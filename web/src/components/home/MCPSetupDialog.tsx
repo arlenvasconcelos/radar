@@ -1,11 +1,10 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import {
   X, Copy, Check, Radio, Terminal, MessageSquare, Code2, ChevronRight, Pin,
-  AlertTriangle, Loader2, Plus,
+  AlertTriangle,
 } from 'lucide-react'
 import { apiUrl, getAuthHeaders, getCredentialsMode } from '../../api/config'
 import { useAuthMe } from '../../api/client'
-import { useCreateAPIKey } from '../../api/apiKeys'
 import { MCP_TOOL_CATALOG } from './mcpToolCatalog'
 import { API_KEY_PLACEHOLDER, buildMCPClientConfigs } from './mcpClientConfigs'
 import { Tooltip } from '../ui/Tooltip'
@@ -16,10 +15,10 @@ interface MCPSetupDialogProps {
   mcpUrl: string
 }
 
-// A snippet here can carry a freshly minted API key, which the server never
-// returns again. `navigator.clipboard` is undefined on insecure origins, so a
-// fire-and-forget write would silently lose that credential — failure is
-// surfaced instead, and the snippet text stays selectable as the fallback.
+// `navigator.clipboard` is undefined on insecure origins, where a
+// fire-and-forget write fails silently and the user is left believing they
+// copied the snippet. Failure is surfaced instead; the text stays selectable
+// as the fallback.
 function CopyButton({ text, className }: { text: string; className?: string }) {
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
 
@@ -50,11 +49,6 @@ function CopyButton({ text, className }: { text: string; className?: string }) {
     </Tooltip>
   )
 }
-
-// A stray quote or newline carried in on a paste yields a snippet that reads
-// fine but is broken TOML or shell quoting, so the key is reduced to its own
-// charset before it reaches one.
-const sanitizeKey = (value: string) => value.replace(/["'\s]/g, '')
 
 function CodeBlock({ children }: { children: string }) {
   return (
@@ -122,30 +116,15 @@ export function MCPSetupDialog({ open, onClose, mcpUrl }: MCPSetupDialogProps) {
   }, [])
 
   const { data: authMe } = useAuthMe()
-  const createKey = useCreateAPIKey()
-  // Held in component state only, and dropped when the dialog closes: the
-  // plaintext is unrecoverable, so it must not outlive the surface showing it.
-  const [mintedKey, setMintedKey] = useState<string | null>(null)
-  const [pastedKey, setPastedKey] = useState('')
-
-  // Closing drops the plaintext: it is unrecoverable, so it must not survive
-  // the surface that showed it and reappear on the next open.
-  const resetCreateKey = createKey.reset
-  const handleClose = useCallback(() => {
-    setMintedKey(null)
-    setPastedKey('')
-    resetCreateKey()
-    onClose()
-  }, [onClose, resetCreateKey])
 
   useEffect(() => {
     if (!open) return
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') handleClose()
+      if (e.key === 'Escape') onClose()
     }
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [open, handleClose])
+  }, [open, onClose])
 
   useEffect(() => {
     if (open && dialogRef.current) {
@@ -159,19 +138,15 @@ export function MCPSetupDialog({ open, onClose, mcpUrl }: MCPSetupDialogProps) {
   // below needs a credential. A browser-less MCP client can't complete the
   // login, which is exactly what an API key is for.
   const needsAuth = authMe?.authEnabled === true
-  const canMintKeys = needsAuth && authMe?.apiKeysEnabled === true
-  const apiKey = mintedKey ?? (pastedKey || null)
-  // Keep the shape right even before the user has a key, so the snippet is
-  // copy-then-substitute rather than copy-then-discover-it-401s.
-  const snippetKey = canMintKeys ? (apiKey ?? API_KEY_PLACEHOLDER) : null
-
-  const handleCreateKey = () => {
-    if (createKey.isPending) return
-    createKey.mutate('MCP client', { onSuccess: (key) => setMintedKey(key.key) })
-  }
+  const keysAvailable = needsAuth && authMe?.apiKeysEnabled === true
+  // Snippets carry the placeholder, never a live key. Minting belongs in
+  // Settings: a credential that never expires should not be a side effect of
+  // opening setup instructions, and a snippet holding a real key invites being
+  // pasted into a ticket or chat.
+  const snippetKey = keysAvailable ? API_KEY_PLACEHOLDER : null
 
   const openKeySettings = () => {
-    handleClose()
+    onClose()
     window.dispatchEvent(
       new CustomEvent('radar:open-settings', { detail: { section: 'apikeys' } }),
     )
@@ -183,7 +158,7 @@ export function MCPSetupDialog({ open, onClose, mcpUrl }: MCPSetupDialogProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleClose} />
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
       <div
         ref={dialogRef}
         tabIndex={-1}
@@ -195,7 +170,7 @@ export function MCPSetupDialog({ open, onClose, mcpUrl }: MCPSetupDialogProps) {
             <Radio className="w-5 h-5 text-purple-400" />
             <h3 className="text-lg font-semibold text-theme-text-primary">MCP Server</h3>
           </div>
-          <button onClick={handleClose} className="p-1.5 hover:bg-theme-elevated rounded-md transition-colors">
+          <button onClick={onClose} className="p-1.5 hover:bg-theme-elevated rounded-md transition-colors">
             <X className="w-5 h-5 text-theme-text-tertiary" />
           </button>
         </div>
@@ -266,7 +241,7 @@ export function MCPSetupDialog({ open, onClose, mcpUrl }: MCPSetupDialogProps) {
               <p className="text-xs text-theme-text-tertiary px-0.5">
                 You can change the port in{' '}
                 <button
-                  onClick={() => { handleClose(); window.dispatchEvent(new Event('radar:open-settings')) }}
+                  onClick={() => { onClose(); window.dispatchEvent(new Event('radar:open-settings')) }}
                   className="text-purple-500 dark:text-purple-400 hover:underline underline-offset-2"
                 >
                   Settings
@@ -281,7 +256,7 @@ export function MCPSetupDialog({ open, onClose, mcpUrl }: MCPSetupDialogProps) {
             <div className="space-y-2">
               <h4 className="text-sm font-semibold text-theme-text-primary">Authentication</h4>
 
-              {canMintKeys ? (
+              {keysAvailable ? (
                 <>
                   <p className="text-sm text-theme-text-secondary leading-relaxed">
                     This Radar requires a sign-in, and an MCP client has no browser to complete one.
@@ -289,63 +264,17 @@ export function MCPSetupDialog({ open, onClose, mcpUrl }: MCPSetupDialogProps) {
                     namespaces and resources your own account sees.
                   </p>
 
-                  {!mintedKey && (
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={handleCreateKey}
-                        disabled={createKey.isPending}
-                        className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium btn-brand rounded-md disabled:opacity-60"
-                      >
-                        {createKey.isPending
-                          ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          : <Plus className="w-3.5 h-3.5" />}
-                        Create a key
-                      </button>
-                      <span className="text-xs text-theme-text-tertiary shrink-0">or paste one</span>
-                      <input
-                        value={pastedKey}
-                        onChange={(e) => setPastedKey(sanitizeKey(e.target.value))}
-                        placeholder="rk_…"
-                        aria-label="Existing API key"
-                        spellCheck={false}
-                        className="flex-1 min-w-0 px-2 py-1.5 text-xs font-mono bg-theme-base border border-theme-border rounded text-theme-text-primary placeholder:text-theme-text-tertiary focus:outline-none focus:border-purple-500"
-                      />
-                    </div>
-                  )}
-
-                  {mintedKey && (
-                    <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2">
-                      <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
-                      <p className="text-xs text-amber-800 dark:text-amber-200 leading-relaxed">
-                        Key created, and written into every snippet below. Radar shows it once and
-                        keeps only a hash — copy the config for your client now, or you will have to
-                        create another key.
-                      </p>
-                    </div>
-                  )}
-
-                  {createKey.isError && (
-                    <p className="text-xs text-red-600 dark:text-red-400">
-                      Could not create a key: {createKey.error.message}
-                    </p>
-                  )}
-
-                  {!apiKey && !createKey.isError && (
-                    <p className="text-xs text-theme-text-tertiary">
-                      Until then the snippets below carry a{' '}
-                      <code className="inline-code">{API_KEY_PLACEHOLDER}</code> placeholder.
-                    </p>
-                  )}
-
-                  <p className="text-xs text-theme-text-tertiary">
-                    Keys do not expire —{' '}
+                  <p className="text-sm text-theme-text-secondary leading-relaxed">
+                    The snippets below carry a{' '}
+                    <code className="inline-code">{API_KEY_PLACEHOLDER}</code> placeholder.{' '}
                     <button
                       onClick={openKeySettings}
                       className="text-purple-500 dark:text-purple-400 hover:underline underline-offset-2"
                     >
-                      manage your keys
+                      Create a key
                     </button>{' '}
-                    to revoke one when its client is retired.
+                    and substitute it after copying. Keys do not expire, so revoke one there when its
+                    client is retired.
                   </p>
                 </>
               ) : (
@@ -438,7 +367,7 @@ export function MCPSetupDialog({ open, onClose, mcpUrl }: MCPSetupDialogProps) {
             Documentation
           </a>
           <button
-            onClick={handleClose}
+            onClick={onClose}
             className="px-4 py-2 text-sm font-medium rounded-lg hover:bg-theme-elevated transition-colors text-theme-text-secondary"
           >
             Close

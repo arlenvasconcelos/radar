@@ -43,17 +43,21 @@ describe('MCPSetupDialog authentication', () => {
     expect(html.toLowerCase()).not.toContain('authorization')
   })
 
-  // The blocker this closes: /mcp is behind the auth middleware, so on a
-  // protected Radar the snippets 401 unless they carry a key, and the user
-  // must be able to get one without leaving the dialog.
-  it('offers a key and pre-fills the snippets when keys are available', () => {
+  // /mcp is behind the auth middleware, so on a protected Radar the snippets
+  // 401 unless they carry a key. The dialog shapes the config for one and
+  // points at Settings, but never mints: a credential that does not expire
+  // should not be a side effect of opening setup instructions, and a snippet
+  // holding a live key invites being pasted into a ticket or chat.
+  it('shows the placeholder and links to key creation when keys are available', () => {
     mockAuthMe = { authEnabled: true, apiKeysEnabled: true }
     const html = render()
 
     expect(html).toContain('Authentication')
-    expect(html).toContain('Create a key')
     expect(html).toContain(API_KEY_PLACEHOLDER)
     expect(html).toContain('Authorization: Bearer')
+    expect(html).toContain('Create a key')
+    // No inline minting: nothing to paste an existing key into either.
+    expect(html).not.toContain('Existing API key')
   })
 
   // Auth on but no key store (or Radar Cloud, where the Hub issues tokens):
