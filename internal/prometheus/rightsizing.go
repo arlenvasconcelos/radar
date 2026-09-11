@@ -132,6 +132,7 @@ type RightsizingResponse struct {
 	Window          string           `json:"window"`
 	Source          string           `json:"source"`
 	OwnerCoverage   OwnerCoverage    `json:"ownerCoverage"`
+	Replicas        int              `json:"replicas"`
 	ScaledToZero    bool             `json:"scaledToZero"`
 	SampleAvailable bool             `json:"sampleAvailable"`
 	Rows            []RightsizingRow `json:"rows"`
@@ -227,6 +228,16 @@ func RightsizingForWorkload(ctx context.Context, kind, namespace, name string) (
 	return computeRightsizing(ctx, client, kind, namespace, name, workload), nil
 }
 
+// specReplicas defaults a nil replica count to 1, matching the apiserver: a
+// Deployment written without spec.replicas runs one pod, and treating it as
+// zero would zero out every impact figure computed from it.
+func specReplicas(replicas *int32) int {
+	if replicas == nil {
+		return 1
+	}
+	return int(*replicas)
+}
+
 // IsRightsizingKind reports whether recommendations exist for a kind. Callers
 // check it before authorizing, so an unsupported kind gets that answer instead
 // of a denial from a SubjectAccessReview against a resource that cannot exist.
@@ -252,6 +263,7 @@ type rightsizingWorkload struct {
 	currentPodOOM map[string]bool
 	hpaManaged    map[string]bool
 	hpaAvailable  bool
+	replicas      int
 	scaledToZero  bool
 	// The live pod list could not be read, so podNames and currentPodOOM are
 	// empty because nothing answered — not because the workload has no pods.
@@ -291,6 +303,7 @@ func loadRightsizingWorkload(ctx context.Context, kind, namespace, name string) 
 
 	var podTemplate *corev1.PodSpec
 	scaledToZero := false
+	replicas := 0
 	switch strings.ToLower(kind) {
 	case "deployment":
 		if cache.Deployments() == nil {
@@ -301,6 +314,7 @@ func loadRightsizingWorkload(ctx context.Context, kind, namespace, name string) 
 			return rightsizingWorkload{}, fmt.Errorf("%w: deployment %s/%s", errWorkloadMissing, namespace, name)
 		}
 		podTemplate = &d.Spec.Template.Spec
+		replicas = specReplicas(d.Spec.Replicas)
 		scaledToZero = d.Spec.Replicas != nil && *d.Spec.Replicas == 0
 	case "statefulset":
 		if cache.StatefulSets() == nil {
@@ -311,6 +325,7 @@ func loadRightsizingWorkload(ctx context.Context, kind, namespace, name string) 
 			return rightsizingWorkload{}, fmt.Errorf("%w: statefulset %s/%s", errWorkloadMissing, namespace, name)
 		}
 		podTemplate = &ss.Spec.Template.Spec
+		replicas = specReplicas(ss.Spec.Replicas)
 		scaledToZero = ss.Spec.Replicas != nil && *ss.Spec.Replicas == 0
 	case "daemonset":
 		if cache.DaemonSets() == nil {
@@ -321,6 +336,7 @@ func loadRightsizingWorkload(ctx context.Context, kind, namespace, name string) 
 			return rightsizingWorkload{}, fmt.Errorf("%w: daemonset %s/%s", errWorkloadMissing, namespace, name)
 		}
 		podTemplate = &ds.Spec.Template.Spec
+		replicas = int(ds.Status.DesiredNumberScheduled)
 		scaledToZero = ds.Status.DesiredNumberScheduled == 0
 	}
 
@@ -334,6 +350,7 @@ func loadRightsizingWorkload(ctx context.Context, kind, namespace, name string) 
 		currentPodOOM: map[string]bool{},
 		hpaManaged:    hpaManaged,
 		hpaAvailable:  hpaAvailable,
+		replicas:      replicas,
 		scaledToZero:  scaledToZero,
 	}
 	pods, err := workloadPodsOnceWarm(ctx, cache, kind, namespace, name)
@@ -466,7 +483,7 @@ func computeRightsizing(ctx context.Context, client rightsizingQuerier, kind, na
 	expected := int(rightsizingWindow / rightsizingStep)
 	resp := RightsizingResponse{
 		Kind: kind, Namespace: namespace, Name: name, Window: "7d", Source: "radar",
-		OwnerCoverage: coverage, ScaledToZero: workload.scaledToZero,
+		OwnerCoverage: coverage, Replicas: workload.replicas, ScaledToZero: workload.scaledToZero,
 		Rows: make([]RightsizingRow, 0, len(workload.containers)*2),
 	}
 	for _, container := range workload.containers {

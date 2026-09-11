@@ -193,6 +193,8 @@ const INVESTIGATION_RESULT_LABELS: Readonly<Record<string, string>> = {
   list_packages: "Installed packages",
   search: "Search results",
   discover_metrics: "Metric discovery",
+  get_cost: "Cost",
+  get_rightsizing: "Rightsizing",
 };
 export function investigationResultLabel(
   source: InvestigationEvidenceSource,
