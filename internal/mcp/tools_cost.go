@@ -27,6 +27,7 @@ const monthlyProjectionHours = 730
 const (
 	costDefaultLimit  = 20
 	costMaxLimit      = 100
+	costCallBudget    = 45 * time.Second
 	costRateExplainer = "Costs are hourly rates. projectedMonthlyCost = hourlyCost x 730."
 	// The denominator is allocation — max(requested, observed) — not the
 	// request, so the ratio caps at 100 and a low value is not by itself a
@@ -36,13 +37,19 @@ const (
 	// namespace row's basis is the cost source's own total, which carries
 	// storage, network, shared and external cost on Kubecost.
 	costWorkloadTotalExplainer = "totals here sum CPU and memory allocation only, so they do not reconcile with this namespace's row in view=summary, whose basis is whatever the cost source totals."
-	costScopeEmptyRemediation  = "The cost source is reachable but reported no allocation for the namespaces in namespaceScope. Nothing needs installing — either no workloads are running in that scope, or the scope is narrower than expected."
-	costRequestedViewFmt       = "Totals cover only namespace %s, not the whole cluster."
-	costPartialViewFmt         = "Totals cover only the %d namespace(s) this identity can read, not the whole cluster."
+	// With a kind/name selector the rows are not a truncation of the namespace,
+	// so the namespace total would be read as the workload's own spend.
+	costSelectedWorkloadTotalExplainer = "totals cover only the workload named by kind and name, not the namespace — call view=workloads without kind/name for the namespace's spend."
+	// The Prometheus path returns no_metrics both when the source is healthy
+	// with nothing in scope and when no cost source is installed at all, so this
+	// text must not assert either one.
+	costScopeEmptyRemediation = "No allocation was reported for the namespaces in namespaceScope. Either the cost source is healthy and that scope holds nothing (no workloads running, or a narrower scope than expected), or no cost source is installed yet — the two are indistinguishable here. Check whether OpenCost or Kubecost is running before telling the user to install it."
+	costRequestedViewFmt      = "Totals cover only namespace %s, not the whole cluster."
+	costPartialViewFmt        = "Totals cover only the %d namespace(s) this identity can read, not the whole cluster."
 	// A pin and an RBAC limit produce the same namespace list. Reporting the
 	// pin as a permission problem would have an agent tell a cluster-admin
 	// their access is restricted.
-	costPinnedViewFmt = "Totals cover only namespace %s, which radar is pinned to with --namespace — not the whole cluster, and not a limit on this identity's permissions."
+	costPinnedViewFmt = "Totals cover only namespace %s, which radar is pinned to with --namespace-scope — not the whole cluster, and not a limit on this identity's permissions."
 	// Kubecost's idle includes the __idle__ unallocated-node allocation while
 	// hourlyCost is allocated spend only, so idle can legitimately exceed it.
 	// An agent reads that as a bug in Radar unless the response says otherwise.
@@ -54,6 +61,10 @@ const (
 // ReasonWorkloadNotFound is Radar's own reason: the cost source was healthy and
 // the namespace had rows, but none matched the requested workload.
 const reasonWorkloadNotFound = "workload_not_found"
+
+// reasonCostDeadlineExceeded marks a call the budget cut short, so a slow cost
+// source is not reported as a broken one.
+const reasonCostDeadlineExceeded = "cost_deadline_exceeded"
 
 // Cost figures are floats accumulated across rows, so they arrive as
 // 0.14640000000000006. Agents echo them verbatim into user-facing answers.
@@ -75,33 +86,37 @@ type costTotals struct {
 	StorageCost          float64 `json:"storageCost,omitempty"`
 	NetworkCost          float64 `json:"networkCost,omitempty"`
 	IdleCost             float64 `json:"idleCost,omitempty"`
-	ClusterEfficiency    float64 `json:"clusterEfficiency,omitempty"`
+	// Pointer, not omitempty: a fully idle cluster measures 0% efficiency,
+	// and dropping that reads as "efficiency was not reported".
+	ClusterEfficiency *float64 `json:"clusterEfficiency"`
 }
 
 type namespaceCostRow struct {
-	Name             string  `json:"name"`
-	Kind             string  `json:"kind,omitempty"`
-	Namespace        string  `json:"namespace,omitempty"`
-	HourlyCost       float64 `json:"hourlyCost"`
-	CPUCost          float64 `json:"cpuCost"`
-	MemoryCost       float64 `json:"memoryCost"`
-	StorageCost      float64 `json:"storageCost,omitempty"`
-	NetworkCost      float64 `json:"networkCost,omitempty"`
-	IdleCost         float64 `json:"idleCost,omitempty"`
-	Efficiency       float64 `json:"efficiency,omitempty"`
-	UsageUnavailable bool    `json:"usageUnavailable,omitempty"`
+	Name        string  `json:"name"`
+	Kind        string  `json:"kind,omitempty"`
+	Namespace   string  `json:"namespace,omitempty"`
+	HourlyCost  float64 `json:"hourlyCost"`
+	CPUCost     float64 `json:"cpuCost"`
+	MemoryCost  float64 `json:"memoryCost"`
+	StorageCost float64 `json:"storageCost,omitempty"`
+	NetworkCost float64 `json:"networkCost,omitempty"`
+	IdleCost    float64 `json:"idleCost,omitempty"`
+	// Pointer, not omitempty: 0% is a measurement on a row using nothing.
+	Efficiency       *float64 `json:"efficiency"`
+	UsageUnavailable bool     `json:"usageUnavailable,omitempty"`
 }
 
 type workloadCostRow struct {
-	Name             string  `json:"name"`
-	Kind             string  `json:"kind"`
-	Replicas         int     `json:"replicas"`
-	HourlyCost       float64 `json:"hourlyCost"`
-	CPUCost          float64 `json:"cpuCost"`
-	MemoryCost       float64 `json:"memoryCost"`
-	IdleCost         float64 `json:"idleCost,omitempty"`
-	Efficiency       float64 `json:"efficiency,omitempty"`
-	UsageUnavailable bool    `json:"usageUnavailable,omitempty"`
+	Name       string  `json:"name"`
+	Kind       string  `json:"kind"`
+	Replicas   int     `json:"replicas"`
+	HourlyCost float64 `json:"hourlyCost"`
+	CPUCost    float64 `json:"cpuCost"`
+	MemoryCost float64 `json:"memoryCost"`
+	IdleCost   float64 `json:"idleCost,omitempty"`
+	// Pointer, not omitempty: 0% is a measurement on a row using nothing.
+	Efficiency       *float64 `json:"efficiency"`
+	UsageUnavailable bool     `json:"usageUnavailable,omitempty"`
 }
 
 // nodeCostRow deliberately omits the per-node CPU and memory components. The
@@ -168,6 +183,13 @@ type costResponse struct {
 }
 
 func handleGetCost(ctx context.Context, _ *mcp.CallToolRequest, input getCostInput) (*mcp.CallToolResult, any, error) {
+	// MCP tool calls sit outside the router's 60s timeout group, and the
+	// MCP prom client's 200s socket backstop is a hang guard, not a query
+	// budget. Without this, a slow source holds the call for minutes past
+	// the point the caller gave up. Same shape as the rightsizing scan budget.
+	ctx, cancel := context.WithTimeout(ctx, costCallBudget)
+	defer cancel()
+
 	view := strings.ToLower(strings.TrimSpace(input.View))
 	if view == "" {
 		view = "summary"
@@ -201,6 +223,23 @@ func handleGetCost(ctx context.Context, _ *mcp.CallToolRequest, input getCostInp
 		return nil, nil, errors.New("kind and name go together — pass both to target one workload, or neither to rank the namespace's top spenders")
 	}
 
+	result, payload, err := costView(ctx, input, view, limit)
+	// A response assembled after the budget expired is built from queries that
+	// were cancelled mid-flight: the mandatory ones surface as query_error,
+	// whose remediation sends the operator to check pod health for what is
+	// really a slow query. Report the deadline instead of that wrong advice.
+	if err == nil && ctx.Err() != nil {
+		return toJSONResult(costResponse{
+			View: view, Namespace: input.Namespace, Range: input.Range,
+			Available: false, Reason: reasonCostDeadlineExceeded,
+			Remediation: costRemediation(reasonCostDeadlineExceeded),
+			Currency:    opencost.ResolveCurrency(),
+		})
+	}
+	return result, payload, err
+}
+
+func costView(ctx context.Context, input getCostInput, view string, limit int) (*mcp.CallToolResult, any, error) {
 	switch view {
 	case "summary":
 		return costSummaryView(ctx, input, limit)
@@ -290,7 +329,9 @@ func costSummaryView(ctx context.Context, input getCostInput, limit int) (*mcp.C
 	resp.Totals.StorageCost = roundHourly(summary.TotalStorageCost)
 	resp.Totals.NetworkCost = roundHourly(summary.TotalNetworkCost)
 	resp.Totals.IdleCost = roundHourly(summary.TotalIdleCost)
-	resp.Totals.ClusterEfficiency = roundHourly(summary.ClusterEfficiency)
+	// Cluster efficiency is derived only from rows that HAVE usage evidence, so
+	// when none of them do the 0 it lands on is an absence, not a measurement.
+	resp.Totals.ClusterEfficiency = measuredEfficiency(summary.ClusterEfficiency, allUsageUnavailable(summary.Namespaces))
 	resp.NamespaceCount = len(summary.Namespaces)
 	rows, truncated := truncateRows(summary.Namespaces, limit)
 	resp.Truncated = truncated
@@ -306,12 +347,43 @@ func costSummaryView(ctx context.Context, input getCostInput, limit int) (*mcp.C
 			StorageCost:      roundHourly(row.StorageCost),
 			NetworkCost:      roundHourly(row.NetworkCost),
 			IdleCost:         roundHourly(row.IdleCost),
-			Efficiency:       roundHourly(row.Efficiency),
+			Efficiency:       measuredEfficiency(row.Efficiency, row.UsageUnavailable),
 			UsageUnavailable: row.UsageUnavailable,
 		})
 	}
-	resp.Guidance = costGuidance(summary.NamespaceScope, strings.TrimSpace(input.Namespace)) + " " + costEfficiencyExplainer + idleGuidance(resp.Totals)
+	resp.Guidance = costGuidance(summary.NamespaceScope, strings.TrimSpace(input.Namespace)) + " " + costEfficiencyExplainer +
+		partialUsageGuidance(summary.Namespaces) + idleGuidance(resp.Totals)
 	return toJSONResult(resp)
+}
+
+// partialUsageGuidance fires when only SOME rows carry usage evidence. The
+// aggregates are then computed over that subset and labelled as cluster
+// figures, and a truncated row list can hide the rows they left out.
+func partialUsageGuidance(rows []pkgopencost.NamespaceCost) string {
+	missing := 0
+	for _, row := range rows {
+		if row.UsageUnavailable {
+			missing++
+		}
+	}
+	if missing == 0 || missing == len(rows) {
+		return ""
+	}
+	return fmt.Sprintf(" %d of %d namespaces reported no usage evidence, so clusterEfficiency and idleCost cover only the rest — they are not whole-cluster figures, and the rows they exclude may be past the returned list.", missing, len(rows))
+}
+
+// allUsageUnavailable reports whether every row lacked usage evidence, which is
+// the only case where the aggregate has nothing to average over.
+func allUsageUnavailable(rows []pkgopencost.NamespaceCost) bool {
+	if len(rows) == 0 {
+		return true
+	}
+	for _, row := range rows {
+		if !row.UsageUnavailable {
+			return false
+		}
+	}
+	return true
 }
 
 // idleGuidance fires only when the numbers themselves look contradictory, so a
@@ -383,13 +455,10 @@ func costWorkloadsView(ctx context.Context, input getCostInput, limit int) (*mcp
 		return toJSONResult(resp)
 	}
 
-	// Totals describe the namespace, so they are summed before any selector or
-	// truncation narrows the rows.
-	var total float64
-	for _, row := range workloads.Workloads {
-		total += row.HourlyCost
-	}
-	resp.Totals = hourlyTotals(total)
+	// The ranking path's totals describe the namespace, so they are summed
+	// before truncation narrows the rows. A kind/name selector replaces them
+	// below, where the rows answer a different question than "top spenders".
+	resp.Totals = hourlyTotals(sumWorkloadHourly(workloads.Workloads))
 	resp.WorkloadCount = len(workloads.Workloads)
 
 	selected := workloads.Workloads
@@ -397,6 +466,13 @@ func costWorkloadsView(ctx context.Context, input getCostInput, limit int) (*mcp
 		// Match before truncation: a workload ranked past limit is otherwise
 		// unreachable, and the agent cannot tell "not found" from "not top-N".
 		selected = selectWorkloadCost(workloads.Workloads, input.Kind, input.Name)
+		// Totals describe what the caller asked for. Left namespace-wide, the
+		// one row returned here sits beside a total covering every workload in
+		// the namespace, and the agent reports that as the workload's spend.
+		// The ranking path keeps its namespace totals: those rows ARE a
+		// truncation of the namespace, so the total is the whole they came from.
+		resp.Totals = hourlyTotals(sumWorkloadHourly(selected))
+		resp.WorkloadCount = len(selected)
 		if len(selected) == 0 {
 			resp.Available = false
 			resp.Reason = reasonWorkloadNotFound
@@ -419,12 +495,26 @@ func costWorkloadsView(ctx context.Context, input getCostInput, limit int) (*mcp
 			CPUCost:          roundHourly(row.CPUCost),
 			MemoryCost:       roundHourly(row.MemoryCost),
 			IdleCost:         roundHourly(row.IdleCost),
-			Efficiency:       roundHourly(row.Efficiency),
+			Efficiency:       measuredEfficiency(row.Efficiency, !row.CPUUsageAvailable || !row.MemoryUsageAvailable),
 			UsageUnavailable: !row.CPUUsageAvailable || !row.MemoryUsageAvailable,
 		})
 	}
-	resp.Guidance = costRateExplainer + " " + costWorkloadTotalExplainer + " " + costEfficiencyExplainer
+	totalsExplainer := costWorkloadTotalExplainer
+	if input.Kind != "" {
+		totalsExplainer = costSelectedWorkloadTotalExplainer
+	}
+	resp.Guidance = costRateExplainer + " " + totalsExplainer + " " + costEfficiencyExplainer
 	return toJSONResult(resp)
+}
+
+// sumWorkloadHourly totals the rows it is given, so the namespace total and a
+// selector's total are the same arithmetic over different row sets.
+func sumWorkloadHourly(rows []pkgopencost.WorkloadCost) float64 {
+	var total float64
+	for _, row := range rows {
+		total += row.HourlyCost
+	}
+	return total
 }
 
 // selectWorkloadCost matches on kind and name case-insensitively: an agent
@@ -484,6 +574,7 @@ func costNodesView(ctx context.Context, limit int) (*mcp.CallToolResult, any, er
 	resp.Source = nodes.Source
 	resp.Currency = nodes.Currency
 	resp.DataThrough = nodes.DataThrough
+	resp.Window = nodes.Window
 	if !nodes.Available {
 		resp.Remediation = costRemediation(nodes.Reason)
 		return toJSONResult(resp)
@@ -599,7 +690,7 @@ func summarizeTrend(series []pkgopencost.CostTrendSeries) ([]costTrendSeriesDTO,
 		if len(s.DataPoints) > 0 {
 			dto.Start = roundHourly(s.DataPoints[0].Value)
 			dto.End = roundHourly(s.DataPoints[len(s.DataPoints)-1].Value)
-			dto.ChangePercent = changePercent(s.DataPoints[0].Value, s.DataPoints[len(s.DataPoints)-1].Value)
+			dto.ChangePercent = changePercent(len(s.DataPoints), s.DataPoints[0].Value, s.DataPoints[len(s.DataPoints)-1].Value)
 		}
 		out = append(out, dto)
 	}
@@ -616,7 +707,7 @@ func summarizeTrend(series []pkgopencost.CostTrendSeries) ([]costTrendSeriesDTO,
 	return out, &costTrendSummary{
 		Start:         roundHourly(first),
 		End:           roundHourly(last),
-		ChangePercent: changePercent(first, last),
+		ChangePercent: changePercent(len(stamps), first, last),
 		Points:        len(stamps),
 	}
 }
@@ -624,8 +715,10 @@ func summarizeTrend(series []pkgopencost.CostTrendSeries) ([]costTrendSeriesDTO,
 // changePercent is nil rather than zero when the starting value is zero: a
 // percentage change from nothing is undefined, and reporting 0 would say spend
 // held flat when it actually appeared.
-func changePercent(start, end float64) *float64 {
-	if start == 0 {
+func changePercent(points int, start, end float64) *float64 {
+	// One point is not a change: start and end are the same sample, and the
+	// resulting 0 reads as "spend held flat" over an interval never observed.
+	if points < 2 || start == 0 {
 		return nil
 	}
 	pct := math.Round((end-start)/start*1000) / 10
@@ -685,6 +778,16 @@ func hourlyTotals(hourly float64) *costTotals {
 	}
 }
 
+// measuredEfficiency separates "used nothing" from "we could not measure".
+// Both are zero on the wire otherwise, and only the second is missing data.
+func measuredEfficiency(value float64, unavailable bool) *float64 {
+	if unavailable {
+		return nil
+	}
+	rounded := roundHourly(value)
+	return &rounded
+}
+
 func truncateRows[T any](rows []T, limit int) ([]T, bool) {
 	if len(rows) > limit {
 		return rows[:limit], true
@@ -705,17 +808,22 @@ func costRemediation(reason string) string {
 	switch reason {
 	case ReasonOutsideNamespaceScope:
 		if pinned, ok := NamespacePinned(); ok {
-			return fmt.Sprintf("radar is pinned to namespace %s with --namespace, so it cannot report on the requested scope. This is a startup flag, not a permissions problem — restart radar without --namespace for cluster-wide cost.", pinned)
+			return fmt.Sprintf("radar is pinned to namespace %s with --namespace-scope, so it cannot report on the requested scope. This is a startup flag, not a permissions problem — restart radar without --namespace-scope for cluster-wide cost.", pinned)
 		}
-		return "radar is pinned to a single namespace with --namespace, so it cannot report on the requested scope. This is a startup flag, not a permissions problem."
+		return "radar is pinned to a single namespace with --namespace-scope, so it cannot report on the requested scope. This is a startup flag, not a permissions problem."
 	case reasonWorkloadNotFound:
 		return costWorkloadNotFoundRemediation
+	case reasonCostDeadlineExceeded:
+		return fmt.Sprintf("The cost request exceeded its %s budget before answering. The budget also covers permission discovery and source selection, so this does not establish that the cost source was reached — narrow the request (a namespace instead of the cluster, or a shorter trend range) and retry.", costCallBudget)
 	case pkgopencost.ReasonNoPrometheus:
 		return "No Prometheus found. Radar auto-discovers it, or start radar with --prometheus-url. Cost data additionally needs OpenCost or Kubecost installed."
 	case pkgopencost.ReasonNoCostSource:
 		return "Neither OpenCost metrics nor Kubecost was found. Install one of them in the cluster; OpenCost also needs a Prometheus for Radar to read it through."
 	case pkgopencost.ReasonNoMetrics:
-		return "Prometheus is reachable but no cost metrics are present. Install OpenCost (or Kubecost) in the cluster and let it scrape for a few minutes."
+		// Kubecost answers with this reason too, so the text cannot name
+		// Prometheus as the thing that is reachable. The source field says
+		// which one answered.
+		return "The cost source answered but reported no cost data. If OpenCost or Kubecost was just installed, let it scrape for a few minutes; if neither is installed, install one — the source field says which one Radar asked."
 	case pkgopencost.ReasonAccessDenied:
 		return "This identity cannot read the requested scope. Costs are reported only for namespaces (or nodes) its RBAC allows."
 	case pkgopencost.ReasonAuthentication:

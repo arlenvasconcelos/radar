@@ -537,6 +537,12 @@ function ScanNotices({ result, rows }: { result: ScanResult; rows: RightsizingSc
     notices.push('Some workload kinds or namespaces were excluded by your Kubernetes access.')
   if ((result.coverage.unavailableKinds?.length ?? 0) > 0)
     notices.push('Some workload kinds could not be evaluated with the available ownership data.')
+  // Distinct from the partial notice above: these workloads were analyzed
+  // completely, the cache simply never held the other namespaces.
+  if ((result.coverage.partiallyCachedKinds?.length ?? 0) > 0)
+    notices.push(
+      'Radar is caching only some namespaces, so this scan covered a narrower scope than the whole cluster.',
+    )
   for (const warning of result.warnings ?? []) notices.push(warningMessage(warning.code))
   if (rows.length > 0 && rows.every((row) => row.classification === 'need_data'))
     notices.push('There is not enough recent history to recommend request changes yet.')

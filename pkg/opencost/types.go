@@ -220,9 +220,13 @@ type CostDataPoint struct {
 
 // NodeCostResponse is the response for the /api/opencost/nodes endpoint.
 type NodeCostResponse struct {
-	Available   bool       `json:"available"`
-	Reason      string     `json:"reason,omitempty"`
-	Source      string     `json:"source,omitempty"`
+	Available bool   `json:"available"`
+	Reason    string `json:"reason,omitempty"`
+	Source    string `json:"source,omitempty"`
+	// Window is the lookback the figures cover. Kubecost answers node assets
+	// from either the current window or its daily fallback, so without this a
+	// reader cannot tell an hour of data from a day of it.
+	Window      string     `json:"window,omitempty"`
 	DataThrough string     `json:"dataThrough,omitempty"`
 	Currency    string     `json:"currency"`
 	Nodes       []NodeCost `json:"nodes,omitempty"`

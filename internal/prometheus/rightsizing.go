@@ -43,6 +43,17 @@ const (
 	ReasonOOMEvidenceUnavailable = "oom_evidence_unavailable"
 )
 
+// Reasons a single-workload rightsizing answer carries. They are prose because
+// the REST response renders them to the user directly, and named here so the
+// MCP tool can attach remediation to them instead of matching the literals.
+const (
+	ReasonWorkloadNoContainers     = "Workload has no runtime containers (init-only or empty spec)."
+	ReasonRightsizingQueriesFailed = "Prometheus rightsizing queries failed."
+	ReasonNoOwnerSamples           = "No current or retained workload ownership samples are available."
+	ReasonNoUsageSamples           = "No workload usage samples are available in the last 7d."
+	ReasonPodInventoryUnreadable   = "Radar could not read this workload's pods, and no retained ownership history was available, so there was nothing to measure."
+)
+
 // IsWithheldRecommendationReason keeps the withheld set with the code that
 // assigns it: a reason added here without updating every consumer's own copy
 // would be reported as a clean result by whichever one was missed.
@@ -219,7 +230,7 @@ func RightsizingForWorkload(ctx context.Context, kind, namespace, name string) (
 			Kind: kind, Namespace: namespace, Name: name,
 			Window: "7d", Source: "radar", SampleAvailable: false,
 			Rows:   []RightsizingRow{},
-			Reason: "Workload has no runtime containers (init-only or empty spec).",
+			Reason: ReasonWorkloadNoContainers,
 		}, nil
 	}
 
@@ -500,17 +511,17 @@ func computeRightsizing(ctx context.Context, client rightsizingQuerier, kind, na
 	}
 	if !resp.SampleAvailable {
 		if results["cpu_stat"].err != nil || results["cpu_coverage"].err != nil || results["memory_stat"].err != nil || results["memory_coverage"].err != nil {
-			resp.Reason = "Prometheus rightsizing queries failed."
+			resp.Reason = ReasonRightsizingQueriesFailed
 		} else if workload.liveInventoryUnavailable && coverage == OwnerCoverageCurrentPods {
 			// Without retained ownership the selection falls back to the current
 			// pods, and those could not be listed — so the query matched nothing
 			// by construction. "No samples" would send the reader after missing
 			// metrics instead of the unreadable inventory.
-			resp.Reason = "Radar could not read this workload's pods, and no retained ownership history was available, so there was nothing to measure."
+			resp.Reason = ReasonPodInventoryUnreadable
 		} else if len(workload.podNames) == 0 && coverage == OwnerCoverageCurrentPods {
-			resp.Reason = "No current or retained workload ownership samples are available."
+			resp.Reason = ReasonNoOwnerSamples
 		} else {
-			resp.Reason = "No workload usage samples are available in the last 7d."
+			resp.Reason = ReasonNoUsageSamples
 		}
 	}
 	return resp

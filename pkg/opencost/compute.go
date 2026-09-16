@@ -396,13 +396,21 @@ func ComputeCostSummaryFromProm(ctx context.Context, client *prom.Client, opts S
 		nc.HourlyCost += nc.StorageCost
 		totalStorageCost += nc.StorageCost
 
-		nc.CPUUsageCost = cpuUsageMap[nc.Name]
-		nc.MemoryUsageCost = memUsageMap[nc.Name]
+		cpuUsage, cpuMeasured := cpuUsageMap[nc.Name]
+		memUsage, memMeasured := memUsageMap[nc.Name]
+		nc.CPUUsageCost = cpuUsage
+		nc.MemoryUsageCost = memUsage
 		// A failed usage query yields the same zero as a genuinely idle
 		// namespace. Flagging it keeps a reader from reporting 0% efficiency as
 		// a measurement, and keeps scoped totals from re-deriving efficiency
 		// from evidence that was never collected.
-		nc.UsageUnavailable = cpuUsageErr != nil || memUsageErr != nil
+		//
+		// A namespace missing from the usage result is the same problem without
+		// an error to notice it: the map lookup returns zero, which would read
+		// as fully wasted spend. Presence in the map is what separates "used
+		// nothing" from "was never measured" — a row that genuinely used
+		// nothing still has a series carrying 0.
+		nc.UsageUnavailable = cpuUsageErr != nil || memUsageErr != nil || !cpuMeasured || !memMeasured
 		allocCost := nc.CPUCost + nc.MemoryCost
 		usageCost := nc.CPUUsageCost + nc.MemoryUsageCost
 		if !nc.UsageUnavailable {

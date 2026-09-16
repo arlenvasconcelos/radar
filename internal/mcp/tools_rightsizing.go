@@ -36,27 +36,31 @@ type getRightsizingInput struct {
 }
 
 type rightsizingRowDTO struct {
-	Container            string                              `json:"container"`
-	Resource             string                              `json:"resource"`
-	Fit                  prometheuspkg.RightsizingFit        `json:"fit"`
-	Confidence           prometheuspkg.RightsizingConfidence `json:"confidence"`
-	CurrentRequest       *string                             `json:"currentRequest,omitempty"`
-	CurrentLimit         *string                             `json:"currentLimit,omitempty"`
-	RecommendedRequest   *string                             `json:"recommendedRequest,omitempty"`
-	Observed             string                              `json:"observed,omitempty"`
-	Peak                 string                              `json:"peak,omitempty"`
-	Coverage             float64                             `json:"coverage"`
-	RecommendationReason string                              `json:"recommendationReason,omitempty"`
-	ReductionLimited     bool                                `json:"reductionLimited,omitempty"`
-	Bursty               bool                                `json:"bursty,omitempty"`
-	HPAManaged           bool                                `json:"hpaManaged,omitempty"`
-	HPAEvidenceAvailable bool                                `json:"hpaEvidenceAvailable"`
-	CurrentPodOOM        bool                                `json:"currentPodOOM,omitempty"`
-	WindowOOMEvidence    bool                                `json:"windowOomEvidence,omitempty"`
-	OOMEvidenceAvailable *bool                               `json:"oomEvidenceAvailable,omitempty"`
-	ThrottleRatio        *string                             `json:"throttleRatio,omitempty"`
-	LimitConflict        bool                                `json:"limitConflict,omitempty"`
-	QueryError           string                              `json:"queryError,omitempty"`
+	Container      string                              `json:"container"`
+	Resource       string                              `json:"resource"`
+	Fit            prometheuspkg.RightsizingFit        `json:"fit"`
+	Confidence     prometheuspkg.RightsizingConfidence `json:"confidence"`
+	CurrentRequest *string                             `json:"currentRequest,omitempty"`
+	CurrentLimit   *string                             `json:"currentLimit,omitempty"`
+	// No omitempty: a withheld recommendation must arrive as an explicit null
+	// beside its recommendationReason. Omitting the field turns "Radar declined
+	// to recommend, and here is why" into a key the reader never sees.
+	RecommendedRequest   *string `json:"recommendedRequest"`
+	Observed             string  `json:"observed,omitempty"`
+	Peak                 string  `json:"peak,omitempty"`
+	Coverage             float64 `json:"coverage"`
+	RecommendationReason string  `json:"recommendationReason,omitempty"`
+	ReductionLimited     bool    `json:"reductionLimited,omitempty"`
+	Bursty               bool    `json:"bursty,omitempty"`
+	HPAManaged           bool    `json:"hpaManaged,omitempty"`
+	HPAEvidenceAvailable bool    `json:"hpaEvidenceAvailable"`
+	CurrentPodOOM        bool    `json:"currentPodOOM,omitempty"`
+	WindowOOMEvidence    bool    `json:"windowOomEvidence,omitempty"`
+	OOMEvidenceAvailable *bool   `json:"oomEvidenceAvailable,omitempty"`
+	ThrottleAvailable    *bool   `json:"throttleAvailable,omitempty"`
+	ThrottleRatio        *string `json:"throttleRatio,omitempty"`
+	LimitConflict        bool    `json:"limitConflict,omitempty"`
+	QueryError           string  `json:"queryError,omitempty"`
 }
 
 type rightsizingWorkloadDTO struct {
@@ -176,8 +180,9 @@ func rightsizingWorkloadScope(ctx context.Context, input getRightsizingInput) (*
 
 	// The informer cache reads under Radar's ServiceAccount, so without this
 	// gate any caller could fetch any namespace's container spec and P95 by
-	// guessing names. "get" matches a normal resource-detail read.
-	if !canReadInNamespace(ctx, "apps", prometheuspkg.ScanKindResource(kind), namespace, "get") {
+	// guessing names. Both checks, like the REST route's prometheusAuthGate:
+	// the namespace allow-list, and an exact "get" SAR on the workload kind.
+	if !checkNamespaceAccess(ctx, namespace) || !canReadInNamespace(ctx, "apps", prometheuspkg.ScanKindResource(kind), namespace, "get") {
 		return nil, nil, fmt.Errorf("forbidden: no access to %s %s/%s", kind, namespace, name)
 	}
 
@@ -292,6 +297,15 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 		return toJSONResult(rightsizingScanUnavailable(scope, namespace, "scan_deadline_exceeded"))
 	}
 	scan := prometheuspkg.ScanRightsizing(scanCtx, scanScope)
+	// The engine records a breached budget as a warning and stops batching, but
+	// the state it lands on reads as a failed query. Name the deadline so the
+	// remediation says "narrow the scan" instead of "check Prometheus health".
+	// Only when the scan did not finish: a budget that expires on the way out
+	// of a complete scan would otherwise tell the caller to narrow a scan that
+	// had already answered everything.
+	if scanCtx.Err() != nil && scan.State != prometheuspkg.RightsizingScanComplete {
+		scan.Reason = "scan_deadline_exceeded"
+	}
 	coverage := scan.Coverage
 
 	out := rightsizingResponse{
@@ -337,7 +351,6 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 		filtered := filterRightsizingRows(workload.Rows, input.IncludeBalanced, false, workload.Replicas, workload.ScaledToZero)
 		omitted.add(filtered.omitted)
 		incompleteEvidence = incompleteEvidence || filtered.incompleteEvidence
-		reductionLimited = reductionLimited || filtered.reductionLimited
 		if len(filtered.rows) == 0 {
 			continue
 		}
@@ -354,8 +367,11 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 			Rows:           filtered.rows,
 		})
 	}
-	// Rank the way the Rightsizing screen does — class, then replica-weighted
-	// absolute change — so the tool and the screen agree on where the waste is.
+	// Class first, then replica-weighted absolute change — the Rightsizing
+	// screen's ordering rule, applied to a different unit: the screen ranks
+	// each CONTAINER as its own entry while this tool returns workloads, so
+	// two containers' reductions add up here and the top-N can legitimately
+	// differ from the screen's. Same rule, coarser grain — not a parity bug.
 	sort.SliceStable(ranked, func(i, j int) bool {
 		return prometheuspkg.RightsizingRankLess(
 			ranked[i].Classification, *ranked[i].Impact, ranked[i].rankKey(),
@@ -368,6 +384,15 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 		out.TotalWorkloads = totalRows
 	}
 	out.Workloads = ranked
+	// Read after truncation: the guidance sentence is about rows the caller can
+	// see, and a clamped row ranked past limit is not in the response.
+	for _, workload := range ranked {
+		for _, row := range workload.Rows {
+			if row.ReductionLimited {
+				reductionLimited = true
+			}
+		}
+	}
 	if omitted.total() > 0 {
 		out.Omitted = &omitted
 	}
@@ -385,7 +410,9 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 	// reporting partial with no reason at all.
 	if len(out.NamespaceScope) > 0 {
 		out.State = prometheuspkg.RightsizingScanPartial
-		if out.Reason == "" {
+		// no_workloads claims the requested scope was covered; for a cluster
+		// request narrowed to namespaceScope that is exactly what did not happen.
+		if out.Reason == "" || out.Reason == "no_workloads" {
 			out.Reason = reasonNamespaceScopeLimited
 		}
 	}
@@ -423,9 +450,10 @@ type filteredRows struct {
 }
 
 // filterRightsizingRows drops correctly-sized rows unless the caller asked for
-// them, with two exceptions. keepAll returns every row for scope="workload",
+// them, with three exceptions. keepAll returns every row for scope="workload",
 // where the caller named the workload and a handful of rows is the whole answer.
-// And a row carrying OOM history, a limit conflict, throttling or autoscaler
+// A scaled-to-zero workload classifies as review, which the Rightsizing screen
+// lists among its actions, so dropping its rows would drop the workload. And a row carrying OOM history, a limit conflict, throttling or autoscaler
 // involvement is never dropped: classifyRightsizingFit settles fit from the
 // request alone and returns "balanced" before it reaches those checks, so the
 // classic OOM shape — request fine, limit too low — would otherwise be filtered
@@ -433,13 +461,14 @@ type filteredRows struct {
 func filterRightsizingRows(rows []prometheuspkg.RightsizingRow, includeBalanced, keepAll bool, replicas int, scaledToZero bool) filteredRows {
 	var result filteredRows
 	result.rows = make([]rightsizingRowDTO, 0, len(rows))
-	result.classification = prometheuspkg.ClassifyRows(rows, replicas, scaledToZero)
+	result.classification = prometheuspkg.ClassifyWorkloadRows(rows, replicas, scaledToZero)
 	result.impact = prometheuspkg.CalculateImpact(rows, replicas)
 	for _, row := range rows {
 		if rowHasIncompleteEvidence(row) {
 			result.incompleteEvidence = true
 		}
-		if !keepAll && !includeBalanced && !rightsizingRowActionable(row.Fit) && !prometheuspkg.NeedsManualReview(row) {
+		if !keepAll && !includeBalanced && !scaledToZero && !rightsizingRowActionable(row.Fit) &&
+			!prometheuspkg.NeedsManualReview(row) && !prometheuspkg.SignificantlyThrottled(row) {
 			switch {
 			case row.QueryError != "":
 				result.omitted.QueryError++
@@ -483,6 +512,12 @@ func filterRightsizingRows(rows []prometheuspkg.RightsizingRow, includeBalanced,
 		}
 		if row.Peak != nil {
 			dto.Peak = row.Peak.Formatted
+		}
+		// Throttling only ever gates a CPU reduction. Without the flag, an absent
+		// throttleRatio reads as "not throttled" rather than "not measured".
+		if row.Resource == "cpu" {
+			available := row.ThrottleAvailable
+			dto.ThrottleAvailable = &available
 		}
 		if row.ThrottleAvailable && row.ThrottleRatio != nil {
 			formatted := fmt.Sprintf("%.1f%%", *row.ThrottleRatio*100)
@@ -536,7 +571,7 @@ func rightsizingRemediation(reason string) string {
 	case "prometheus_unavailable":
 		return "No Prometheus found. Radar auto-discovers it, or start radar with --prometheus-url. Recommendations also need kube-state-metrics for 7 days of workload history."
 	case "owner_metrics_query_failed", "deployment_owner_metrics_query_failed":
-		return "Prometheus is reachable but the workload-ownership query failed. Check that it is healthy and scraping kube-state-metrics; the warnings carry the query error."
+		return "The workload-ownership query failed. Prometheus may be unreachable, unhealthy, or not scraping kube-state-metrics — the warnings carry the query error, which says which."
 	case "owner_metrics_missing":
 		return "Prometheus is reachable but has no kube_pod_owner series. Install kube-state-metrics and let it scrape — recommendations need it to map pods back to their workload."
 	case "deployment_owner_metrics_missing":
@@ -552,23 +587,32 @@ func rightsizingRemediation(reason string) string {
 	case "no_workloads":
 		return "The scan covered the requested scope and found no Deployment, StatefulSet or DaemonSet in it."
 	case "some_evidence_unavailable":
-		return "The scan ran but some usage, restart or throttle queries did not answer, so a subset of rows is missing evidence. The warnings name which query families failed; treat the affected containers as unjudged rather than correctly sized."
+		// This reason also fires when nothing failed and the scope was merely
+		// narrowed by RBAC or informer coverage, so it must not assert that a
+		// query broke. guidance names whichever cause this response carries.
+		return "The scan ran but did not cover everything: either some usage, restart or throttle evidence was missing or its query did not answer (the warnings name which), or coverage.restrictedKinds, unavailableKinds or partiallyCachedKinds narrowed what it could read. Treat the affected containers as unjudged rather than correctly sized."
 	case "scan_incomplete":
 		return "The scan did not finish every batch within its budget — coverage.completedBatches of coverage.batches says how far it got. The returned rows are a subset; narrow with scope=\"namespace\" or target one workload with scope=\"workload\" for a complete answer."
-	case "no_usage_samples":
+	case prometheuspkg.ReasonWorkloadNoContainers:
+		return "The workload's pod template declares no runtime containers (init-only or an empty spec), so there is nothing to size. This is the workload's own shape, not missing evidence."
+	case prometheuspkg.ReasonRightsizingQueriesFailed:
+		return "The rightsizing queries failed. Prometheus may be unreachable, unhealthy, or not scraping cAdvisor/kubelet and kube-state-metrics — each row's queryError names which query failed."
+	case prometheuspkg.ReasonNoOwnerSamples:
+		return "Prometheus holds no current or retained kube_pod_owner samples for this workload, so its pods cannot be mapped to it. Install or repair kube-state-metrics and let it scrape."
+	case prometheuspkg.ReasonNoUsageSamples, "no_usage_samples":
 		return "Prometheus answered but held no workload usage samples for the 7-day window. Check that it is scraping cAdvisor/kubelet metrics and has 7 days of retention."
 	case reasonNamespaceScopeLimited:
 		if pinned, ok := NamespacePinned(); ok {
-			return fmt.Sprintf("The scan succeeded but reached only namespace %s, which radar is pinned to with --namespace. Report it as that scope; this identity's permissions are not the limit.", pinned)
+			return fmt.Sprintf("The scan succeeded but reached only namespace %s, which radar is pinned to with --namespace-scope. Report it as that scope; this identity's permissions are not the limit.", pinned)
 		}
-		return "The scan succeeded but reached only the namespaces in namespaceScope — this identity cannot list workloads cluster-wide."
+		return "The scan succeeded but reached only the namespaces in namespaceScope — scope was resolved from this identity's per-namespace access rather than a cluster-wide grant, so namespaces outside that list were not scanned."
 	case "access_denied":
 		return "This identity cannot list workloads in the requested scope."
 	case ReasonOutsideNamespaceScope:
 		if pinned, ok := NamespacePinned(); ok {
-			return fmt.Sprintf("radar is pinned to namespace %s with --namespace, so the requested scope is outside what it can see. This is a startup flag, not a permissions problem — restart radar without --namespace to scan cluster-wide.", pinned)
+			return fmt.Sprintf("radar is pinned to namespace %s with --namespace-scope, so the requested scope is outside what it can see. This is a startup flag, not a permissions problem — restart radar without --namespace-scope to scan cluster-wide.", pinned)
 		}
-		return "radar is pinned to a single namespace with --namespace, so the requested scope is outside what it can see. This is a startup flag, not a permissions problem."
+		return "radar is pinned to a single namespace with --namespace-scope, so the requested scope is outside what it can see. This is a startup flag, not a permissions problem."
 	case "scan_deadline_exceeded":
 		return "The scan ran out of its 45-second budget before finishing. Narrow it with scope=\"namespace\", or target one workload with scope=\"workload\"."
 	default:
@@ -614,7 +658,7 @@ func rightsizingGuidance(in rightsizingGuidanceInput) string {
 		parts = append(parts, "Rows with reductionLimited=true were clamped: the recommendation is a conservative step toward observed usage (at most halving the request), not the fitted value. Apply it, let the workload settle, then re-check rather than cutting straight to observed.")
 	}
 	if !in.includeBalanced && !in.keepAll {
-		parts = append(parts, "Correctly-sized and unevidenced containers are omitted — see the omitted counts; pass include_balanced=true to see those rows. Rows carrying OOM history, a limit conflict, throttling or an autoscaler are always returned regardless of fit.")
+		parts = append(parts, "Correctly-sized and unevidenced containers are omitted — see the omitted counts; pass include_balanced=true to see those rows. Rows carrying OOM history, a limit conflict, throttling of 10% or more, or an autoscaler are always returned regardless of fit, as is every row of a scaledToZero workload.")
 	}
 	return strings.Join(parts, " ")
 }
@@ -640,13 +684,20 @@ func partialGuidance(in rightsizingGuidanceInput) []string {
 			causes = append(causes, fmt.Sprintf("coverage.restrictedKinds (%s) could not be listed by this identity", strings.Join(cov.RestrictedKinds, ", ")))
 		}
 		if len(cov.UnavailableKinds) > 0 {
-			causes = append(causes, fmt.Sprintf("coverage.unavailableKinds (%s) had no usable metrics", strings.Join(cov.UnavailableKinds, ", ")))
+			causes = append(causes, fmt.Sprintf("coverage.unavailableKinds (%s) had no readable informer cache, or (for Deployments) no ReplicaSet ownership metrics", strings.Join(cov.UnavailableKinds, ", ")))
 		}
 		if len(cov.PartiallyCachedKinds) > 0 {
 			causes = append(causes, fmt.Sprintf("coverage.partiallyCachedKinds (%s) are cached for only some namespaces, so those kinds were read in a narrower scope than requested", strings.Join(cov.PartiallyCachedKinds, ", ")))
 		}
 		if cov.Batches > 0 && cov.CompletedBatches < cov.Batches {
-			causes = append(causes, fmt.Sprintf("the scan stopped after %d of %d batches", cov.CompletedBatches, cov.Batches))
+			// CompletedBatches counts batches whose queries all answered, not
+			// batches that ran. Reporting it as "stopped after" told the agent
+			// the scan aborted while every workload had in fact been evaluated.
+			if cov.WorkloadsEvaluated < cov.WorkloadsDiscovered {
+				causes = append(causes, fmt.Sprintf("the scan stopped after %d of %d batches, evaluating %d of %d workloads", cov.CompletedBatches, cov.Batches, cov.WorkloadsEvaluated, cov.WorkloadsDiscovered))
+			} else {
+				causes = append(causes, fmt.Sprintf("%d of %d query batches had a failure, so some rows lack evidence", cov.Batches-cov.CompletedBatches, cov.Batches))
+			}
 		}
 	}
 	if in.omitted.InsufficientHistory > 0 {
@@ -656,7 +707,9 @@ func partialGuidance(in rightsizingGuidanceInput) []string {
 		causes = append(causes, fmt.Sprintf("%d row(s) failed their usage query (omitted.queryError)", in.omitted.QueryError))
 	}
 	if in.reason == reasonRowEvidenceIncomplete {
-		causes = append(causes, "some returned rows had a recommendation withheld for missing HPA or OOM evidence — see recommendationReason")
+		// This reason also covers short history, which is counted above, so the
+		// sentence must not assert that a withheld recommendation exists.
+		causes = append(causes, "any row whose recommendationReason names missing HPA or OOM evidence had its recommendation withheld")
 	}
 
 	if len(causes) == 0 {

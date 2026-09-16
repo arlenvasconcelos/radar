@@ -208,12 +208,7 @@ func NamespacePinned() (string, bool) {
 }
 
 // clampToNamespacePin applies only the --namespace pin, reporting false when the
-// request falls outside it. Tools that authorize with an exact SubjectAccessReview
-// use this rather than scopedNamespacesForUser so that MCP allows exactly what the
-// REST route allows: handleRightsizing gates on an exact "get" SAR and nothing
-// else, while the RBAC namespace list is derived from "list" sentinels, so a
-// caller holding "get" on a workload but not "list" would be denied here and
-// served there.
+// request falls outside it.
 func clampToNamespacePin(requested []string) ([]string, bool) {
 	if !k8s.ForceNamespaceScope {
 		return requested, true

@@ -385,3 +385,75 @@ func TestTotalUsageFailureLeavesUsageFieldsAtZeroAndFlagsThem(t *testing.T) {
 		t.Errorf("HourlyCost=%v, want 5.0", row.HourlyCost)
 	}
 }
+
+// A namespace the usage queries never reported is not a namespace that used
+// nothing. Both arrive as zero from the usage maps, and reporting the first as
+// 0% efficiency ranks the one namespace nobody measured as the worst waste in
+// the cluster.
+func TestUnmeasuredNamespaceIsFlagged_MeasuredZeroIsNot(t *testing.T) {
+	client := scriptedProm(t, []scriptedCase{
+		{contains: "container_cpu_allocation", body: vectorBody(map[string]float64{"measured": 2.0, "unmeasured": 2.0})},
+		{contains: "container_memory_allocation_bytes", body: vectorBody(map[string]float64{"measured": 1.0, "unmeasured": 1.0})},
+		// Both usage queries answer successfully, and both carry a real zero for
+		// "measured" while omitting "unmeasured" entirely.
+		{contains: "rate(container_cpu_usage_seconds_total", body: vectorBody(map[string]float64{"measured": 0})},
+		{contains: "container_memory_working_set_bytes", body: vectorBody(map[string]float64{"measured": 0})},
+	})
+
+	got := ComputeCostSummaryFromProm(context.Background(), client, SummaryOptions{})
+	if !got.Available {
+		t.Fatalf("summary unavailable: %+v", got)
+	}
+	rows := map[string]NamespaceCost{}
+	for _, ns := range got.Namespaces {
+		rows[ns.Name] = ns
+	}
+
+	measured, ok := rows["measured"]
+	if !ok {
+		t.Fatalf("measured namespace missing: %+v", got.Namespaces)
+	}
+	if measured.UsageUnavailable {
+		t.Error("a namespace whose usage series reported 0 was flagged unavailable; a real measurement of zero must survive")
+	}
+	if measured.Efficiency != 0 {
+		t.Errorf("measured.Efficiency=%v, want 0 — it genuinely used nothing", measured.Efficiency)
+	}
+
+	unmeasured, ok := rows["unmeasured"]
+	if !ok {
+		t.Fatalf("unmeasured namespace missing: %+v", got.Namespaces)
+	}
+	if !unmeasured.UsageUnavailable {
+		t.Error("a namespace absent from both usage results was not flagged UsageUnavailable, so it reports 0% efficiency as if measured")
+	}
+	if unmeasured.IdleCost != 0 {
+		t.Errorf("unmeasured.IdleCost=%v, want 0 — idle cannot be derived from usage that was never collected", unmeasured.IdleCost)
+	}
+
+	// Cluster efficiency must be built only from rows that were measured:
+	// alloc 2+1=3, usage 0 => 0%. Folding the unmeasured namespace's allocation
+	// in would double the denominator and halve the reported efficiency.
+	if got.ClusterEfficiency != 0 {
+		t.Errorf("ClusterEfficiency=%v, want 0 from the measured namespace alone", got.ClusterEfficiency)
+	}
+}
+
+// One usage query answering and the other not is still incomplete evidence:
+// efficiency built from half the inputs understates use on every row.
+func TestNamespaceMissingFromOneUsageResultIsFlagged(t *testing.T) {
+	client := scriptedProm(t, []scriptedCase{
+		{contains: "container_cpu_allocation", body: vectorBody(map[string]float64{"half": 2.0})},
+		{contains: "container_memory_allocation_bytes", body: vectorBody(map[string]float64{"half": 1.0})},
+		{contains: "rate(container_cpu_usage_seconds_total", body: vectorBody(map[string]float64{"half": 1.0})},
+		{contains: "container_memory_working_set_bytes", body: vectorBody(map[string]float64{})},
+	})
+
+	got := ComputeCostSummaryFromProm(context.Background(), client, SummaryOptions{})
+	if len(got.Namespaces) != 1 {
+		t.Fatalf("namespaces=%+v", got.Namespaces)
+	}
+	if !got.Namespaces[0].UsageUnavailable {
+		t.Error("namespace present in the CPU usage result but absent from memory was not flagged; partial evidence is still incomplete")
+	}
+}

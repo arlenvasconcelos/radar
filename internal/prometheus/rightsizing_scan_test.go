@@ -27,6 +27,8 @@ type fakeScanQuerier struct {
 	mu           sync.Mutex
 	queries      []string
 	rangeQueries []string
+	rangeStarts  []time.Time
+	rangeEnds    []time.Time
 	queryFn      func(string) (*prom.QueryResult, error)
 	rangeFn      func(string) (*prom.QueryResult, error)
 }
@@ -41,9 +43,11 @@ func (f *fakeScanQuerier) Query(_ context.Context, query string) (*prom.QueryRes
 	return &prom.QueryResult{}, nil
 }
 
-func (f *fakeScanQuerier) QueryRange(_ context.Context, query string, _, _ time.Time, _ time.Duration) (*prom.QueryResult, error) {
+func (f *fakeScanQuerier) QueryRange(_ context.Context, query string, start, end time.Time, _ time.Duration) (*prom.QueryResult, error) {
 	f.mu.Lock()
 	f.rangeQueries = append(f.rangeQueries, query)
+	f.rangeStarts = append(f.rangeStarts, start)
+	f.rangeEnds = append(f.rangeEnds, end)
 	f.mu.Unlock()
 	if f.rangeFn != nil {
 		return f.rangeFn(query)
@@ -771,5 +775,64 @@ func TestBoundWarningMessageLeavesShortMessagesAlone(t *testing.T) {
 	const short = "kube_pod_owner returned no series"
 	if got := boundWarningMessage(short); got != short {
 		t.Errorf("a short diagnostic must survive intact, got %q", got)
+	}
+}
+
+// Prometheus aligns subquery evaluation to the epoch, so the per-workload path
+// (quantile_over_time(0.95, X[7d:5m])) always samples the same instants. A range
+// query walks outward from its own start instead, so an unaligned start samples
+// different instants than the per-workload path just used — and for a gauge it
+// can straddle or skip a peak entirely. The two surfaces then disagree about the
+// same container, and the Rightsizing screen, which calls the scan, inherits it.
+func TestScanRangeWindowIsAlignedToTheSubqueryGrid(t *testing.T) {
+	stepSeconds := int64(rightsizingStep / time.Second)
+
+	for _, offset := range []time.Duration{0, 1 * time.Second, 137 * time.Second, 299 * time.Second} {
+		fake := &fakeScanQuerier{}
+		now := time.Unix(1789513500, 0).UTC().Add(offset)
+		queryRightsizingScanBatch(context.Background(), fake,
+			[]scanWorkload{scanTestWorkload("Deployment", "shop", "checkout", "api")}, now)
+
+		if len(fake.rangeStarts) == 0 {
+			t.Fatalf("offset %v: no range queries issued", offset)
+		}
+		for i, start := range fake.rangeStarts {
+			end := fake.rangeEnds[i]
+			if start.Unix()%stepSeconds != 0 {
+				t.Errorf("offset %v: range start %d is not a multiple of the %ds step; the scan samples a different grid than scope=workload",
+					offset, start.Unix(), stepSeconds)
+			}
+			if end.Unix()%stepSeconds != 0 {
+				t.Errorf("offset %v: range end %d is not a multiple of the %ds step", offset, end.Unix(), stepSeconds)
+			}
+			if got := end.Sub(start); got != rightsizingWindow {
+				t.Errorf("offset %v: window = %v, want %v", offset, got, rightsizingWindow)
+			}
+			// Alignment must round DOWN: a grid ending after the scan started
+			// would query the future and return a short series.
+			if end.After(now) {
+				t.Errorf("offset %v: range end %v is after the scan time %v", offset, end, now)
+			}
+		}
+	}
+}
+
+// Two scans a few seconds apart must read the same instants. Before alignment
+// they walked two different grids, and the same container reported a different
+// P95 depending on when the scan happened to run.
+func TestScansSecondsApartQueryTheSameWindow(t *testing.T) {
+	base := time.Unix(1789513500, 0).UTC()
+	var windows [][2]time.Time
+	for _, offset := range []time.Duration{3 * time.Second, 91 * time.Second, 288 * time.Second} {
+		fake := &fakeScanQuerier{}
+		queryRightsizingScanBatch(context.Background(), fake,
+			[]scanWorkload{scanTestWorkload("Deployment", "shop", "checkout", "api")}, base.Add(offset))
+		windows = append(windows, [2]time.Time{fake.rangeStarts[0], fake.rangeEnds[0]})
+	}
+	for i := 1; i < len(windows); i++ {
+		if !windows[i][0].Equal(windows[0][0]) || !windows[i][1].Equal(windows[0][1]) {
+			t.Errorf("scan %d queried %v–%v, scan 0 queried %v–%v; scans inside one step must sample identical instants",
+				i, windows[i][0], windows[i][1], windows[0][0], windows[0][1])
+		}
 	}
 }

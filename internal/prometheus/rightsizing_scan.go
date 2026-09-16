@@ -366,7 +366,16 @@ func queryRightsizingScanBatch(ctx context.Context, client rightsizingScanQuerie
 		cpu: map[scanKey][]float64{}, memory: map[scanKey][]float64{}, throttle: map[scanKey][]float64{},
 		restarts: map[scanKey]float64{}, terminations: map[scanKey]terminationEvidence{}, errors: map[string]error{},
 	}
-	start := now.Add(-rightsizingWindow)
+	// Prometheus aligns subquery steps to the epoch, so the per-workload path's
+	// quantile_over_time(0.95, X[7d:5m]) always samples timestamps that are
+	// multiples of the step. A range query instead walks outward from its own
+	// start, so an unaligned start samples the series at different instants and
+	// can read a different percentile — or miss a gauge's peak entirely —
+	// for the same container the per-workload path just measured. Truncating to
+	// the step puts both paths on one grid, which is what lets a caller drill
+	// from a scan into scope=workload and get the same numbers.
+	end := now.Truncate(rightsizingStep)
+	start := end.Add(-rightsizingWindow)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 2)
@@ -383,7 +392,7 @@ func queryRightsizingScanBatch(ctx context.Context, client rightsizingScanQuerie
 				mu.Unlock()
 				return
 			}
-			result, err := client.QueryRange(ctx, queries[key], start, now, rightsizingStep)
+			result, err := client.QueryRange(ctx, queries[key], start, end, rightsizingStep)
 			<-sem
 			mu.Lock()
 			defer mu.Unlock()

@@ -66,8 +66,21 @@ func NeedsManualReview(row RightsizingRow) bool {
 	if IsWithheldRecommendationReason(row.RecommendationReason) {
 		return true
 	}
-	throttled := row.ThrottleRatio != nil && *row.ThrottleRatio >= 0.1
+	throttled := row.ThrottleRatio != nil && *row.ThrottleRatio >= throttleReviewRatio
 	return isReduction(row) && (row.Bursty || throttled)
+}
+
+// throttleReviewRatio is the share of throttled CPU periods that makes a row
+// worth a human's attention. Shared so the review rule and the row filter
+// cannot drift apart on the number.
+const throttleReviewRatio = 0.1
+
+// SignificantlyThrottled reports throttling heavy enough that the row should
+// reach a reader whatever its fit says. classifyRightsizingFit settles fit from
+// the request alone, so a container throttled against a too-low limit reads as
+// correctly sized — which is precisely the row worth surfacing.
+func SignificantlyThrottled(row RightsizingRow) bool {
+	return row.ThrottleAvailable && row.ThrottleRatio != nil && *row.ThrottleRatio >= throttleReviewRatio
 }
 
 func isReduction(row RightsizingRow) bool {
@@ -177,4 +190,44 @@ func formatSignedRightsizingValue(v float64, resourceName string) string {
 		return fmt.Sprintf("%s%.0fMi", sign, magnitude/mi)
 	}
 	return ""
+}
+
+// ClassifyWorkloadRows classifies a workload from the containers that actually
+// have evidence. The Rightsizing screen ranks each container as its own entry,
+// so one unevidenced sidecar never hides an oversized app container there;
+// classifying every row of a workload at once made the whole workload
+// need_data and pushed real savings past the response limit.
+//
+// Unevidenced containers are dropped rather than letting the best container
+// win outright: ClassifyRows' precedence is a safety rule — an under-requested
+// container decides the class over an oversized one, because under-requesting
+// is the failure that takes the workload down — and classRank's reduction-first
+// order is a sort rule for the screen. Picking by classRank would let the sort
+// rule overturn the safety rule on a workload carrying both.
+func ClassifyWorkloadRows(rows []RightsizingRow, replicas int, scaledToZero bool) RightsizingClass {
+	// No rows is no evidence. ClassifyRows would answer in_range, which reads
+	// as "correctly sized" on exactly the workloads — init-only or empty pod
+	// templates — the response has already declared it cannot judge.
+	if len(rows) == 0 {
+		return ClassNeedData
+	}
+	byContainer := make(map[string][]RightsizingRow, len(rows))
+	order := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if _, seen := byContainer[row.Container]; !seen {
+			order = append(order, row.Container)
+		}
+		byContainer[row.Container] = append(byContainer[row.Container], row)
+	}
+	evidenced := make([]RightsizingRow, 0, len(rows))
+	for _, container := range order {
+		if ClassifyRows(byContainer[container], replicas, scaledToZero) == ClassNeedData {
+			continue
+		}
+		evidenced = append(evidenced, byContainer[container]...)
+	}
+	if len(evidenced) == 0 {
+		return ClassNeedData
+	}
+	return ClassifyRows(evidenced, replicas, scaledToZero)
 }

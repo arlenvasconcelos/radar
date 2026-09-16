@@ -329,11 +329,15 @@ func TestSummarizeTrendPreComputesDirection(t *testing.T) {
 func TestChangePercentIsAbsentFromZero(t *testing.T) {
 	// Reporting 0% from a zero start would say spend held flat when it in fact
 	// appeared.
-	if got := changePercent(0, 5); got != nil {
+	if got := changePercent(2, 0, 5); got != nil {
 		t.Errorf("a change from zero is undefined, got %v", *got)
 	}
-	if got := changePercent(4, 3); got == nil || *got != -25 {
+	if got := changePercent(2, 4, 3); got == nil || *got != -25 {
 		t.Errorf("expected -25%%, got %v", got)
+	}
+	// A single sample spans no interval, so start and end are the same point.
+	if got := changePercent(1, 4, 3); got != nil {
+		t.Errorf("one point cannot express a change, got %v", *got)
 	}
 }
 
@@ -352,5 +356,102 @@ func TestCostRemediationNamesThePinRatherThanPermissions(t *testing.T) {
 func TestWorkloadNotFoundIsDistinctFromAnEmptyNamespace(t *testing.T) {
 	if got := costRemediation(reasonWorkloadNotFound); got == "" {
 		t.Error("a no-match selector needs its own remediation, not an empty list")
+	}
+}
+
+// With kind+name the rows are one workload rather than a truncation of the
+// namespace, so a namespace-wide total sitting beside them is read as that
+// workload's spend — the agent then reports the namespace's bill for one
+// Deployment.
+func TestSelectedWorkloadTotalsCoverOnlyTheSelection(t *testing.T) {
+	rows := []pkgopencost.WorkloadCost{
+		{Name: "checkout", Kind: "Deployment", HourlyCost: 2},
+		{Name: "orders", Kind: "StatefulSet", HourlyCost: 3},
+		{Name: "telemetry", Kind: "DaemonSet", HourlyCost: 5},
+	}
+
+	if got := sumWorkloadHourly(rows); got != 10 {
+		t.Fatalf("namespace total should cover every workload, got %v", got)
+	}
+
+	selected := selectWorkloadCost(rows, "Deployment", "checkout")
+	if got := sumWorkloadHourly(selected); got != 2 {
+		t.Errorf("a selected workload's total must be its own cost, not the namespace's: %v", got)
+	}
+}
+
+// The namespace explainer tells the agent the totals do not reconcile with the
+// summary view's namespace row. Under a selector that sentence describes a
+// total the response no longer carries.
+func TestSelectedWorkloadGuidanceDoesNotClaimNamespaceTotals(t *testing.T) {
+	if !strings.Contains(costSelectedWorkloadTotalExplainer, "not the namespace") {
+		t.Errorf("selector guidance must say the totals exclude the namespace: %q", costSelectedWorkloadTotalExplainer)
+	}
+	if costSelectedWorkloadTotalExplainer == costWorkloadTotalExplainer {
+		t.Error("the selector and ranking paths report different totals, so they cannot share one explainer")
+	}
+}
+
+// A single data point has no interval, so start and end are the same sample.
+// Reporting 0% there told the agent spend held flat over a window never seen.
+func TestSinglePointTrendReportsNoChangePercent(t *testing.T) {
+	series, total := summarizeTrend([]pkgopencost.CostTrendSeries{{
+		Namespace:  "shop",
+		DataPoints: []pkgopencost.CostDataPoint{{Timestamp: 1700000000, Value: 0.5}},
+	}})
+	if len(series) != 1 || series[0].ChangePercent != nil {
+		t.Errorf("one point cannot state a change, got %+v", series)
+	}
+	if total == nil || total.ChangePercent != nil {
+		t.Errorf("the cluster total must not claim flat spend from one point, got %+v", total)
+	}
+}
+
+// Two points do carry a change, so the guard must not suppress a real one.
+func TestTwoPointTrendStillReportsChangePercent(t *testing.T) {
+	_, total := summarizeTrend([]pkgopencost.CostTrendSeries{{
+		Namespace: "shop",
+		DataPoints: []pkgopencost.CostDataPoint{
+			{Timestamp: 1700000000, Value: 1},
+			{Timestamp: 1700003600, Value: 2},
+		},
+	}})
+	if total == nil || total.ChangePercent == nil || *total.ChangePercent != 100 {
+		t.Fatalf("expected +100%%, got %+v", total)
+	}
+}
+
+// A cluster whose namespaces all lack usage evidence has nothing to average,
+// so the aggregate must read as unmeasured rather than as a measured 0%.
+func TestClusterEfficiencyIsNullWhenNoNamespaceHasUsage(t *testing.T) {
+	if !allUsageUnavailable([]pkgopencost.NamespaceCost{{Name: "a", UsageUnavailable: true}}) {
+		t.Error("a row without usage evidence cannot support an aggregate")
+	}
+	if allUsageUnavailable([]pkgopencost.NamespaceCost{{Name: "a", UsageUnavailable: true}, {Name: "b"}}) {
+		t.Error("one measured row is enough to report the aggregate")
+	}
+	// Zero is a measurement and must survive the wire.
+	measured := measuredEfficiency(0, false)
+	if measured == nil || *measured != 0 {
+		t.Errorf("0%% efficiency is a measurement, got %v", measured)
+	}
+	if measuredEfficiency(0, true) != nil {
+		t.Error("unavailable usage must report null, not zero")
+	}
+}
+
+// The aggregate covers only the rows with usage evidence. When some rows have
+// none, the response has to say so — the rows it left out may be past the cap.
+func TestPartialUsageEvidenceIsNamedInGuidance(t *testing.T) {
+	mixed := []pkgopencost.NamespaceCost{{Name: "a"}, {Name: "b", UsageUnavailable: true}}
+	if !strings.Contains(partialUsageGuidance(mixed), "1 of 2 namespaces") {
+		t.Errorf("a mixed result must name the missing rows, got %q", partialUsageGuidance(mixed))
+	}
+	// All-or-nothing is covered by clusterEfficiency going null, not by prose.
+	if partialUsageGuidance([]pkgopencost.NamespaceCost{{Name: "a"}}) != "" {
+		t.Error("a fully measured result needs no qualification")
+	}
+	if partialUsageGuidance([]pkgopencost.NamespaceCost{{Name: "a", UsageUnavailable: true}}) != "" {
+		t.Error("a fully unmeasured result reports null efficiency instead")
 	}
 }

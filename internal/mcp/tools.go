@@ -506,12 +506,12 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 	addToolWithRegistry(paramRegistry, server, &mcp.Tool{
 		Name: "get_cost",
 		Description: "Use for cluster spend questions: what a cluster, namespace, workload, or " +
-			"node costs, where the money goes, and whether spend is growing. Reads OpenCost or " +
-			"Kubecost through Prometheus, so it handles currency, idle attribution, and source " +
+			"node costs, where the money goes, and whether spend is growing. Reads OpenCost through " +
+			"Prometheus or Kubecost directly, so it handles currency, idle attribution, and source " +
 			"differences you would get wrong hand-writing PromQL. This is SPEND, not usage — for " +
 			"whether a request should change, use get_rightsizing. view=summary (default) returns " +
 			"cluster totals plus per-namespace rows and usually answers the question in one call; " +
-			"view=workloads breaks one namespace down (namespace required, or pass kind+name for " +
+			"view=workloads breaks one namespace down (namespace required; add kind+name for " +
 			"one workload); view=nodes ranks node spend; view=trend returns spend over time. " +
 			"When available=false, reason and remediation say what is missing — report that " +
 			"rather than concluding the cluster has no cost data. Every response explains its " +

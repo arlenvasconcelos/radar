@@ -278,12 +278,38 @@ func TestPartialGuidanceNamesTheCausePresent(t *testing.T) {
 		t.Errorf("partial caching can be the only reason for partial, so it must be named: %q", cached)
 	}
 
+	// An early stop is the case where workloads went unevaluated. Counting
+	// batches alone cannot distinguish it from a batch whose queries failed,
+	// so the fixture states the workload counts that make it a stop.
 	truncatedScan := rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "cluster",
-		coverage: &prometheuspkg.RightsizingScanCoverage{Batches: 3, CompletedBatches: 1},
+		coverage: &prometheuspkg.RightsizingScanCoverage{
+			Batches: 3, CompletedBatches: 1,
+			WorkloadsDiscovered: 10, WorkloadsEvaluated: 4,
+		},
 	})
 	if !strings.Contains(truncatedScan, "1 of 3 batches") {
 		t.Errorf("an early stop must be stated with its counts: %q", truncatedScan)
+	}
+	if !strings.Contains(truncatedScan, "4 of 10 workloads") {
+		t.Errorf("an early stop must say how many workloads went unevaluated: %q", truncatedScan)
+	}
+
+	// CompletedBatches counts batches whose queries all answered, not batches
+	// that ran. With every workload evaluated the scan did not stop, and
+	// saying so would send the agent to narrow a scope that was never cut.
+	failedQueries := rightsizingGuidance(rightsizingGuidanceInput{
+		state: prometheuspkg.RightsizingScanPartial, scope: "cluster",
+		coverage: &prometheuspkg.RightsizingScanCoverage{
+			Batches: 3, CompletedBatches: 1,
+			WorkloadsDiscovered: 10, WorkloadsEvaluated: 10,
+		},
+	})
+	if strings.Contains(failedQueries, "stopped after") {
+		t.Errorf("a fully-evaluated scan did not stop early: %q", failedQueries)
+	}
+	if !strings.Contains(failedQueries, "2 of 3 query batches had a failure") {
+		t.Errorf("failed query batches must still be named as the cause: %q", failedQueries)
 	}
 }
 
@@ -399,6 +425,8 @@ func TestRightsizingPartialGuidanceNamesEveryCoverageCause(t *testing.T) {
 			PartiallyCachedKinds: []string{"StatefulSet"},
 			Batches:              3,
 			CompletedBatches:     1,
+			WorkloadsDiscovered:  10,
+			WorkloadsEvaluated:   4,
 		},
 	})
 	for _, cause := range []string{"restrictedKinds", "unavailableKinds", "partiallyCachedKinds", "1 of 3 batches"} {
@@ -691,4 +719,161 @@ func scanReasonsAssignedInEngine(t *testing.T) []string {
 		t.Fatal("found no machine reasons in the scan engine — the pattern no longer matches")
 	}
 	return reasons
+}
+
+// The Rightsizing screen ranks each container as its own entry, so a workload
+// whose sidecar has no evidence still shows its oversized app container at the
+// top. Classifying every row of the workload at once demoted the whole workload
+// to need_data and pushed real savings past the response limit.
+func TestUnevidencedSidecarDoesNotDemoteTheWorkload(t *testing.T) {
+	app := rightsizingRow(prometheuspkg.FitOversized, 4, 1)
+	sidecar := rightsizingRow(prometheuspkg.FitInsufficientHistory, 1, 1)
+	sidecar.Container = "istio-proxy"
+
+	filtered := filterRightsizingRows([]prometheuspkg.RightsizingRow{app, sidecar}, false, false, 3, false)
+	if filtered.classification != prometheuspkg.ClassReduction {
+		t.Fatalf("workload must rank by its best container, got %q", filtered.classification)
+	}
+	// The sidecar is still reported as missing evidence, not as a clean bill.
+	if !filtered.incompleteEvidence || filtered.omitted.InsufficientHistory != 1 {
+		t.Errorf("the unevidenced sidecar must still be reported, got incomplete=%v omitted=%+v",
+			filtered.incompleteEvidence, filtered.omitted)
+	}
+}
+
+// A workload with nothing actionable anywhere still classifies as need_data:
+// taking the best container must not upgrade a workload that has no evidence.
+func TestEveryContainerUnevidencedStaysNeedData(t *testing.T) {
+	first := rightsizingRow(prometheuspkg.FitInsufficientHistory, 1, 1)
+	second := rightsizingRow(prometheuspkg.FitInsufficientHistory, 1, 1)
+	second.Container = "istio-proxy"
+
+	filtered := filterRightsizingRows([]prometheuspkg.RightsizingRow{first, second}, false, false, 1, false)
+	if filtered.classification != prometheuspkg.ClassNeedData {
+		t.Fatalf("expected need_data when no container has evidence, got %q", filtered.classification)
+	}
+}
+
+// Dropping unevidenced containers must not let the screen's reduction-first
+// sort order overturn the safety precedence: a workload with both an
+// under-requested container and an oversized one is still an increase, even
+// when a third container has no evidence at all.
+func TestUnevidencedContainerDoesNotFlipIncreaseToReduction(t *testing.T) {
+	under := rightsizingRow(prometheuspkg.FitUnderRequested, 0.05, 0.2)
+	over := rightsizingRow(prometheuspkg.FitOversized, 4, 1)
+	over.Container = "sidecar"
+	blind := rightsizingRow(prometheuspkg.FitInsufficientHistory, 1, 1)
+	blind.Container = "istio-proxy"
+
+	filtered := filterRightsizingRows([]prometheuspkg.RightsizingRow{over, under, blind}, false, false, 1, false)
+	if filtered.classification != prometheuspkg.ClassIncrease {
+		t.Errorf("under-requested must still decide the class, got %q", filtered.classification)
+	}
+}
+
+// classifyRightsizingFit settles fit from the request alone, so a container
+// throttled against a too-low limit is reported balanced. The guidance promises
+// throttled rows are always returned regardless of fit; keeping that promise is
+// what surfaces the row an agent is actually looking for.
+func TestFilterRightsizingRowsKeepsThrottledBalancedRows(t *testing.T) {
+	ratio := 0.25
+	throttled := rightsizingRow(prometheuspkg.FitBalanced, 1, 1)
+	throttled.ThrottleAvailable = true
+	throttled.ThrottleRatio = &ratio
+
+	quiet := rightsizingRow(prometheuspkg.FitBalanced, 1, 1)
+
+	filtered := filterRightsizingRows([]prometheuspkg.RightsizingRow{throttled, quiet}, false, false, 1, false)
+	if len(filtered.rows) != 1 {
+		t.Fatalf("the throttled row must survive the default filter, got %d rows", len(filtered.rows))
+	}
+	if filtered.rows[0].ThrottleRatio == nil || *filtered.rows[0].ThrottleRatio != "25.0%" {
+		t.Errorf("the surviving row should carry its throttle ratio, got %v", filtered.rows[0].ThrottleRatio)
+	}
+	if filtered.omitted.Balanced != 1 {
+		t.Errorf("only the unthrottled balanced row is omitted, got %d", filtered.omitted.Balanced)
+	}
+}
+
+// Throttling below the review threshold is ordinary; keeping those rows would
+// return every balanced container and bury the ones worth reading.
+func TestFilterRightsizingRowsDropsLightlyThrottledBalancedRows(t *testing.T) {
+	ratio := 0.02
+	light := rightsizingRow(prometheuspkg.FitBalanced, 1, 1)
+	light.ThrottleAvailable = true
+	light.ThrottleRatio = &ratio
+
+	filtered := filterRightsizingRows([]prometheuspkg.RightsizingRow{light}, false, false, 1, false)
+	if len(filtered.rows) != 0 {
+		t.Errorf("light throttling is not a reason to keep a balanced row: %+v", filtered.rows)
+	}
+}
+
+// The filter's contract says a throttled row is never dropped. fit is settled
+// from the request alone, so a container throttled against a too-low limit
+// reads as balanced — and NeedsManualReview only covers throttling on a row
+// that also carries a reduction, so the balanced one fell through.
+func TestFilterKeepsThrottledRowDespiteBalancedFit(t *testing.T) {
+	row := rightsizingRow(prometheuspkg.FitBalanced, 1, 1)
+	ratio := 0.35
+	row.ThrottleAvailable = true
+	row.ThrottleRatio = &ratio
+
+	filtered := filterRightsizingRows([]prometheuspkg.RightsizingRow{row}, false, false, 1, false)
+	if len(filtered.rows) != 1 {
+		t.Fatalf("a throttled row must survive the default filter, got %d rows", len(filtered.rows))
+	}
+	if filtered.omitted.total() != 0 {
+		t.Errorf("the throttled row must not be counted as withheld, got %+v", filtered.omitted)
+	}
+}
+
+// A workload the response has already declared unjudgeable must not carry a
+// classification that reads as a verdict that it is correctly sized.
+func TestWorkloadWithNoRowsIsNeedDataNotInRange(t *testing.T) {
+	filtered := filterRightsizingRows(nil, false, false, 1, false)
+	if filtered.classification != prometheuspkg.ClassNeedData {
+		t.Errorf("no rows means no evidence, got %q", filtered.classification)
+	}
+}
+
+func TestWorkloadScopeHonoursTheNamespaceAllowList(t *testing.T) {
+	// An exact "get" grant outside the caller's namespace allow-list must not
+	// reach the SA-backed cache — the REST route denies the same request.
+	ctx := withTestUserPerms(t, "bob", nil, []string{"team-a"})
+	getPermCache().Get("bob", nil).SetCanI("get", "apps", "deployments", "team-b", true)
+
+	_, _, err := handleGetRightsizing(ctx, nil, getRightsizingInput{
+		Scope: "workload", Kind: "Deployment", Namespace: "team-b", Name: "api",
+	})
+	if err == nil || !strings.Contains(err.Error(), "forbidden") {
+		t.Fatalf("expected forbidden outside the allow-list, got %v", err)
+	}
+}
+
+// A scaled-to-zero workload classifies as review, which the Rightsizing screen
+// lists among its actions; filtering its balanced rows dropped the workload.
+func TestFilterKeepsScaledToZeroWorkloadRows(t *testing.T) {
+	row := rightsizingRow(prometheuspkg.FitBalanced, 1, 1)
+	filtered := filterRightsizingRows([]prometheuspkg.RightsizingRow{row}, false, false, 0, true)
+	if filtered.classification != prometheuspkg.ClassReview {
+		t.Fatalf("classification = %q, want review", filtered.classification)
+	}
+	if len(filtered.rows) != 1 || filtered.omitted.total() != 0 {
+		t.Errorf("a scaled-to-zero workload must keep its rows, got %d rows, omitted %+v", len(filtered.rows), filtered.omitted)
+	}
+}
+
+func TestThrottleAvailabilityOnlyEmittedForCPURows(t *testing.T) {
+	cpu := rightsizingRow(prometheuspkg.FitOversized, 4, 1)
+	memory := rightsizingRow(prometheuspkg.FitOversized, 4, 1)
+	memory.Resource = "memory"
+
+	out := filterRightsizingRows([]prometheuspkg.RightsizingRow{cpu, memory}, false, false, 1, false).rows
+	if out[0].ThrottleAvailable == nil || *out[0].ThrottleAvailable {
+		t.Errorf("an unmeasured CPU row must say throttleAvailable=false, got %v", out[0].ThrottleAvailable)
+	}
+	if out[1].ThrottleAvailable != nil {
+		t.Error("throttling never gates a memory recommendation; the flag must be absent there")
+	}
 }
