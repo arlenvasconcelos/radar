@@ -254,11 +254,7 @@ func specReplicas(replicas *int32) int {
 // check it before authorizing, so an unsupported kind gets that answer instead
 // of a denial from a SubjectAccessReview against a resource that cannot exist.
 func IsRightsizingKind(kind string) bool {
-	switch strings.ToLower(kind) {
-	case "deployment", "statefulset", "daemonset":
-		return true
-	}
-	return false
+	return ScanKindResource(kind) != ""
 }
 
 type containerSpec struct {
@@ -330,7 +326,7 @@ func loadRightsizingWorkload(ctx context.Context, kind, namespace, name string) 
 		podTemplate = &d.Spec.Template.Spec
 		managedBy = detectWorkloadManager(d)
 		replicas = specReplicas(d.Spec.Replicas)
-		scaledToZero = d.Spec.Replicas != nil && *d.Spec.Replicas == 0
+		scaledToZero = replicas == 0
 	case "statefulset":
 		if cache.StatefulSets() == nil {
 			return rightsizingWorkload{}, fmt.Errorf("%w: statefulsets", errKindRBACDenied)
@@ -342,7 +338,7 @@ func loadRightsizingWorkload(ctx context.Context, kind, namespace, name string) 
 		podTemplate = &ss.Spec.Template.Spec
 		managedBy = detectWorkloadManager(ss)
 		replicas = specReplicas(ss.Spec.Replicas)
-		scaledToZero = ss.Spec.Replicas != nil && *ss.Spec.Replicas == 0
+		scaledToZero = replicas == 0
 	case "daemonset":
 		if cache.DaemonSets() == nil {
 			return rightsizingWorkload{}, fmt.Errorf("%w: daemonsets", errKindRBACDenied)
@@ -820,10 +816,7 @@ func DemandTargetBasis(row RightsizingRow) string {
 	if row.Observed == nil {
 		return ""
 	}
-	minimum := float64(rightsizingMemoryMin)
-	if row.Resource == "cpu" {
-		minimum = rightsizingCPUMin
-	}
+	minimum := rightsizingMinimum(row.Resource)
 	if row.Observed.Value*rightsizingHeadroom < minimum {
 		return "minimum request " + formatRightsizingValue(minimum, row.Resource)
 	}
@@ -831,11 +824,14 @@ func DemandTargetBasis(row RightsizingRow) string {
 }
 
 func calculatedRequest(observed float64, resourceName string) string {
-	minimum := float64(rightsizingMemoryMin)
+	return formatRightsizingValue(max(observed*rightsizingHeadroom, rightsizingMinimum(resourceName)), resourceName)
+}
+
+func rightsizingMinimum(resourceName string) float64 {
 	if resourceName == "cpu" {
-		minimum = rightsizingCPUMin
+		return rightsizingCPUMin
 	}
-	return formatRightsizingValue(max(observed*rightsizingHeadroom, minimum), resourceName)
+	return float64(rightsizingMemoryMin)
 }
 
 func recommendRequest(observed float64, current *resource.Quantity, resourceName string, conservative bool) (string, bool) {

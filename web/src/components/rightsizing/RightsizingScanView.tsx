@@ -8,6 +8,7 @@ import {
   PageHeader,
   SearchBox,
   SelectMenu,
+  pluralize,
 } from '@skyhook-io/k8s-ui'
 import { Badge } from '@skyhook-io/k8s-ui/components/ui/Badge'
 import {
@@ -553,7 +554,7 @@ function ScanNotices({ result, rows }: { result: ScanResult; rows: RightsizingSc
   // The DaemonSet-only empty state already says this.
   if (daemonSetsWithoutNodes > 0 && result.reason !== 'only_daemonsets_without_nodes')
     notices.push(
-      `${daemonSetsWithoutNodes} DaemonSet${daemonSetsWithoutNodes === 1 ? '' : 's'} run on no node right now and ${daemonSetsWithoutNodes === 1 ? 'is' : 'are'} not listed. Open one from Resources to see recommendations from its retained history.`,
+      `${pluralize(daemonSetsWithoutNodes, 'DaemonSet')} run on no node right now and ${daemonSetsWithoutNodes === 1 ? 'is' : 'are'} not listed. Open one from Resources to see recommendations from its retained history.`,
     )
   for (const warning of result.warnings ?? []) notices.push(warningMessage(warning.code))
   if (rows.length > 0 && rows.every((row) => row.classification === 'need_data'))

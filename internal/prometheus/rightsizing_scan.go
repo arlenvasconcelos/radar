@@ -142,11 +142,9 @@ type RightsizingScanCoverage struct {
 	// clusters dozens of them would otherwise fill the ranked list.
 	DaemonSetsWithoutNodes int `json:"daemonSetsWithoutNodes,omitempty"`
 	// SkippedDaemonSets names them as namespace/name, sorted, so a caller can
-	// read one's retained history directly; SkippedDaemonSetNamespaces keeps a
-	// namespace holding only them from being reported as empty.
-	SkippedDaemonSets          []string `json:"-"`
-	SkippedDaemonSetNamespaces []string `json:"-"`
-	deniedKinds                []string
+	// read one's retained history directly.
+	SkippedDaemonSets []string `json:"-"`
+	deniedKinds       []string
 }
 
 type RightsizingScanWorkload struct {
@@ -219,10 +217,6 @@ func ScanRightsizing(ctx context.Context, scope RightsizingScanScope) Rightsizin
 	resp.Coverage.DaemonSetsWithoutNodes = len(skippedDaemonSets)
 	sort.Strings(skippedDaemonSets)
 	resp.Coverage.SkippedDaemonSets = skippedDaemonSets
-	for _, identity := range skippedDaemonSets {
-		namespace, _, _ := strings.Cut(identity, "/")
-		resp.Coverage.SkippedDaemonSetNamespaces = appendUniqueSorted(resp.Coverage.SkippedDaemonSetNamespaces, namespace)
-	}
 	return computeRightsizingScan(ctx, client, workloads, resp)
 }
 
@@ -357,7 +351,7 @@ func computeRightsizingScan(ctx context.Context, client rightsizingScanQuerier, 
 	resp.Coverage.Batches = (len(workloads) + rightsizingScanBatchSize - 1) / rightsizingScanBatchSize
 	for start := 0; start < len(workloads); start += rightsizingScanBatchSize {
 		if err := ctx.Err(); err != nil {
-			appendScanWarning(&resp, "scan_deadline_exceeded", err.Error())
+			appendScanWarning(&resp, ReasonScanDeadlineExceeded, err.Error())
 			break
 		}
 		end := min(start+rightsizingScanBatchSize, len(workloads))
@@ -372,7 +366,7 @@ func computeRightsizingScan(ctx context.Context, client rightsizingScanQuerier, 
 			// The loop-top check never sees a deadline that cut the last batch:
 			// its queries fail with the context error and there is no next pass.
 			if err := ctx.Err(); err != nil {
-				appendScanWarning(&resp, "scan_deadline_exceeded", err.Error())
+				appendScanWarning(&resp, ReasonScanDeadlineExceeded, err.Error())
 			}
 		}
 		for _, workload := range batch {
@@ -744,6 +738,10 @@ func workloadHasUnavailableOOMEvidence(workload RightsizingScanWorkload) bool {
 	return false
 }
 
+// ReasonScanDeadlineExceeded is the warning a scan records when its context
+// ended before every batch answered.
+const ReasonScanDeadlineExceeded = "scan_deadline_exceeded"
+
 func appendScanWarning(resp *RightsizingScanResponse, code, message string) {
 	for _, warning := range resp.Warnings {
 		if warning.Code == code {
@@ -849,11 +847,8 @@ func snapshotScanWorkloads(ctx context.Context, cache *k8s.ResourceCache, scopes
 			unavailable = append(unavailable, "Deployment")
 		} else {
 			for _, item := range items {
-				replicas := int32(1)
-				if item.Spec.Replicas != nil {
-					replicas = *item.Spec.Replicas
-				}
-				add(item, "Deployment", int(replicas), &item.Spec.Template.Spec, replicas == 0)
+				replicas := specReplicas(item.Spec.Replicas)
+				add(item, "Deployment", replicas, &item.Spec.Template.Spec, replicas == 0)
 			}
 		}
 	}
@@ -865,11 +860,8 @@ func snapshotScanWorkloads(ctx context.Context, cache *k8s.ResourceCache, scopes
 			unavailable = append(unavailable, "StatefulSet")
 		} else {
 			for _, item := range items {
-				replicas := int32(1)
-				if item.Spec.Replicas != nil {
-					replicas = *item.Spec.Replicas
-				}
-				add(item, "StatefulSet", int(replicas), &item.Spec.Template.Spec, replicas == 0)
+				replicas := specReplicas(item.Spec.Replicas)
+				add(item, "StatefulSet", replicas, &item.Spec.Template.Spec, replicas == 0)
 			}
 		}
 	}

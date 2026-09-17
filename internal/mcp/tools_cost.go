@@ -334,7 +334,7 @@ func costSummaryView(ctx context.Context, input getCostInput, limit int) (*mcp.C
 		if reason != "" {
 			return toJSONResult(base.unavailable(reason, currency, "prometheus"))
 		}
-		summary = pkgopencost.ComputeCostSummaryFromProm(ctx, client, pkgopencost.SummaryOptions{Currency: currency})
+		summary = pkgopencost.ComputeCostSummaryFromProm(ctx, client, pkgopencost.SummaryOptions{Currency: currency, SkipNodeCost: allowed != nil})
 		summary.Source = "prometheus"
 	}
 
@@ -368,7 +368,7 @@ func costSummaryView(ctx context.Context, input getCostInput, limit int) (*mcp.C
 
 	resp.Totals = hourlyTotals(summary.TotalHourlyCost)
 	resp.Totals.HourlyCostBasis = summary.HourlyCostBasis
-	resp.Totals.AllocatedCost = roundedCost(summary.TotalAllocatedCost)
+	resp.Totals.AllocatedCost = measuredValue(summary.TotalAllocatedCost, false)
 	resp.Totals.UnallocatedCost = &nullableCost{value: summary.TotalUnallocatedCost}
 	resp.Totals.UnusedRequestCost = measuredUnusedRequestCost(summary)
 	resp.Totals.StorageCost = roundHourly(summary.TotalStorageCost)
@@ -404,15 +404,7 @@ func costSummaryView(ctx context.Context, input getCostInput, limit int) (*mcp.C
 // clusterEfficiency: a 0 there would claim nothing is wasted rather than that
 // nothing was measured.
 func measuredUnusedRequestCost(summary *pkgopencost.CostSummary) *float64 {
-	if allUsageUnavailable(summary.Namespaces) {
-		return nil
-	}
-	return roundedCost(summary.TotalUnusedRequestCost)
-}
-
-func roundedCost(value float64) *float64 {
-	rounded := roundHourly(value)
-	return &rounded
+	return measuredValue(summary.TotalUnusedRequestCost, allUsageUnavailable(summary.Namespaces))
 }
 
 // costSplitGuidance says what hourlyCost contains, because the Prometheus path
@@ -560,6 +552,7 @@ func costWorkloadsView(ctx context.Context, input getCostInput, limit int) (*mcp
 	resp.Truncated = truncated
 	resp.Workloads = make([]workloadCostRow, 0, len(rows))
 	for _, row := range rows {
+		unavailable := !row.CPUUsageAvailable || !row.MemoryUsageAvailable
 		resp.Workloads = append(resp.Workloads, workloadCostRow{
 			Name:              row.Name,
 			Kind:              row.Kind,
@@ -567,9 +560,9 @@ func costWorkloadsView(ctx context.Context, input getCostInput, limit int) (*mcp
 			HourlyCost:        roundHourly(row.HourlyCost),
 			CPUCost:           roundHourly(row.CPUCost),
 			MemoryCost:        roundHourly(row.MemoryCost),
-			UnusedRequestCost: measuredValue(row.IdleCost, !row.CPUUsageAvailable || !row.MemoryUsageAvailable),
-			Efficiency:        measuredValue(row.Efficiency, !row.CPUUsageAvailable || !row.MemoryUsageAvailable),
-			UsageUnavailable:  !row.CPUUsageAvailable || !row.MemoryUsageAvailable,
+			UnusedRequestCost: measuredValue(row.IdleCost, unavailable),
+			Efficiency:        measuredValue(row.Efficiency, unavailable),
+			UsageUnavailable:  unavailable,
 		})
 	}
 	totalsExplainer := costWorkloadTotalExplainer
@@ -779,9 +772,7 @@ func costTrendView(ctx context.Context, input getCostInput) (*mcp.CallToolResult
 	if trend.Range != "" {
 		resp.Range = trend.Range
 	}
-	if allowed != nil {
-		resp.NamespaceScope = allowed
-	}
+	resp.NamespaceScope = allowed
 	resp.Guidance = costTrendGuidance(allowed, strings.TrimSpace(input.Namespace))
 	if !trend.Available {
 		if scopedEmptyResult(trend.Reason, allowed) {
@@ -958,15 +949,6 @@ func truncateRows[T any](rows []T, limit int) ([]T, bool) {
 		return rows[:limit], true
 	}
 	return rows, false
-}
-
-// deniedScopeReason keeps the pin out of the RBAC bucket: "you cannot read
-// this" and "radar was started with --namespace" need different answers.
-func deniedScopeReason(requested []string) string {
-	if reason := DeniedScopeReason(requested); reason != "" {
-		return reason
-	}
-	return pkgopencost.ReasonAccessDenied
 }
 
 func costRemediation(reason string) string {

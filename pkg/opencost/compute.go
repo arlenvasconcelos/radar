@@ -51,6 +51,12 @@ type SummaryOptions struct {
 	// Currency label returned in the response (default "USD").
 	Currency string
 
+	// SkipNodeCost leaves out the node-cost and GPU queries behind
+	// TotalUnallocatedCost and the node_capacity basis, for callers that
+	// discard them: a namespace filter resets both, and an availability probe
+	// reads neither.
+	SkipNodeCost bool
+
 	// Window passed to OpenCost and echoed in the response (default "1h").
 	// For PromQL paths this is a response label only; the query itself has
 	// fixed time windows baked in. For REST paths it's forwarded to OpenCost.
@@ -303,6 +309,19 @@ func ComputeCostSummary(ctx context.Context, client *RESTClient, opts SummaryOpt
 	}
 }
 
+// queryNodeTotalCost reads the cluster's total node cost, unless the caller
+// asked to skip it.
+func queryNodeTotalCost(ctx context.Context, client *prom.Client, opts SummaryOptions) (float64, bool) {
+	if opts.SkipNodeCost {
+		return 0, false
+	}
+	result, err := client.Query(ctx, `sum(`+nodeTotalHourlyCostExpr+`)`)
+	if err != nil || len(result.Series) == 0 || len(result.Series[0].DataPoints) == 0 {
+		return 0, false
+	}
+	return result.Series[0].DataPoints[0].Value, true
+}
+
 // mayHaveGPUCost reports whether node cost may carry GPU spend. Only an
 // explicit zero rules it out: a failed query, or an empty result from GPU
 // metrics OpenCost was configured not to emit, leaves the share unknown.
@@ -448,8 +467,7 @@ func ComputeCostSummaryFromProm(ctx context.Context, client *prom.Client, opts S
 	allocatedCost := totalHourlyCost
 	basis := HourlyCostBasisAllocated
 	var unallocatedCost *float64
-	if nodeResult, err := client.Query(ctx, `sum(`+nodeTotalHourlyCostExpr+`)`); err == nil && len(nodeResult.Series) > 0 && len(nodeResult.Series[0].DataPoints) > 0 {
-		nodeCost := nodeResult.Series[0].DataPoints[0].Value
+	if nodeCost, ok := queryNodeTotalCost(ctx, client, opts); ok {
 		// Node cost includes GPU spend the CPU and memory allocation does not,
 		// so on GPU nodes the difference would report allocated GPUs as
 		// unallocated. Price rounding can put the allocation slightly above

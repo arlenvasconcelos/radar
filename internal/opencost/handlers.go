@@ -70,7 +70,7 @@ func handleSummaryScoped(w http.ResponseWriter, r *http.Request, resolveCurrency
 		return
 	}
 	resp := pkgopencost.ComputeCostSummaryFromProm(
-		r.Context(), client.Prom(), pkgopencost.SummaryOptions{Currency: currency})
+		r.Context(), client.Prom(), pkgopencost.SummaryOptions{Currency: currency, SkipNodeCost: allowedNamespaces != nil})
 	resp.Source = "prometheus"
 	if allowedNamespaces != nil {
 		FilterCostSummary(resp, allowedNamespaces)

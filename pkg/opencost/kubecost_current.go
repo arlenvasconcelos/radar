@@ -373,51 +373,43 @@ func ComputeKubecostNodes(ctx context.Context, client *KubecostClient, opts Kube
 }
 
 func kubecostAllocationWithFallback(ctx context.Context, client *KubecostClient, opts KubecostAllocationOptions) (*KubecostAllocationResponse, string, error) {
-	for _, window := range []string{kubecostCurrentWindow, kubecostFallbackQueryWindow} {
+	return kubecostWithWindowFallback(ctx, func(window string) (*KubecostAllocationResponse, error) {
 		opts.Window = window
-		resp, err := client.GetAllocation(ctx, opts)
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil, window, ctx.Err()
-			}
-			if window == kubecostFallbackQueryWindow {
-				return nil, kubecostFallbackDisplayWindow, err
-			}
-			continue
-		}
-		if hasKubecostAllocationData(resp) {
-			if window == kubecostFallbackQueryWindow {
-				return resp, kubecostFallbackDisplayWindow, nil
-			}
-			return resp, kubecostCurrentWindow, nil
-		}
-	}
-	return nil, kubecostFallbackDisplayWindow, nil
+		return client.GetAllocation(ctx, opts)
+	}, hasKubecostAllocationData)
 }
 
-// kubecostAssetsWithFallback also reports the display window it settled on, so
-// a caller can state whether the figures cover an hour or the daily fallback.
 func kubecostAssetsWithFallback(ctx context.Context, client *KubecostClient, opts KubecostAssetOptions) (*KubecostAssetsResponse, string, error) {
-	for _, window := range []string{kubecostCurrentWindow, kubecostFallbackQueryWindow} {
+	return kubecostWithWindowFallback(ctx, func(window string) (*KubecostAssetsResponse, error) {
 		opts.Window = window
-		resp, err := client.GetAssets(ctx, opts)
+		return client.GetAssets(ctx, opts)
+	}, hasKubecostAssetData)
+}
+
+// kubecostWithWindowFallback tries the current window, then the daily one, and
+// reports the display window it settled on, so a caller can state whether the
+// figures cover an hour or the daily fallback.
+func kubecostWithWindowFallback[T any](ctx context.Context, fetch func(window string) (T, error), hasData func(T) bool) (T, string, error) {
+	var zero T
+	for _, window := range []string{kubecostCurrentWindow, kubecostFallbackQueryWindow} {
+		resp, err := fetch(window)
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil, kubecostFallbackDisplayWindow, ctx.Err()
+				return zero, kubecostFallbackDisplayWindow, ctx.Err()
 			}
 			if window == kubecostFallbackQueryWindow {
-				return nil, kubecostFallbackDisplayWindow, err
+				return zero, kubecostFallbackDisplayWindow, err
 			}
 			continue
 		}
-		if hasKubecostAssetData(resp) {
+		if hasData(resp) {
 			if window == kubecostFallbackQueryWindow {
 				return resp, kubecostFallbackDisplayWindow, nil
 			}
 			return resp, kubecostCurrentWindow, nil
 		}
 	}
-	return nil, kubecostFallbackDisplayWindow, nil
+	return zero, kubecostFallbackDisplayWindow, nil
 }
 
 func kubecostAllocationRows(resp *KubecostAllocationResponse) map[string]*KubecostAllocation {

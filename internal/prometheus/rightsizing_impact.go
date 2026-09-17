@@ -3,6 +3,7 @@ package prometheus
 import (
 	"fmt"
 	"math"
+	"slices"
 )
 
 // Classification and impact mirror web/src/components/rightsizing/model.ts.
@@ -94,10 +95,8 @@ func isReduction(row RightsizingRow) bool {
 // class over an oversized one because under-requesting is the failure that
 // takes the workload down. Sorting then leads with reductions — see classRank.
 func ClassifyRows(rows []RightsizingRow, replicas int, scaledToZero bool) RightsizingClass {
-	for _, row := range rows {
-		if row.QueryError != "" || row.Fit == FitInsufficientHistory {
-			return ClassNeedData
-		}
+	if slices.ContainsFunc(rows, RowUnevidenced) {
+		return ClassNeedData
 	}
 	if scaledToZero {
 		return ClassReview
@@ -182,21 +181,23 @@ func formatSignedRightsizingValue(v float64, resourceName string) string {
 	case "cpu":
 		return fmt.Sprintf("%s%.0fm", sign, magnitude*1000)
 	case "memory":
-		const mi = 1024 * 1024
-		const gi = 1024 * mi
-		if magnitude >= gi {
-			return fmt.Sprintf("%s%.2fGi", sign, magnitude/gi)
-		}
-		return fmt.Sprintf("%s%.0fMi", sign, magnitude/mi)
+		return sign + formatObservedValue(magnitude, "memory")
 	}
 	return ""
 }
 
-// ClassifyWorkloadRows classifies a workload from the containers that actually
-// have evidence. The Rightsizing screen ranks each container as its own entry,
-// so one unevidenced sidecar never hides an oversized app container there;
-// classifying every row at once would make the whole workload need_data and
-// push real savings past the response limit.
+// RowUnevidenced reports a row no verdict was drawn from: its usage query
+// failed or its history was too short to judge.
+func RowUnevidenced(row RightsizingRow) bool {
+	return row.QueryError != "" || row.Fit == FitInsufficientHistory
+}
+
+// ClassifyWorkload classifies and sizes a workload from the containers that
+// actually have evidence. The Rightsizing screen ranks each container as its
+// own entry, so one unevidenced sidecar never hides an oversized app container
+// there; classifying every row at once would make the whole workload need_data
+// and push real savings past the response limit. Impact comes from the same
+// containers, so an unjudged container's change never sizes that class.
 //
 // Unevidenced containers are dropped rather than letting the best container
 // win outright: ClassifyRows' precedence is a safety rule — an under-requested
@@ -204,34 +205,25 @@ func formatSignedRightsizingValue(v float64, resourceName string) string {
 // is the failure that takes the workload down — and classRank's reduction-first
 // order is a sort rule for the screen. Picking by classRank would let the sort
 // rule overturn the safety rule on a workload carrying both.
-func ClassifyWorkloadRows(rows []RightsizingRow, replicas int, scaledToZero bool) RightsizingClass {
-	// No rows is no evidence. ClassifyRows would answer in_range, which reads
-	// as "correctly sized" on exactly the workloads — init-only or empty pod
-	// templates — the response has already declared it cannot judge.
-	if len(rows) == 0 {
-		return ClassNeedData
-	}
-	evidenced, dropped := evidencedContainerRows(rows, replicas, scaledToZero)
+func ClassifyWorkload(rows []RightsizingRow, replicas int, scaledToZero bool) (RightsizingClass, RightsizingImpact) {
+	evidenced, dropped := evidencedContainerRows(rows)
+	impact := CalculateImpact(evidenced, replicas)
+	// No evidenced rows is no evidence. ClassifyRows would answer in_range,
+	// which reads as "correctly sized" on exactly the workloads — init-only or
+	// empty pod templates — the response has already declared it cannot judge.
 	if len(evidenced) == 0 {
-		return ClassNeedData
+		return ClassNeedData, impact
 	}
 	class := ClassifyRows(evidenced, replicas, scaledToZero)
 	// "Nothing to change" is a verdict the unjudged container never received;
 	// only an actionable class from the others stands without it.
 	if dropped && class == ClassInRange {
-		return ClassNeedData
+		return ClassNeedData, impact
 	}
-	return class
+	return class, impact
 }
 
-// WorkloadImpact sizes a workload from the same containers ClassifyWorkloadRows
-// judged it on, so an unjudged container's change never sizes that class.
-func WorkloadImpact(rows []RightsizingRow, replicas int, scaledToZero bool) RightsizingImpact {
-	evidenced, _ := evidencedContainerRows(rows, replicas, scaledToZero)
-	return CalculateImpact(evidenced, replicas)
-}
-
-func evidencedContainerRows(rows []RightsizingRow, replicas int, scaledToZero bool) ([]RightsizingRow, bool) {
+func evidencedContainerRows(rows []RightsizingRow) ([]RightsizingRow, bool) {
 	byContainer := make(map[string][]RightsizingRow, len(rows))
 	order := make([]string, 0, len(rows))
 	for _, row := range rows {
@@ -243,7 +235,7 @@ func evidencedContainerRows(rows []RightsizingRow, replicas int, scaledToZero bo
 	evidenced := make([]RightsizingRow, 0, len(rows))
 	dropped := false
 	for _, container := range order {
-		if ClassifyRows(byContainer[container], replicas, scaledToZero) == ClassNeedData {
+		if slices.ContainsFunc(byContainer[container], RowUnevidenced) {
 			dropped = true
 			continue
 		}

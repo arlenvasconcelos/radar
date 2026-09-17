@@ -129,11 +129,8 @@ func ComputeCostTrendFromProm(ctx context.Context, client *prom.Client, opts Tre
 // serve this range verbatim. Both quietly fall back to 24h for anything else,
 // so callers that must not silently answer a different range check here first.
 func SupportedTrendRange(value string) bool {
-	switch value {
-	case "", "6h", "24h", "7d":
-		return true
-	}
-	return false
+	_, _, _, label := resolveTrendRange(value)
+	return value == "" || value == label
 }
 
 // resolveTrendRange returns the start/end/step/label for the named Range.

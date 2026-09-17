@@ -613,8 +613,9 @@ func TestWorkloadScopeGuidanceDoesNotCiteScanCoverage(t *testing.T) {
 			t.Errorf("workload guidance cites %q, which only exists on scan scopes: %q", absent, workload)
 		}
 	}
-	if !strings.Contains(workload, "omitted") {
-		t.Errorf("workload guidance should point at the omitted counts: %q", workload)
+	// scope=workload returns every row, so there are no omitted counts to cite.
+	if strings.Contains(workload, "omitted counts") {
+		t.Errorf("workload guidance must not point at omitted counts it never has: %q", workload)
 	}
 }
 
@@ -973,8 +974,9 @@ func TestReturnedContainerKeepsItsFailedRow(t *testing.T) {
 	if len(filtered.rows) != 2 || filtered.rows[0].QueryError == "" {
 		t.Fatalf("the returned container must keep its failed row, got %+v", filtered.rows)
 	}
-	if filtered.returnedQueryErrors != 1 || filtered.omitted.QueryError != 1 {
-		t.Errorf("returned=%d omitted=%d, want 1 and 1: a container with nothing else returned stays omitted", filtered.returnedQueryErrors, filtered.omitted.QueryError)
+	returned := rowGaps([]rightsizingWorkloadDTO{{Rows: filtered.rows}})
+	if returned.queryErrors != 1 || filtered.omitted.QueryError != 1 {
+		t.Errorf("returned=%d omitted=%d, want 1 and 1: a container with nothing else returned stays omitted", returned.queryErrors, filtered.omitted.QueryError)
 	}
 	if filtered.classification != prometheuspkg.ClassNeedData {
 		t.Errorf("classification = %q, want need_data: the missing evidence still decides the rank", filtered.classification)
@@ -987,7 +989,7 @@ func TestReturnedContainerKeepsItsFailedRow(t *testing.T) {
 
 	guidance := rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "cluster", reason: "some_evidence_unavailable",
-		coverage: &prometheuspkg.RightsizingScanCoverage{}, omitted: filtered.omitted, returnedQueryErrors: filtered.returnedQueryErrors,
+		coverage: &prometheuspkg.RightsizingScanCoverage{}, omitted: filtered.omitted, returnedQueryErrors: returned.queryErrors,
 	})
 	for _, want := range []string{"2 row(s) failed their usage query (1 in omitted.queryError, 1 returned with queryError)", "not because that recommendation is doubtful"} {
 		if !strings.Contains(guidance, want) {
@@ -1044,7 +1046,7 @@ func TestNamespacesWithoutWorkloadsNeedsAFullyCoveredScan(t *testing.T) {
 	}
 	// A namespace holding only DaemonSets that match no node holds workloads;
 	// calling it empty sends the agent looking for a typo that is not there.
-	if got := namespacesWithoutWorkloads([]string{"dev", "gpu-operator"}, workloads, []string{"gpu-operator"}); len(got) != 0 {
+	if got := namespacesWithoutWorkloads([]string{"dev", "gpu-operator"}, workloads, []string{"gpu-operator/nvidia-device-plugin"}); len(got) != 0 {
 		t.Errorf("a namespace of skipped DaemonSets is not empty, got %v", got)
 	}
 	if !scanCoveredEveryWorkload(prometheuspkg.RightsizingScanCoverage{WorkloadsDiscovered: 3, WorkloadsEvaluated: 3}) {
@@ -1152,7 +1154,7 @@ func TestUnjudgedContainerKeepsTheWorkloadOutOfInRange(t *testing.T) {
 	failed.Container = "sidecar"
 	failed.RecommendedReq = nil
 	failed.QueryError = prometheuspkg.RowUsageQueryFailed
-	if got := prometheuspkg.ClassifyWorkloadRows([]prometheuspkg.RightsizingRow{balanced, failed}, 2, false); got != prometheuspkg.ClassNeedData {
+	if got, _ := prometheuspkg.ClassifyWorkload([]prometheuspkg.RightsizingRow{balanced, failed}, 2, false); got != prometheuspkg.ClassNeedData {
 		t.Errorf("classification = %q, want need_data", got)
 	}
 }

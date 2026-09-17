@@ -15,6 +15,7 @@ import (
 	"github.com/skyhook-io/radar/internal/timeline"
 	pkgauth "github.com/skyhook-io/radar/pkg/auth"
 	"github.com/skyhook-io/radar/pkg/issuesapi"
+	pkgopencost "github.com/skyhook-io/radar/pkg/opencost"
 )
 
 // mcpChangeAuthorizer returns the per-kind authorizer for the ctx user, for the
@@ -181,14 +182,15 @@ func namespaceWithinPin(namespace string) bool {
 	return ok
 }
 
-// DeniedScopeReason names why a namespace request resolved to nothing. The pin
+// deniedScopeReason names why a namespace request resolved to nothing. The pin
 // and an RBAC denial are indistinguishable in the resulting namespace list, so
-// the cause has to be re-derived from configuration to be reported correctly.
-func DeniedScopeReason(requested []string) string {
+// the cause has to be re-derived from configuration: "you cannot read this"
+// and "radar was started with --namespace-scope" need different answers.
+func deniedScopeReason(requested []string) string {
 	if _, ok := clampToNamespacePin(requested); !ok {
 		return ReasonOutsideNamespaceScope
 	}
-	return ""
+	return pkgopencost.ReasonAccessDenied
 }
 
 // ReasonOutsideNamespaceScope marks a request the --namespace pin excluded,
