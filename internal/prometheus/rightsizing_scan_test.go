@@ -257,6 +257,40 @@ func TestRightsizingScanReportsMissingKSMAndPartialEvidence(t *testing.T) {
 	}
 }
 
+func TestRightsizingScanNamesADeadlineThatCutTheOnlyBatch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &fakeScanQuerier{
+		queryFn: func(query string) (*prom.QueryResult, error) {
+			if query == "count(kube_pod_owner)" || query == "count(kube_replicaset_owner)" {
+				return ksmAvailable(), nil
+			}
+			return &prom.QueryResult{}, nil
+		},
+		rangeFn: func(string) (*prom.QueryResult, error) {
+			cancel()
+			return nil, context.Canceled
+		},
+	}
+	workloads := []scanWorkload{scanTestWorkload("StatefulSet", "prod", "db", "db")}
+	resp := computeRightsizingScan(ctx, client, workloads, newRightsizingScanResponse(time.Now(), RightsizingScanScope{}))
+	if resp.Coverage.Batches != 1 || resp.Coverage.CompletedBatches != 0 {
+		t.Fatalf("coverage = %+v, want one incomplete batch", resp.Coverage)
+	}
+	if !hasScanWarning(resp.Warnings, "scan_deadline_exceeded") {
+		t.Fatalf("warnings = %+v, want scan_deadline_exceeded for a batch the deadline cut", resp.Warnings)
+	}
+}
+
+func hasScanWarning(warnings []RightsizingScanWarning, code string) bool {
+	for _, warning := range warnings {
+		if warning.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRightsizingScanKeepsNonDeploymentsWhenReplicaSetOwnersMissing(t *testing.T) {
 	workloads := []scanWorkload{
 		scanTestWorkload("Deployment", "prod", "api", "app"),

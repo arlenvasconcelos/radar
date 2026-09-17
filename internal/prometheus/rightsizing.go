@@ -770,7 +770,7 @@ func classifyRightsizingFit(row *RightsizingRow, observed float64, req, lim *res
 		row.RecommendationReason = "request_within_fit_range"
 		return
 	}
-	recommended, reductionLimited := recommendRequest(observed, req, resourceName, row.Bursty || (row.ThrottleRatio != nil && *row.ThrottleRatio >= 0.1))
+	recommended, reductionLimited := recommendRequest(observed, req, resourceName, row.Bursty || (row.ThrottleRatio != nil && *row.ThrottleRatio >= throttleReviewRatio))
 	recommendedValue := quantityToFloat(resource.MustParse(recommended), resourceName)
 	row.CalculatedReq = &calculated
 	row.CalculatedRequestValue = &calculatedValue

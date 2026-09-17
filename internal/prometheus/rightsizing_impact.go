@@ -195,8 +195,8 @@ func formatSignedRightsizingValue(v float64, resourceName string) string {
 // ClassifyWorkloadRows classifies a workload from the containers that actually
 // have evidence. The Rightsizing screen ranks each container as its own entry,
 // so one unevidenced sidecar never hides an oversized app container there;
-// classifying every row of a workload at once made the whole workload
-// need_data and pushed real savings past the response limit.
+// classifying every row at once would make the whole workload need_data and
+// push real savings past the response limit.
 //
 // Unevidenced containers are dropped rather than letting the best container
 // win outright: ClassifyRows' precedence is a safety rule — an under-requested

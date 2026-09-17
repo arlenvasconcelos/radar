@@ -550,7 +550,8 @@ function ScanNotices({ result, rows }: { result: ScanResult; rows: RightsizingSc
       'Radar is caching only some namespaces, so this scan covered a narrower scope than the whole cluster.',
     )
   const daemonSetsWithoutNodes = result.coverage.daemonSetsWithoutNodes ?? 0
-  if (daemonSetsWithoutNodes > 0)
+  // The DaemonSet-only empty state already says this.
+  if (daemonSetsWithoutNodes > 0 && result.reason !== 'only_daemonsets_without_nodes')
     notices.push(
       `${daemonSetsWithoutNodes} DaemonSet${daemonSetsWithoutNodes === 1 ? '' : 's'} run on no node right now and ${daemonSetsWithoutNodes === 1 ? 'is' : 'are'} not listed. Open one from Resources to see recommendations from its retained history.`,
     )

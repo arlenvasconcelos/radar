@@ -39,8 +39,8 @@ type getRightsizingInput struct {
 	Name            string   `json:"name,omitempty" jsonschema:"for scope=workload: the workload name"`
 	Namespace       string   `json:"namespace,omitempty" jsonschema:"one namespace: required for scope=workload, and for scope=namespace unless namespaces is set; rejected for scope=cluster"`
 	Namespaces      []string `json:"namespaces,omitempty" jsonschema:"for scope=namespace only, instead of namespace: scan several namespaces in one call. The 45s budget is shared, so this saves calls, not scan time"`
-	IncludeBalanced bool     `json:"include_balanced,omitempty" jsonschema:"also return correctly-sized and unevidenced containers (default false, which returns only oversized, under_requested, and missing_request rows and reports the rest as omitted counts)"`
-	Limit           int      `json:"limit,omitempty" jsonschema:"max workloads returned, ranked by largest request change (default 20, max 100)"`
+	IncludeBalanced bool     `json:"include_balanced,omitempty" jsonschema:"also return correctly-sized and unevidenced containers (default false, which returns only oversized, under_requested, and missing_request rows and reports the rest as omitted counts). Ignored for scope=workload, which returns every row of the named workload"`
+	Limit           int      `json:"limit,omitempty" jsonschema:"max workloads returned, ranked by classification then replica-weighted impact (default 20, max 100). Rejected for scope=workload"`
 }
 
 type rightsizingRowDTO struct {
@@ -316,11 +316,7 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 		excluded = excludedRequestedNamespaces(requested, allowed)
 	}
 	if allowed != nil && len(allowed) == 0 {
-		reason := "access_denied"
-		if pinReason := DeniedScopeReason(requested); pinReason != "" {
-			reason = pinReason
-		}
-		out := rightsizingScanUnavailable(scope, namespace, reason)
+		out := rightsizingScanUnavailable(scope, namespace, deniedScopeReason(requested))
 		out.ExcludedNamespaces = excluded
 		return toJSONResult(out)
 	}
@@ -479,8 +475,7 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 		}
 	}
 	// A narrowed scope is worth naming whether or not something else already
-	// flipped the state: gating on state==complete left a pinned Radar
-	// reporting partial with no reason at all.
+	// flipped the state, or a pinned Radar reports partial with no reason.
 	if scope == "cluster" && len(out.NamespaceScope) > 0 {
 		out.State = prometheuspkg.RightsizingScanPartial
 		// no_workloads claims the requested scope was covered; for a cluster
@@ -987,10 +982,8 @@ func rightsizingGuidance(in rightsizingGuidanceInput) string {
 	return strings.Join(parts, " ")
 }
 
-// partialGuidance names only the causes this response carries. The generic
-// "read restrictedKinds and unavailableKinds" paragraph was wrong whenever the
-// cause was row-level evidence or a narrowed namespace scope, which is the
-// common case.
+// partialGuidance names only the causes this response carries: the common
+// causes are row-level evidence and a narrowed namespace scope, not kinds.
 func partialGuidance(in rightsizingGuidanceInput) []string {
 	if in.scope == "workload" {
 		return []string{"State is partial — some of this workload's containers had no usable evidence. Do not treat their rows as a verdict that the container is correctly sized."}

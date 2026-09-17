@@ -59,7 +59,7 @@ const (
 	costTrendSeriesExplainer        = "Series values are hourly rates at each point, not cumulative spend. Each series and the top-level total carry start, end and changePercent so growth can be read without summing the points."
 )
 
-// ReasonWorkloadNotFound is Radar's own reason: the cost source was healthy and
+// reasonWorkloadNotFound is Radar's own reason: the cost source was healthy and
 // the namespace had rows, but none matched the requested workload.
 const reasonWorkloadNotFound = "workload_not_found"
 
@@ -415,9 +415,9 @@ func roundedCost(value float64) *float64 {
 func costSplitGuidance(summary *pkgopencost.CostSummary, scoped bool) string {
 	var parts []string
 	if summary.HourlyCostBasis == pkgopencost.HourlyCostBasisNodeCapacity {
-		parts = append(parts, "hourlyCost is total node compute cost here (hourlyCostBasis=node_capacity): it already contains unallocatedCost and does not include storageCost, so do not add unallocatedCost to it.")
+		parts = append(parts, "hourlyCost is total node compute cost here (hourlyCostBasis=node_capacity): it already contains unallocatedCost and does not include storageCost, so do not add unallocatedCost to it. projectedMonthlyCost has the same basis.")
 	} else {
-		parts = append(parts, "hourlyCost is allocated spend (hourlyCostBasis=allocated) and does not include unallocatedCost.")
+		parts = append(parts, "hourlyCost is allocated spend (hourlyCostBasis=allocated) and does not include unallocatedCost; neither does projectedMonthlyCost, so it is not whole-cluster node spend.")
 	}
 	parts = append(parts, costWasteExplainer)
 	if summary.TotalUnallocatedCost == nil {
@@ -503,8 +503,8 @@ func costWorkloadsView(ctx context.Context, input getCostInput, limit int) (*mcp
 	resp.Source = workloads.Source
 	resp.Currency = workloads.Currency
 	resp.DataThrough = workloads.DataThrough
-	// The Prometheus path leaves Window empty while summary reports "1h", so
-	// the agent could not state the window its numbers cover.
+	// Unavailable paths carry no window; the agent still needs to state what
+	// window the call was for.
 	resp.Window = workloads.Window
 	if resp.Window == "" {
 		resp.Window = pkgopencost.DefaultCurrentWindow

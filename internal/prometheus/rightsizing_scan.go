@@ -369,6 +369,11 @@ func computeRightsizingScan(ctx context.Context, client rightsizingScanQuerier, 
 			for key, queryErr := range evidence.errors {
 				appendScanWarning(&resp, key+"_query_failed", queryErr.Error())
 			}
+			// The loop-top check never sees a deadline that cut the last batch:
+			// its queries fail with the context error and there is no next pass.
+			if err := ctx.Err(); err != nil {
+				appendScanWarning(&resp, "scan_deadline_exceeded", err.Error())
+			}
 		}
 		for _, workload := range batch {
 			out := buildScanWorkload(workload, evidence)

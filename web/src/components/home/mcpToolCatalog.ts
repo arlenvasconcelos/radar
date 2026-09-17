@@ -270,7 +270,7 @@ export const MCP_TOOL_CATALOG: MCPToolInfo[] = [
   },
   {
     name: 'get_rightsizing',
-    desc: 'CPU/memory request and limit recommendations from 7 days of observed usage, with a fit verdict and confidence tier per container. Scans rank workloads by replica-weighted impact; the Rightsizing page ranks containers, so the top-N can differ.',
+    desc: 'CPU/memory request recommendations, with current limits as context, from 7 days of observed usage, with a fit verdict and confidence tier per container. Scans rank workloads by classification, then replica-weighted impact; the Rightsizing page ranks containers, so the top-N can differ.',
     params: [
       { arg: 'scope', required: true, desc: 'workload (needs kind/name/namespace), namespace, or cluster' },
       { arg: 'kind', desc: 'scope=workload: Deployment, StatefulSet, or DaemonSet' },
