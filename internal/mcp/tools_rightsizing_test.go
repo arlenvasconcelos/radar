@@ -1004,8 +1004,8 @@ func TestRightsizingScanNamespacesValidation(t *testing.T) {
 		input getRightsizingInput
 		want  string
 	}{
-		// A comma-joined name authorizes as a namespace that does not exist and
-		// used to come back as a complete scan with no workloads.
+		// A comma-joined name authorizes as a namespace that does not exist, so
+		// the scan answers complete with no workloads unless it is rejected here.
 		"comma in namespace":      {"namespace", getRightsizingInput{Namespace: "dev,staging"}, `namespaces: ["dev", "staging"]`},
 		"both forms":              {"namespace", getRightsizingInput{Namespace: "dev", Namespaces: []string{"staging"}}, "not both"},
 		"empty entry":             {"namespace", getRightsizingInput{Namespaces: []string{"dev", " "}}, "non-empty"},
@@ -1232,5 +1232,40 @@ func TestSkippedDaemonSetNamesAreCappedWithTheCountKept(t *testing.T) {
 	kept, truncated := truncateRows(names, skippedDaemonSetsMax)
 	if len(kept) != skippedDaemonSetsMax || !truncated {
 		t.Errorf("kept %d truncated %v, want %d and true", len(kept), truncated, skippedDaemonSetsMax)
+	}
+}
+
+// A scan narrowed only by scope read everything it claims to have read. Saying
+// evidence is missing there has the agent discount recommendations that are
+// complete for the namespaces they cover.
+func TestScopeOnlyPartialScansAreNotDescribedAsMissingEvidence(t *testing.T) {
+	for _, in := range []rightsizingGuidanceInput{
+		{
+			state: prometheuspkg.RightsizingScanPartial, scope: "cluster",
+			reason: reasonNamespaceScopeLimited, namespaceScope: []string{"dev"},
+			coverage: &prometheuspkg.RightsizingScanCoverage{WorkloadsDiscovered: 13, WorkloadsEvaluated: 13, Batches: 1, CompletedBatches: 1},
+		},
+		{
+			state: prometheuspkg.RightsizingScanPartial, scope: "namespace",
+			reason:             reasonNamespacesExcluded,
+			excludedNamespaces: []excludedNamespace{{Name: "locked", Reason: reasonNamespaceAccessDenied}},
+			coverage:           &prometheuspkg.RightsizingScanCoverage{WorkloadsDiscovered: 4, WorkloadsEvaluated: 4, Batches: 1, CompletedBatches: 1},
+		},
+	} {
+		got := rightsizingGuidance(in)
+		if strings.Contains(got, "evidence is missing") {
+			t.Errorf("reason %q: a scope-only narrowing is not missing evidence: %q", in.reason, got)
+		}
+		if !strings.Contains(got, "cluster-wide") && !strings.Contains(got, "not scanned") {
+			t.Errorf("reason %q: the narrowed scope still has to be named: %q", in.reason, got)
+		}
+	}
+
+	// A genuine gap with no named cause keeps the generic sentence.
+	got := rightsizingGuidance(rightsizingGuidanceInput{
+		state: prometheuspkg.RightsizingScanPartial, scope: "cluster", reason: "some_evidence_unavailable",
+	})
+	if !strings.Contains(got, "evidence is missing") {
+		t.Errorf("an unexplained partial must still warn: %q", got)
 	}
 }

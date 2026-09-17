@@ -264,23 +264,34 @@ func handleGetCost(ctx context.Context, _ *mcp.CallToolRequest, input getCostInp
 		return nil, nil, errors.New("kind and name go together — pass both to target one workload, or neither to rank the namespace's top spenders")
 	}
 
-	result, payload, err := costView(ctx, input, view, limit)
-	// A response assembled after the budget expired is built from queries that
-	// were cancelled mid-flight: the mandatory ones surface as query_error,
-	// whose remediation sends the operator to check pod health for what is
-	// really a slow query. Report the deadline instead of that wrong advice.
-	if err == nil && ctx.Err() != nil {
-		return toJSONResult(costResponse{
-			View: view, Namespace: input.Namespace, Range: input.Range,
-			Available: false, Reason: reasonCostDeadlineExceeded,
-			Remediation: costRemediation(reasonCostDeadlineExceeded),
-			Currency:    opencost.ResolveCurrency(),
-		})
+	resp, err := costView(ctx, input, view, limit)
+	if err != nil {
+		return nil, nil, err
 	}
-	return result, payload, err
+	return toJSONResult(costResponseForDeadline(ctx, resp, view, input))
 }
 
-func costView(ctx context.Context, input getCostInput, view string, limit int) (*mcp.CallToolResult, any, error) {
+// costResponseForDeadline reports a budget that expired before the view could
+// answer. A failed response assembled after the budget expired was built from
+// queries cancelled mid-flight: the mandatory ones surface as query_error,
+// whose remediation sends the operator to check pod health for what is really
+// a slow query. Only a failed one is replaced — the usage and node queries fail
+// soft, so the budget can expire with a complete answer already in hand, and
+// discarding it would report computed spend as a source that never answered.
+// Same rule as the rightsizing scan, which keeps a scan that finished.
+func costResponseForDeadline(ctx context.Context, resp costResponse, view string, input getCostInput) costResponse {
+	if ctx.Err() == nil || resp.Available {
+		return resp
+	}
+	return costResponse{
+		View: view, Namespace: input.Namespace, Range: input.Range,
+		Available: false, Reason: reasonCostDeadlineExceeded,
+		Remediation: costRemediation(reasonCostDeadlineExceeded),
+		Currency:    opencost.ResolveCurrency(),
+	}
+}
+
+func costView(ctx context.Context, input getCostInput, view string, limit int) (costResponse, error) {
 	switch view {
 	case "summary":
 		return costSummaryView(ctx, input, limit)
@@ -288,26 +299,26 @@ func costView(ctx context.Context, input getCostInput, view string, limit int) (
 		return costWorkloadsView(ctx, input, limit)
 	case "nodes":
 		if strings.TrimSpace(input.Namespace) != "" {
-			return nil, nil, fmt.Errorf("view=nodes is cluster-wide and takes no namespace — use view=summary with a namespace, or view=workloads, for namespace-scoped spend")
+			return costResponse{}, fmt.Errorf("view=nodes is cluster-wide and takes no namespace — use view=summary with a namespace, or view=workloads, for namespace-scoped spend")
 		}
 		return costNodesView(ctx, limit)
 	case "trend":
 		if !pkgopencost.SupportedTrendRange(input.Range) {
-			return nil, nil, fmt.Errorf("unsupported range %q — use 6h, 24h (default), or 7d; anything else would silently return 24h", input.Range)
+			return costResponse{}, fmt.Errorf("unsupported range %q — use 6h, 24h (default), or 7d; anything else would silently return 24h", input.Range)
 		}
 		return costTrendView(ctx, input)
 	default:
-		return nil, nil, fmt.Errorf("unknown view %q — use summary (cluster totals + per-namespace), workloads (one namespace, requires namespace), nodes, or trend", input.View)
+		return costResponse{}, fmt.Errorf("unknown view %q — use summary (cluster totals + per-namespace), workloads (one namespace, requires namespace), nodes, or trend", input.View)
 	}
 }
 
-func costSummaryView(ctx context.Context, input getCostInput, limit int) (*mcp.CallToolResult, any, error) {
+func costSummaryView(ctx context.Context, input getCostInput, limit int) (costResponse, error) {
 	base := costResponse{View: "summary", Namespace: input.Namespace}
 
 	requested := requestedNamespaces(input.Namespace)
 	allowed := scopedNamespacesForUser(ctx, requested)
 	if allowed != nil && len(allowed) == 0 {
-		return toJSONResult(base.unavailable(deniedScopeReason(requested), opencost.ResolveCurrency(), ""))
+		return base.unavailable(deniedScopeReason(requested), opencost.ResolveCurrency(), ""), nil
 	}
 
 	// Selected() first on the success path: currency detection consults the
@@ -317,7 +328,7 @@ func costSummaryView(ctx context.Context, input getCostInput, limit int) (*mcp.C
 	connection, err := opencost.Selected(ctx)
 	currency := opencost.ResolveCurrency()
 	if err != nil {
-		return toJSONResult(base.unavailable(opencost.ConnectionFailureReason(err), currency, ""))
+		return base.unavailable(opencost.ConnectionFailureReason(err), currency, ""), nil
 	}
 
 	var summary *pkgopencost.CostSummary
@@ -327,12 +338,12 @@ func costSummaryView(ctx context.Context, input getCostInput, limit int) (*mcp.C
 		})
 		if err != nil {
 			log.Printf("[mcp] Kubecost summary failed: %s", k8s.SanitizeForLog(err.Error()))
-			return toJSONResult(base.unavailable(opencost.ConnectionFailureReason(err), currency, "kubecost"))
+			return base.unavailable(opencost.ConnectionFailureReason(err), currency, "kubecost"), nil
 		}
 	} else {
 		client, reason := promCostClient(ctx)
 		if reason != "" {
-			return toJSONResult(base.unavailable(reason, currency, "prometheus"))
+			return base.unavailable(reason, currency, "prometheus"), nil
 		}
 		summary = pkgopencost.ComputeCostSummaryFromProm(ctx, client, pkgopencost.SummaryOptions{Currency: currency, SkipNodeCost: allowed != nil})
 		summary.Source = "prometheus"
@@ -363,7 +374,7 @@ func costSummaryView(ctx context.Context, input getCostInput, limit int) (*mcp.C
 		} else {
 			resp.Remediation = costRemediation(summary.Reason)
 		}
-		return toJSONResult(resp)
+		return resp, nil
 	}
 
 	resp.Totals = hourlyTotals(summary.TotalHourlyCost)
@@ -397,7 +408,7 @@ func costSummaryView(ctx context.Context, input getCostInput, limit int) (*mcp.C
 	}
 	resp.Guidance = costGuidance(summary.NamespaceScope, strings.TrimSpace(input.Namespace)) + " " + costEfficiencyExplainer +
 		partialUsageGuidance(summary.Namespaces) + " " + costSplitGuidance(summary, len(summary.NamespaceScope) > 0)
-	return toJSONResult(resp)
+	return resp, nil
 }
 
 // measuredUnusedRequestCost is nil when no row has usage evidence, like
@@ -460,22 +471,22 @@ func allUsageUnavailable(rows []pkgopencost.NamespaceCost) bool {
 	return true
 }
 
-func costWorkloadsView(ctx context.Context, input getCostInput, limit int) (*mcp.CallToolResult, any, error) {
+func costWorkloadsView(ctx context.Context, input getCostInput, limit int) (costResponse, error) {
 	namespace := strings.TrimSpace(input.Namespace)
 	if namespace == "" {
-		return nil, nil, fmt.Errorf("view=workloads needs a namespace — use view=summary first to find the expensive namespaces, then pass one here")
+		return costResponse{}, fmt.Errorf("view=workloads needs a namespace — use view=summary first to find the expensive namespaces, then pass one here")
 	}
 
 	base := costResponse{View: "workloads", Namespace: namespace}
 
 	if allowed := scopedNamespacesForUser(ctx, []string{namespace}); allowed != nil && len(allowed) == 0 {
-		return toJSONResult(base.unavailable(deniedScopeReason([]string{namespace}), opencost.ResolveCurrency(), ""))
+		return base.unavailable(deniedScopeReason([]string{namespace}), opencost.ResolveCurrency(), ""), nil
 	}
 
 	connection, err := opencost.Selected(ctx)
 	currency := opencost.ResolveCurrency()
 	if err != nil {
-		return toJSONResult(base.unavailable(opencost.ConnectionFailureReason(err), currency, ""))
+		return base.unavailable(opencost.ConnectionFailureReason(err), currency, ""), nil
 	}
 
 	var workloads *pkgopencost.WorkloadCostResponse
@@ -485,12 +496,12 @@ func costWorkloadsView(ctx context.Context, input getCostInput, limit int) (*mcp
 		})
 		if err != nil {
 			log.Printf("[mcp] Kubecost workloads failed for namespace %q: %s", k8s.SanitizeForLog(namespace), k8s.SanitizeForLog(err.Error()))
-			return toJSONResult(base.unavailable(opencost.ConnectionFailureReason(err), currency, "kubecost"))
+			return base.unavailable(opencost.ConnectionFailureReason(err), currency, "kubecost"), nil
 		}
 	} else {
 		client, reason := promCostClient(ctx)
 		if reason != "" {
-			return toJSONResult(base.unavailable(reason, currency, "prometheus"))
+			return base.unavailable(reason, currency, "prometheus"), nil
 		}
 		workloads = pkgopencost.ComputeWorkloadsFromProm(ctx, client, namespace, opencost.BuildPodOwnerLookup(namespace))
 		workloads.Currency = currency
@@ -517,7 +528,7 @@ func costWorkloadsView(ctx context.Context, input getCostInput, limit int) (*mcp
 		} else {
 			resp.Remediation = costRemediation(workloads.Reason)
 		}
-		return toJSONResult(resp)
+		return resp, nil
 	}
 
 	// The ranking path's totals describe the namespace, so they are summed
@@ -544,7 +555,7 @@ func costWorkloadsView(ctx context.Context, input getCostInput, limit int) (*mcp
 			resp.Remediation = costWorkloadNotFoundRemediation
 			resp.Totals = nil
 			resp.Guidance = costRateExplainer
-			return toJSONResult(resp)
+			return resp, nil
 		}
 	}
 
@@ -571,7 +582,7 @@ func costWorkloadsView(ctx context.Context, input getCostInput, limit int) (*mcp
 		totalsExplainer = costSelectedWorkloadTotalExplainer + " " + costWorkloadTotalExplainer
 	}
 	resp.Guidance = costRateExplainer + " " + totalsExplainer + " " + costEfficiencyExplainer
-	return toJSONResult(resp)
+	return resp, nil
 }
 
 // sumWorkloadHourly totals the rows it is given, so the namespace total and a
@@ -603,17 +614,17 @@ func scopedEmptyResult(reason string, scope []string) bool {
 	return reason == pkgopencost.ReasonNoMetrics && len(scope) > 0
 }
 
-func costNodesView(ctx context.Context, limit int) (*mcp.CallToolResult, any, error) {
+func costNodesView(ctx context.Context, limit int) (costResponse, error) {
 	base := costResponse{View: "nodes"}
 
 	if !canReadClusterScopedKind(ctx, "Node", "", "list") {
-		return toJSONResult(base.unavailable(pkgopencost.ReasonAccessDenied, opencost.ResolveCurrency(), ""))
+		return base.unavailable(pkgopencost.ReasonAccessDenied, opencost.ResolveCurrency(), ""), nil
 	}
 
 	connection, err := opencost.Selected(ctx)
 	currency := opencost.ResolveCurrency()
 	if err != nil {
-		return toJSONResult(base.unavailable(opencost.ConnectionFailureReason(err), currency, ""))
+		return base.unavailable(opencost.ConnectionFailureReason(err), currency, ""), nil
 	}
 
 	var nodes *pkgopencost.NodeCostResponse
@@ -623,12 +634,12 @@ func costNodesView(ctx context.Context, limit int) (*mcp.CallToolResult, any, er
 		})
 		if err != nil {
 			log.Printf("[mcp] Kubecost nodes failed: %s", k8s.SanitizeForLog(err.Error()))
-			return toJSONResult(base.unavailable(opencost.ConnectionFailureReason(err), currency, "kubecost"))
+			return base.unavailable(opencost.ConnectionFailureReason(err), currency, "kubecost"), nil
 		}
 	} else {
 		client, reason := promCostClient(ctx)
 		if reason != "" {
-			return toJSONResult(base.unavailable(reason, currency, "prometheus"))
+			return base.unavailable(reason, currency, "prometheus"), nil
 		}
 		nodes = pkgopencost.ComputeNodeCosts(ctx, client)
 		nodes.Currency = currency
@@ -644,7 +655,7 @@ func costNodesView(ctx context.Context, limit int) (*mcp.CallToolResult, any, er
 	resp.Window = nodes.Window
 	if !nodes.Available {
 		resp.Remediation = costRemediation(nodes.Reason)
-		return toJSONResult(resp)
+		return resp, nil
 	}
 
 	var total float64
@@ -667,7 +678,7 @@ func costNodesView(ctx context.Context, limit int) (*mcp.CallToolResult, any, er
 	}
 	resp.NodesNotInCluster = labelNodeRows(resp.Nodes, nodes.Nodes, cachedNode)
 	resp.Guidance = nodeCostGuidance(resp.NodesNotInCluster)
-	return toJSONResult(resp)
+	return resp, nil
 }
 
 func nodeCostGuidance(nodesNotInCluster int) string {
@@ -724,19 +735,19 @@ func labelNodeRows(returned []nodeCostRow, all []pkgopencost.NodeCost, lookup no
 	return missing
 }
 
-func costTrendView(ctx context.Context, input getCostInput) (*mcp.CallToolResult, any, error) {
+func costTrendView(ctx context.Context, input getCostInput) (costResponse, error) {
 	base := costResponse{View: "trend", Namespace: input.Namespace, Range: input.Range}
 
 	requested := requestedNamespaces(input.Namespace)
 	allowed := scopedNamespacesForUser(ctx, requested)
 	if allowed != nil && len(allowed) == 0 {
-		return toJSONResult(base.unavailable(deniedScopeReason(requested), opencost.ResolveCurrency(), ""))
+		return base.unavailable(deniedScopeReason(requested), opencost.ResolveCurrency(), ""), nil
 	}
 
 	connection, err := opencost.Selected(ctx)
 	currency := opencost.ResolveCurrency()
 	if err != nil {
-		return toJSONResult(base.unavailable(opencost.ConnectionFailureReason(err), currency, ""))
+		return base.unavailable(opencost.ConnectionFailureReason(err), currency, ""), nil
 	}
 
 	var trend *pkgopencost.CostTrendResponse
@@ -746,12 +757,12 @@ func costTrendView(ctx context.Context, input getCostInput) (*mcp.CallToolResult
 		})
 		if err != nil {
 			log.Printf("[mcp] Kubecost trend failed: %s", k8s.SanitizeForLog(err.Error()))
-			return toJSONResult(base.unavailable(opencost.ConnectionFailureReason(err), currency, "kubecost"))
+			return base.unavailable(opencost.ConnectionFailureReason(err), currency, "kubecost"), nil
 		}
 	} else {
 		client, reason := promCostClient(ctx)
 		if reason != "" {
-			return toJSONResult(base.unavailable(reason, currency, "prometheus"))
+			return base.unavailable(reason, currency, "prometheus"), nil
 		}
 		trend = pkgopencost.ComputeCostTrendFromProm(ctx, client, pkgopencost.TrendPromOptions{
 			Range: input.Range, Namespaces: allowed,
@@ -780,14 +791,14 @@ func costTrendView(ctx context.Context, input getCostInput) (*mcp.CallToolResult
 		} else {
 			resp.Remediation = costRemediation(trend.Reason)
 		}
-		return toJSONResult(resp)
+		return resp, nil
 	}
 	resp.Series, resp.TrendTotal = summarizeTrend(trend.Series)
 	resp.Guidance += " " + costTrendSeriesExplainer
 	if resp.TrendTotal != nil {
 		resp.TrendTotal.Basis, resp.Guidance = trendBasis(connection.Source), resp.Guidance+" "+trendBasisExplainer(connection.Source)
 	}
-	return toJSONResult(resp)
+	return resp, nil
 }
 
 const (

@@ -610,3 +610,30 @@ func TestTrendSeriesAreMeasuredAtTheRangeEndpoints(t *testing.T) {
 		t.Errorf("a steady namespace present throughout is flat, got %v", out[0].ChangePercent)
 	}
 }
+
+// The usage and node queries fail soft, so the budget can expire with a
+// complete answer already in hand. Reporting that as a deadline would hand back
+// a failure for spend data that was computed.
+func TestCostDeadlineKeepsAnAnswerThatArrived(t *testing.T) {
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	answered := costResponse{View: "summary", Available: true, Currency: "USD", Totals: hourlyTotals(1.5)}
+	if got := costResponseForDeadline(expired, answered, "summary", getCostInput{}); !got.Available || got.Reason != "" {
+		t.Errorf("a finished answer must survive an expired budget, got available=%v reason=%q", got.Available, got.Reason)
+	}
+
+	failed := costResponse{View: "summary", Available: false, Reason: pkgopencost.ReasonQueryError}
+	got := costResponseForDeadline(expired, failed, "summary", getCostInput{Namespace: "dev"})
+	if got.Available || got.Reason != reasonCostDeadlineExceeded {
+		t.Errorf("a failure under an expired budget is the deadline, got available=%v reason=%q", got.Available, got.Reason)
+	}
+	if got.Namespace != "dev" {
+		t.Errorf("the deadline response must keep the requested scope, got %q", got.Namespace)
+	}
+
+	live := costResponse{View: "summary", Available: false, Reason: pkgopencost.ReasonQueryError}
+	if got := costResponseForDeadline(context.Background(), live, "summary", getCostInput{}); got.Reason != pkgopencost.ReasonQueryError {
+		t.Errorf("without a deadline the view's own reason stands, got %q", got.Reason)
+	}
+}

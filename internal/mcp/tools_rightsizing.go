@@ -1050,9 +1050,22 @@ func partialGuidance(in rightsizingGuidanceInput) []string {
 	}
 
 	if len(causes) == 0 {
+		// A scope this narrow is not missing evidence: the scan finished, it
+		// simply covered less than was asked for, and the sentences naming the
+		// scope follow this one. Calling that missing evidence would have the
+		// agent distrust recommendations that are complete for what they cover.
+		if scopeOnlyPartial(in.reason) {
+			return nil
+		}
 		return []string{fmt.Sprintf("State is partial (reason %q) — some evidence is missing. Do not describe partial rows as cluster-wide.", in.reason)}
 	}
 	return []string{fmt.Sprintf("State is partial because %s. Do not describe partial rows as cluster-wide.", joinCauses(causes))}
+}
+
+// scopeOnlyPartial marks the reasons that narrow what a scan covered without
+// leaving any gap in what it read.
+func scopeOnlyPartial(reason string) bool {
+	return reason == reasonNamespaceScopeLimited || reason == reasonNamespacesExcluded
 }
 
 func joinCauses(causes []string) string {
