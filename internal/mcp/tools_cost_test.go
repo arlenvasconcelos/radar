@@ -305,6 +305,15 @@ func TestLabelNodeRowsAddsPoolAndCountsNodesThatAreGone(t *testing.T) {
 	}
 }
 
+func TestNodeGuidanceFlagsChurnInflatedTotalsOnlyWhenNodesAreGone(t *testing.T) {
+	if strings.Contains(nodeCostGuidance(0), "overstate") {
+		t.Error("without departed nodes the total is the current run rate")
+	}
+	if !strings.Contains(nodeCostGuidance(2), "overstate the current run rate") {
+		t.Error("a total that sums replaced nodes with their replacements must say so")
+	}
+}
+
 func TestNodeRowOmitsAmbiguousComponentCosts(t *testing.T) {
 	// The OpenCost path reports per-vCPU-hour unit prices and Kubecost reports
 	// whole-node totals under the same names, so neither is emitted.

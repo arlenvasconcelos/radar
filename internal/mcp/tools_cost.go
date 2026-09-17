@@ -665,8 +665,18 @@ func costNodesView(ctx context.Context, limit int) (*mcp.CallToolResult, any, er
 		})
 	}
 	resp.NodesNotInCluster = labelNodeRows(resp.Nodes, nodes.Nodes, cachedNode)
-	resp.Guidance = costRateExplainer + " Per-node CPU and memory components are deliberately not reported: the two cost sources define them differently, so use hourlyCost with instanceType to compare nodes. " + costNodeLabelsExplainer
+	resp.Guidance = nodeCostGuidance(resp.NodesNotInCluster)
 	return toJSONResult(resp)
+}
+
+func nodeCostGuidance(nodesNotInCluster int) string {
+	guidance := costRateExplainer + " Per-node CPU and memory components are deliberately not reported: the two cost sources define them differently, so use hourlyCost with instanceType to compare nodes. " + costNodeLabelsExplainer
+	if nodesNotInCluster > 0 {
+		// Each row is a node's rate while it ran, so a node replaced inside the
+		// window and its replacement are both in the sum.
+		guidance += " totals sum every node the source reported over the window, including the nodesNotInCluster, so they overstate the current run rate after node churn."
+	}
+	return guidance
 }
 
 const costNodeLabelsExplainer = "pool and capacityType come from node labels and are omitted when unknown; nodesNotInCluster counts nodes the cost source still reports that no longer exist, which carry neither. on-demand does not mean list price — committed-use and savings-plan discounts are not visible. Whether a pool can shrink (autoscaler limits) is not in this response."

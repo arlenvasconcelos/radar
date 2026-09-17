@@ -521,7 +521,7 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 
 	addToolWithRegistry(paramRegistry, server, &mcp.Tool{
 		Name: "get_rightsizing",
-		Description: "Use when asked whether CPU/memory requests and limits are sized correctly, " +
+		Description: "Use when asked whether CPU/memory requests are sized correctly, " +
 			"which workloads are over-provisioned or starved, or where resource waste is. Returns " +
 			"per-container recommendations derived from 7 DAYS of observed usage, not live " +
 			"metrics — ALWAYS check each row's confidence before recommending a change, because " +
@@ -531,8 +531,8 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 			"Deployment/StatefulSet/DaemonSet with 7-day range queries and can take 45s — call it " +
 			"ONCE to find candidates, then drill in with scope=workload; do not re-run it to " +
 			"refine rows you already have. Scan scopes rank workloads by classification and then " +
-			"by replica-weighted impact, so the first rows are the biggest real savings, not the " +
-			"biggest percentages. Every response explains its own state, coverage and omissions " +
+			"by replica-weighted impact, so the first rows are the largest request changes, not the " +
+			"biggest percentages — request capacity, not billed cost. Every response explains its own state, coverage and omissions " +
 			"in guidance; read it before drawing a conclusion.",
 		Annotations: readOnly,
 	}, logToolCall("get_rightsizing", handleGetRightsizing))

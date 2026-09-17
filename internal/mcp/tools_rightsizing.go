@@ -346,8 +346,9 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 	// Only when the scan did not finish: a budget that expires on the way out
 	// of a complete scan would otherwise tell the caller to narrow a scan that
 	// had already answered everything.
-	// Nor on a partial scan that ran every batch: its cause is RBAC or a query
-	// gap, and the budget may simply have expired after it returned.
+	// Nor on a partial scan no batch of which the deadline cut: its cause is
+	// RBAC or a query gap, and the budget may simply have expired after it
+	// returned.
 	if scanCtx.Err() != nil && (scan.State == prometheuspkg.RightsizingScanUnavailable || hasWarningCode(scan.Warnings, "scan_deadline_exceeded")) {
 		scan.Reason = "scan_deadline_exceeded"
 	}
