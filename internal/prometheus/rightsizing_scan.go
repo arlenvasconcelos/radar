@@ -888,7 +888,9 @@ func snapshotScanWorkloads(ctx context.Context, cache *k8s.ResourceCache, scopes
 					skippedDaemonSets = append(skippedDaemonSets, item.Namespace+"/"+item.Name)
 					continue
 				}
-				add(item, "DaemonSet", int(item.Status.DesiredNumberScheduled), &item.Spec.Template.Spec, false)
+				// A zero not yet re-observed is scanned, but still has no replica
+				// count to weigh impact by.
+				add(item, "DaemonSet", int(item.Status.DesiredNumberScheduled), &item.Spec.Template.Spec, item.Status.DesiredNumberScheduled == 0)
 			}
 		}
 	}

@@ -354,9 +354,10 @@ func loadRightsizingWorkload(ctx context.Context, kind, namespace, name string) 
 		podTemplate = &ds.Spec.Template.Spec
 		managedBy = detectWorkloadManager(ds)
 		replicas = int(ds.Status.DesiredNumberScheduled)
-		// Scans skip these, but a caller naming one gets its retained history,
-		// which is exactly the scaled-to-zero case: a node pool scaled away.
-		scaledToZero = daemonSetMatchesNoNode(ds)
+		// Scans skip a zero the controller has observed, but a caller naming
+		// one gets its retained history, which is exactly the scaled-to-zero
+		// case: a node pool scaled away.
+		scaledToZero = ds.Status.DesiredNumberScheduled == 0
 	}
 
 	if podTemplate == nil {

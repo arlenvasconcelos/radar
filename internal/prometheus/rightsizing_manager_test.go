@@ -106,8 +106,11 @@ func TestScanSkipsDaemonSetsThatMatchNoNode(t *testing.T) {
 		Status: appsv1.DaemonSetStatus{ObservedGeneration: 2}}
 	running := &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "fluentbit"},
 		Status: appsv1.DaemonSetStatus{DesiredNumberScheduled: 3}}
+	// Selector just changed; the controller has not re-counted its nodes yet.
+	pending := &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "node-exporter", Generation: 4},
+		Status: appsv1.DaemonSetStatus{ObservedGeneration: 3}}
 
-	if err := k8s.InitTestResourceCache(fake.NewClientset(parked, noNodes, running)); err != nil {
+	if err := k8s.InitTestResourceCache(fake.NewClientset(parked, noNodes, running, pending)); err != nil {
 		t.Fatalf("InitTestResourceCache: %v", err)
 	}
 	defer k8s.ResetTestState()
@@ -119,14 +122,14 @@ func TestScanSkipsDaemonSetsThatMatchNoNode(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		workloads, _, skipped = snapshotScanWorkloads(context.Background(), cache, scopes)
-		if len(workloads)+len(skipped) == 3 {
+		if len(workloads)+len(skipped) == 4 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	if !reflect.DeepEqual(skipped, []string{"kube-system/nvidia-gpu-device-plugin"}) || len(workloads) != 2 {
-		t.Fatalf("got %d workloads and skipped %v, want 2 and [kube-system/nvidia-gpu-device-plugin]", len(workloads), skipped)
+	if !reflect.DeepEqual(skipped, []string{"kube-system/nvidia-gpu-device-plugin"}) || len(workloads) != 3 {
+		t.Fatalf("got %d workloads and skipped %v, want 3 and [kube-system/nvidia-gpu-device-plugin]", len(workloads), skipped)
 	}
 	for _, workload := range workloads {
 		switch workload.name {
@@ -137,6 +140,12 @@ func TestScanSkipsDaemonSetsThatMatchNoNode(t *testing.T) {
 			}
 			if workload.workload.managedBy == nil || workload.workload.managedBy.Tool != "helm" {
 				t.Errorf("managedBy = %+v, want helm", workload.workload.managedBy)
+			}
+		case "node-exporter":
+			// A replica count of zero with no scaledToZero would rank every
+			// oversized row in_range, since impact multiplies by replicas.
+			if workload.replicas != 0 || !workload.workload.scaledToZero {
+				t.Errorf("unobserved zero DaemonSet = %+v, want replicas 0 and scaledToZero", workload)
 			}
 		case "fluentbit":
 			if workload.replicas != 3 || workload.workload.scaledToZero {
@@ -155,6 +164,13 @@ func TestScanSkipsDaemonSetsThatMatchNoNode(t *testing.T) {
 	}
 	if !single.scaledToZero || single.replicas != 0 {
 		t.Errorf("single DaemonSet with no nodes = replicas %d scaledToZero %v, want 0 and true", single.replicas, single.scaledToZero)
+	}
+	unobserved, err := loadRightsizingWorkload(context.Background(), "DaemonSet", "kube-system", "node-exporter")
+	if err != nil {
+		t.Fatalf("loadRightsizingWorkload: %v", err)
+	}
+	if !unobserved.scaledToZero {
+		t.Error("a zero desired count the controller has not re-observed must still read scaledToZero, not zero-impact balanced")
 	}
 }
 

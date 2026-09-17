@@ -56,7 +56,7 @@ const (
 	costPinnedViewFmt               = "Totals cover only namespace %s, which radar is pinned to with --namespace-scope — not the whole cluster, and not a limit on this identity's permissions."
 	costWasteExplainer              = "unallocatedCost is node compute capacity no workload requested or used; unusedRequestCost is capacity requested but not used. The two do not overlap, and neither is money saved until nodes are actually removed."
 	costWorkloadNotFoundRemediation = "The cost source answered for this namespace but reported no allocation for the requested workload. Check the kind and name, or call view=workloads without kind/name to see what the namespace does have."
-	costTrendSeriesExplainer        = "Series values are hourly rates at each point, not cumulative spend. Each series and the top-level total carry start, end and changePercent so growth can be read without summing the points."
+	costTrendSeriesExplainer        = "Series values are hourly rates at each point, not cumulative spend. Each series and the top-level total carry start, end and changePercent so growth can be read without summing the points. changePercent spans the total's from..to, which is shorter than range when the source retains less history."
 )
 
 // reasonWorkloadNotFound is Radar's own reason: the cost source was healthy and
@@ -167,8 +167,12 @@ type nodePoolRef struct {
 type costTrendSummary struct {
 	// Basis names what the trend sums, which differs by source, so the total
 	// can be compared with the right summary field.
-	Basis         string   `json:"basis,omitempty"`
-	Namespace     string   `json:"namespace,omitempty"`
+	Basis     string `json:"basis,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	// From and To are the first and last points, which span less than the
+	// requested range when the source retains less history.
+	From          string   `json:"from"`
+	To            string   `json:"to"`
 	Start         float64  `json:"start"`
 	End           float64  `json:"end"`
 	ChangePercent *float64 `json:"changePercent,omitempty"`
@@ -860,6 +864,8 @@ func summarizeTrend(series []pkgopencost.CostTrendSeries) ([]costTrendSeriesDTO,
 	}
 	first, last := totalByTimestamp[stamps[0]], totalByTimestamp[stamps[len(stamps)-1]]
 	return out, &costTrendSummary{
+		From:          time.Unix(stamps[0], 0).UTC().Format(time.RFC3339),
+		To:            time.Unix(stamps[len(stamps)-1], 0).UTC().Format(time.RFC3339),
 		Start:         roundHourly(first),
 		End:           roundHourly(last),
 		ChangePercent: changePercent(len(stamps), first, last),

@@ -396,6 +396,11 @@ func TestSummarizeTrendPreComputesDirection(t *testing.T) {
 	if total == nil {
 		t.Fatal("a top-level total is what answers the growth question")
 	}
+	// The span the data covers, which is shorter than range when the source
+	// retains less history than was asked for.
+	if total.From != "1970-01-01T00:01:40Z" || total.To != "1970-01-01T00:03:20Z" {
+		t.Errorf("total span = %q..%q, want the first and last points", total.From, total.To)
+	}
 	// Summed per timestamp: 4 -> 5, not series-by-series.
 	if total.Start != 4 || total.End != 5 {
 		t.Errorf("totals must sum across series per timestamp, got %+v", total)
