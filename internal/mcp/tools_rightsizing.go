@@ -632,7 +632,7 @@ func splitByKindAccess(namespaces []string, byKind map[string][]string) ([]strin
 // scanClaimsFullCoverage marks the empty-scan reasons that assert the whole
 // requested scope was read, which a narrowed scope must override.
 func scanClaimsFullCoverage(reason string) bool {
-	return reason == "no_workloads" || reason == reasonOnlyDaemonSetsWithoutNodes
+	return reason == "no_workloads" || reason == reasonOnlyDaemonSetsWithoutNodes || reason == reasonRowEvidenceIncomplete
 }
 
 // scanCoveredEveryWorkload reports whether a namespace absent from the results
@@ -720,7 +720,7 @@ func filterRightsizingRows(rows []prometheuspkg.RightsizingRow, includeBalanced,
 	var result filteredRows
 	result.rows = make([]rightsizingRowDTO, 0, len(rows))
 	result.classification = prometheuspkg.ClassifyWorkloadRows(rows, replicas, scaledToZero)
-	result.impact = prometheuspkg.CalculateImpact(rows, replicas)
+	result.impact = prometheuspkg.WorkloadImpact(rows, replicas, scaledToZero)
 	keep := make([]bool, len(rows))
 	containerKept := map[string]bool{}
 	for i, row := range rows {
@@ -920,8 +920,8 @@ type rightsizingGuidanceInput struct {
 	omitted          rightsizingOmissions
 	reductionLimited bool
 	keepAll          bool
-	// deadlineExceeded is the only signal that batching stopped early: failed
-	// batches and dropped Deployments both leave evaluated below discovered.
+	// deadlineExceeded marks a scan the budget cut, before a batch or inside
+	// one. Evaluated below discovered does not: dropped Deployments do that too.
 	deadlineExceeded bool
 	// batchQueryFailed names batch failures a deadline would otherwise hide,
 	// since unrun batches also count short of CompletedBatches.
@@ -1008,7 +1008,9 @@ func partialGuidance(in rightsizingGuidanceInput) []string {
 		// batches that ran, so a short count alone never means the scan stopped:
 		// only the deadline warning does, and then unrun batches are not failures.
 		if in.deadlineExceeded {
-			causes = append(causes, fmt.Sprintf("the scan ran out of its budget and stopped early, evaluating %d of %d workloads", cov.WorkloadsEvaluated, cov.WorkloadsDiscovered))
+			// A cut inside the last batch still counts every workload evaluated,
+			// so the count alone cannot say the scan stopped early.
+			causes = append(causes, fmt.Sprintf("the scan ran out of its budget before its queries finished (%d of %d workloads evaluated; rows in a batch the deadline cut lack evidence)", cov.WorkloadsEvaluated, cov.WorkloadsDiscovered))
 			if in.batchQueryFailed {
 				causes = append(causes, "some batches that did run had a failed query, so some rows lack evidence (the warnings name which)")
 			}

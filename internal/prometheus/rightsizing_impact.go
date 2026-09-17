@@ -211,6 +211,27 @@ func ClassifyWorkloadRows(rows []RightsizingRow, replicas int, scaledToZero bool
 	if len(rows) == 0 {
 		return ClassNeedData
 	}
+	evidenced, dropped := evidencedContainerRows(rows, replicas, scaledToZero)
+	if len(evidenced) == 0 {
+		return ClassNeedData
+	}
+	class := ClassifyRows(evidenced, replicas, scaledToZero)
+	// "Nothing to change" is a verdict the unjudged container never received;
+	// only an actionable class from the others stands without it.
+	if dropped && class == ClassInRange {
+		return ClassNeedData
+	}
+	return class
+}
+
+// WorkloadImpact sizes a workload from the same containers ClassifyWorkloadRows
+// judged it on, so an unjudged container's change never sizes that class.
+func WorkloadImpact(rows []RightsizingRow, replicas int, scaledToZero bool) RightsizingImpact {
+	evidenced, _ := evidencedContainerRows(rows, replicas, scaledToZero)
+	return CalculateImpact(evidenced, replicas)
+}
+
+func evidencedContainerRows(rows []RightsizingRow, replicas int, scaledToZero bool) ([]RightsizingRow, bool) {
 	byContainer := make(map[string][]RightsizingRow, len(rows))
 	order := make([]string, 0, len(rows))
 	for _, row := range rows {
@@ -228,14 +249,5 @@ func ClassifyWorkloadRows(rows []RightsizingRow, replicas int, scaledToZero bool
 		}
 		evidenced = append(evidenced, byContainer[container]...)
 	}
-	if len(evidenced) == 0 {
-		return ClassNeedData
-	}
-	class := ClassifyRows(evidenced, replicas, scaledToZero)
-	// "Nothing to change" is a verdict the unjudged container never received;
-	// only an actionable class from the others stands without it.
-	if dropped && class == ClassInRange {
-		return ClassNeedData
-	}
-	return class
+	return evidenced, dropped
 }

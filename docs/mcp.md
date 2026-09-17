@@ -257,9 +257,9 @@ It answers "how much of what this is costing me is being used", not "how much ca
 - **`unallocatedCost`** — node compute capacity no workload requested or used. It comes back only when nodes are removed.
 - **`unusedRequestCost`** — capacity requested but not used. It comes back only after rightsizing frees enough requests for a node to be removed.
 
-The two do not overlap. Rows carry `unusedRequestCost` only; unrequested node capacity belongs to the cluster, so `unallocatedCost` is `null` on a namespace-scoped or RBAC-narrowed summary, and also when the source did not measure it or GPU spend on the nodes keeps it from being separated — never `0`, which would claim the nodes are fully packed. `unusedRequestCost` is likewise absent when no namespace has usage evidence.
+The two do not overlap. Rows carry `unusedRequestCost` only; unrequested node capacity belongs to the cluster, so `unallocatedCost` is `null` on a namespace-scoped or RBAC-narrowed summary, and also when the source did not measure it or GPU spend on the nodes keeps it from being separated — never `0`, which would claim the nodes are fully packed. `unusedRequestCost` is likewise absent when no namespace has usage evidence, and it covers CPU and memory requests only — idle GPUs are not in it.
 
-`hourlyCostBasis` says what `hourlyCost` is, and `allocatedCost` is always the sum of the namespace rows:
+`hourlyCostBasis` says what `hourlyCost` is, and `allocatedCost` is always the sum of the namespace rows. On OpenCost via Prometheus those rows count CPU, memory and storage allocation only; GPU and network cost are not in them.
 
 | Basis | Meaning |
 |-------|---------|
@@ -280,7 +280,7 @@ Rows also carry `pool: {name, source}` and `capacityType` (`spot`, `preemptible`
 2. **`impact`** — the replica-weighted absolute request change (`{replicas, cpu, memory}`, formatted quantities such as `-2250m`), normalized so a CPU change and a memory change are comparable.
 3. Namespace, kind and name, so repeated scans return a stable order.
 
-Rows needing manual review — an HPA, OOM history, a limit conflict, or a reduction against bursty or throttled usage — contribute **no** impact: that saving cannot be applied unattended, so counting it would rank a workload by waste it cannot give back. Ranking by the largest *proportional* change instead would put an unrequested 64Mi sidecar above the workload wasting two cores.
+Rows needing manual review — an HPA, OOM history, a limit conflict, or a reduction against bursty or throttled usage — contribute **no** impact: that saving cannot be applied unattended, so counting it would rank a workload by waste it cannot give back. Nor does a container left out of `classification` for missing evidence, so `impact` always sizes the class it sits beside. Ranking by the largest *proportional* change instead would put an unrequested 64Mi sidecar above the workload wasting two cores.
 
 `truncated: true` is accompanied by `totalWorkloads`, so a capped list can be reported as "top N of M".
 
@@ -289,7 +289,7 @@ Rows needing manual review — an HPA, OOM history, a limit conflict, or a reduc
 By default a scan returns only `oversized`, `under_requested` and `missing_request` rows and reports the rest in `omitted`. Four exceptions:
 
 - **`scope=workload` returns every row.** The caller named one workload; a handful of rows is the whole answer.
-- **A `scaledToZero` workload returns every row.** Unless its evidence is missing (`need_data`), it classifies as `review` — its 7-day history may not describe the next scale-up — and the Rightsizing page lists it among the actions. A DaemonSet with zero desired pods matches no node right now, so scans skip it, count it in `coverage.daemonSetsWithoutNodes` and name it in `skippedDaemonSets` (first 50, `skippedDaemonSetsTruncated` beyond that); a node pool scaled to zero still has history for it, which `scope=workload` reads as a `scaledToZero` workload. A namespace holding only such DaemonSets is never reported in `namespacesWithoutWorkloads`, and a scope holding nothing else answers `reason: only_daemonsets_without_nodes` rather than `no_workloads`.
+- **A `scaledToZero` workload returns every row.** Unless its evidence is missing (`need_data`), it classifies as `review` — its 7-day history may not describe the next scale-up — and the Rightsizing page lists it among the actions. A DaemonSet with zero desired pods, once its controller has observed its current spec, matches no node right now, so scans skip it, count it in `coverage.daemonSetsWithoutNodes` and name it in `skippedDaemonSets` (first 50, `skippedDaemonSetsTruncated` beyond that); a node pool scaled to zero still has history for it, which `scope=workload` reads as a `scaledToZero` workload. A zero the controller has not yet re-observed (a new DaemonSet, or a changed selector) is scanned instead, as a `scaledToZero` workload. A namespace holding only such DaemonSets is never reported in `namespacesWithoutWorkloads`, and a scope holding nothing else answers `reason: only_daemonsets_without_nodes` rather than `no_workloads`.
 - **A returned container keeps its unevidenced rows.** One failed query or short history makes the whole container `need_data`; without that row, a clean recommendation on the other resource sits beside a class with no visible cause. On scans such a row's `queryError` names the warning code carrying the real error, and `omitted.queryError` counts only the rows still hidden. The `need_data` rank reflects the missing evidence, not doubt about the returned recommendation.
 - **A row carrying `currentPodOOM`, `windowOomEvidence`, `limitConflict`, significant throttling (≥10%), or an autoscaler is always returned**, whatever its `fit`. `fit` is settled from the request alone, so the classic OOM shape — request fine, **limit** too low — classifies as `balanced`. Filtering on `fit` would drop exactly the row an "is this under-requested?" question is looking for.
 

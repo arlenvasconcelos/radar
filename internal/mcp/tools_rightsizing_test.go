@@ -293,7 +293,7 @@ func TestPartialGuidanceNamesTheCausePresent(t *testing.T) {
 		},
 		deadlineExceeded: true,
 	})
-	if !strings.Contains(truncatedScan, "stopped early, evaluating 4 of 10 workloads") {
+	if !strings.Contains(truncatedScan, "ran out of its budget before its queries finished (4 of 10 workloads evaluated") {
 		t.Errorf("an early stop must say how many workloads went unevaluated: %q", truncatedScan)
 	}
 	if strings.Contains(truncatedScan, "had a failure") || strings.Contains(truncatedScan, "failed query") {
@@ -304,8 +304,19 @@ func TestPartialGuidanceNamesTheCausePresent(t *testing.T) {
 		coverage:         &prometheuspkg.RightsizingScanCoverage{Batches: 3, CompletedBatches: 0, WorkloadsDiscovered: 10, WorkloadsEvaluated: 4},
 		deadlineExceeded: true, batchQueryFailed: true,
 	})
-	if !strings.Contains(stoppedAfterFailure, "stopped early") || !strings.Contains(stoppedAfterFailure, "failed query") {
+	if !strings.Contains(stoppedAfterFailure, "ran out of its budget") || !strings.Contains(stoppedAfterFailure, "failed query") {
 		t.Errorf("a deadline must not hide a failure in a batch that ran: %q", stoppedAfterFailure)
+	}
+
+	// A deadline inside the last batch reaches every workload but leaves that
+	// batch's rows without evidence; "stopped early, 12 of 12" contradicts itself.
+	cutLastBatch := rightsizingGuidance(rightsizingGuidanceInput{
+		state: prometheuspkg.RightsizingScanPartial, scope: "namespace",
+		coverage:         &prometheuspkg.RightsizingScanCoverage{Batches: 1, CompletedBatches: 0, WorkloadsDiscovered: 12, WorkloadsEvaluated: 12},
+		deadlineExceeded: true, batchQueryFailed: true,
+	})
+	if strings.Contains(cutLastBatch, "stopped early") || !strings.Contains(cutLastBatch, "12 of 12 workloads evaluated; rows in a batch the deadline cut lack evidence") {
+		t.Errorf("a deadline that cut the last batch must not read as an early stop: %q", cutLastBatch)
 	}
 
 	// Dropped Deployments leave evaluated below discovered with every batch run.
@@ -1096,7 +1107,7 @@ func TestSplitByKindAccessExcludesNamespacesNoKindCanList(t *testing.T) {
 }
 
 func TestEmptyScanReasonsAreOverriddenByANarrowedScope(t *testing.T) {
-	for _, reason := range []string{"no_workloads", reasonOnlyDaemonSetsWithoutNodes} {
+	for _, reason := range []string{"no_workloads", reasonOnlyDaemonSetsWithoutNodes, reasonRowEvidenceIncomplete} {
 		if !scanClaimsFullCoverage(reason) {
 			t.Errorf("%s claims the whole scope was read and must yield to a narrowed-scope reason", reason)
 		}
@@ -1143,6 +1154,24 @@ func TestUnjudgedContainerKeepsTheWorkloadOutOfInRange(t *testing.T) {
 	failed.QueryError = prometheuspkg.RowUsageQueryFailed
 	if got := prometheuspkg.ClassifyWorkloadRows([]prometheuspkg.RightsizingRow{balanced, failed}, 2, false); got != prometheuspkg.ClassNeedData {
 		t.Errorf("classification = %q, want need_data", got)
+	}
+}
+
+// Impact must come from the containers the class was judged on: an unjudged
+// sidecar's increase would otherwise size a workload ranked as a reduction.
+func TestImpactExcludesContainersLeftOutOfClassification(t *testing.T) {
+	app := rightsizingRow(prometheuspkg.FitOversized, 4, 1)
+	sidecarMemory := rightsizingRow(prometheuspkg.FitUnderRequested, 64*1024*1024, 8*1024*1024*1024)
+	sidecarMemory.Container, sidecarMemory.Resource = "sidecar", "memory"
+	sidecarCPU := rightsizingRow(prometheuspkg.FitInsufficientHistory, 0.1, 0)
+	sidecarCPU.Container, sidecarCPU.RecommendedReq = "sidecar", nil
+
+	got := filterRightsizingRows([]prometheuspkg.RightsizingRow{app, sidecarMemory, sidecarCPU}, false, false, 2, false)
+	if got.classification != prometheuspkg.ClassReduction {
+		t.Fatalf("classification = %q, want reduction from the evidenced app container", got.classification)
+	}
+	if got.impact.MemoryChange != 0 || got.impact.CPUChange != -6 {
+		t.Errorf("impact = %+v, want only the app's CPU reduction (-3 x 2 replicas)", got.impact)
 	}
 }
 

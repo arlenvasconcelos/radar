@@ -29,10 +29,11 @@ import (
 const monthlyProjectionHours = 730
 
 const (
-	costDefaultLimit  = 20
-	costMaxLimit      = 100
-	costCallBudget    = 45 * time.Second
-	costRateExplainer = "Costs are hourly rates. projectedMonthlyCost = hourlyCost x 730."
+	costDefaultLimit    = 20
+	costMaxLimit        = 100
+	costCallBudget      = 45 * time.Second
+	costHourlyExplainer = "Costs are hourly rates."
+	costRateExplainer   = costHourlyExplainer + " projectedMonthlyCost = hourlyCost x 730."
 	// The denominator is allocation — max(requested, observed) — not the
 	// request, so the ratio caps at 100 and a low value is not by itself a
 	// defect. Neither fact is derivable from the numbers in the response.
@@ -54,7 +55,7 @@ const (
 	// pin as a permission problem would have an agent tell a cluster-admin
 	// their access is restricted.
 	costPinnedViewFmt               = "Totals cover only namespace %s, which radar is pinned to with --namespace-scope — not the whole cluster, and not a limit on this identity's permissions."
-	costWasteExplainer              = "unallocatedCost is node compute capacity no workload requested or used; unusedRequestCost is capacity requested but not used. The two do not overlap, and neither is money saved until nodes are actually removed."
+	costWasteExplainer              = "unallocatedCost is node compute capacity no workload requested or used; unusedRequestCost is capacity requested but not used. The two do not overlap, and neither is money saved until nodes are actually removed. unusedRequestCost covers CPU and memory requests only, so idle GPUs are not in it."
 	costWorkloadNotFoundRemediation = "The cost source answered for this namespace but reported no allocation for the requested workload. Check the kind and name, or call view=workloads without kind/name to see what the namespace does have."
 	costTrendSeriesExplainer        = "Series values are hourly rates at each point, not cumulative spend. Each series and the top-level total carry start, end and changePercent so growth can be read without summing the points. changePercent spans the total's from..to, which is shorter than range when the source retains less history."
 )
@@ -423,6 +424,9 @@ func costSplitGuidance(summary *pkgopencost.CostSummary, scoped bool) string {
 	} else {
 		parts = append(parts, "hourlyCost is allocated spend (hourlyCostBasis=allocated) and does not include unallocatedCost; neither does projectedMonthlyCost, so it is not whole-cluster node spend.")
 	}
+	if summary.Source == "prometheus" {
+		parts = append(parts, "On this source namespace rows and allocatedCost count CPU, memory and storage allocation only; GPU and network cost are not in them.")
+	}
 	parts = append(parts, costWasteExplainer)
 	if summary.TotalUnallocatedCost == nil {
 		if scoped {
@@ -778,7 +782,7 @@ func costTrendView(ctx context.Context, input getCostInput) (*mcp.CallToolResult
 	if allowed != nil {
 		resp.NamespaceScope = allowed
 	}
-	resp.Guidance = costGuidance(allowed, strings.TrimSpace(input.Namespace))
+	resp.Guidance = costTrendGuidance(allowed, strings.TrimSpace(input.Namespace))
 	if !trend.Available {
 		if scopedEmptyResult(trend.Reason, allowed) {
 			resp.Remediation = costScopeEmptyRemediation
@@ -1008,16 +1012,25 @@ func costRemediation(reason string) string {
 // agent tell the user their access is restricted when they simply asked for one
 // namespace.
 func costGuidance(scope []string, requestedNamespace string) string {
+	return withScopeGuidance(costRateExplainer, scope, requestedNamespace)
+}
+
+// costTrendGuidance leaves out the monthly projection: trend carries no totals.
+func costTrendGuidance(scope []string, requestedNamespace string) string {
+	return withScopeGuidance(costHourlyExplainer, scope, requestedNamespace)
+}
+
+func withScopeGuidance(rate string, scope []string, requestedNamespace string) string {
 	if len(scope) == 0 {
-		return costRateExplainer
+		return rate
 	}
 	if requestedNamespace != "" {
-		return costRateExplainer + " " + fmt.Sprintf(costRequestedViewFmt, requestedNamespace)
+		return rate + " " + fmt.Sprintf(costRequestedViewFmt, requestedNamespace)
 	}
 	// The pin is checked before RBAC: both narrow the scope identically, and
 	// only the pin is knowable from configuration rather than from the answer.
 	if pinned, ok := NamespacePinned(); ok {
-		return costRateExplainer + " " + fmt.Sprintf(costPinnedViewFmt, pinned)
+		return rate + " " + fmt.Sprintf(costPinnedViewFmt, pinned)
 	}
-	return costRateExplainer + " " + fmt.Sprintf(costPartialViewFmt, len(scope))
+	return rate + " " + fmt.Sprintf(costPartialViewFmt, len(scope))
 }

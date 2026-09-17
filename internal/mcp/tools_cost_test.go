@@ -305,6 +305,25 @@ func TestLabelNodeRowsAddsPoolAndCountsNodesThatAreGone(t *testing.T) {
 	}
 }
 
+func TestTrendGuidanceDoesNotNameTheMonthlyProjection(t *testing.T) {
+	if strings.Contains(costTrendGuidance(nil, ""), "projectedMonthlyCost") {
+		t.Error("trend responses carry no totals, so guidance must not explain projectedMonthlyCost")
+	}
+}
+
+func TestPrometheusSplitGuidanceSaysRowsExcludeGPU(t *testing.T) {
+	prom := costSplitGuidance(&pkgopencost.CostSummary{Source: "prometheus", HourlyCostBasis: pkgopencost.HourlyCostBasisAllocated}, false)
+	if !strings.Contains(prom, "GPU and network cost are not in them") {
+		t.Errorf("OpenCost namespace rows are CPU, memory and storage only: %q", prom)
+	}
+	if kubecost := costSplitGuidance(&pkgopencost.CostSummary{Source: "kubecost", HourlyCostBasis: pkgopencost.HourlyCostBasisAllocated}, false); strings.Contains(kubecost, "GPU and network cost are not in them") {
+		t.Errorf("Kubecost rows carry every allocated component: %q", kubecost)
+	}
+	if !strings.Contains(costWasteExplainer, "CPU and memory requests only") {
+		t.Error("unusedRequestCost must say idle GPUs are not in it")
+	}
+}
+
 func TestNodeGuidanceFlagsChurnInflatedTotalsOnlyWhenNodesAreGone(t *testing.T) {
 	if strings.Contains(nodeCostGuidance(0), "overstate") {
 		t.Error("without departed nodes the total is the current run rate")
