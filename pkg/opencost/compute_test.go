@@ -99,6 +99,7 @@ func TestComputeCostSummary_HappyPath(t *testing.T) {
 		{contains: "container_memory_working_set_bytes", body: vectorBody(map[string]float64{"checkout": 1.2, "payments": 0.25})},
 		{contains: "pv_hourly_cost", body: vectorBody(map[string]float64{"checkout": 0.05})},
 		{contains: "node_total_hourly_cost", body: scalarBody(8.0)}, // exceeds sum of namespaces, so it wins
+		{contains: "node_gpu_count", body: scalarBody(0)},
 	})
 
 	got := ComputeCostSummaryFromProm(context.Background(), client, SummaryOptions{Currency: "GBP"})
@@ -122,6 +123,24 @@ func TestComputeCostSummary_HappyPath(t *testing.T) {
 	// totalIdle = 6.5 - 2.85 = 3.65
 	if got.TotalIdleCost < 3.5 || got.TotalIdleCost > 3.8 {
 		t.Errorf("TotalIdleCost=%v, want ~3.65", got.TotalIdleCost)
+	}
+	// Node cost won, so hourlyCost is node capacity: it already holds the
+	// 8 - 6.5 of compute nobody allocated, and the rows' storage is not in it.
+	if got.HourlyCostBasis != HourlyCostBasisNodeCapacity {
+		t.Errorf("HourlyCostBasis=%q, want node_capacity", got.HourlyCostBasis)
+	}
+	if got.TotalUnallocatedCost == nil || *got.TotalUnallocatedCost != 1.5 {
+		t.Errorf("TotalUnallocatedCost=%v, want 1.5", got.TotalUnallocatedCost)
+	}
+	if got.TotalAllocatedCost != 6.55 {
+		t.Errorf("allocated=%v, want 6.55", got.TotalAllocatedCost)
+	}
+	var rowIdle float64
+	for _, row := range got.Namespaces {
+		rowIdle += row.IdleCost
+	}
+	if got.TotalUnusedRequestCost != roundTo(rowIdle, 4) {
+		t.Errorf("unused request cost=%v, want the rows' sum %v", got.TotalUnusedRequestCost, roundTo(rowIdle, 4))
 	}
 	if len(got.Namespaces) != 2 {
 		t.Fatalf("expected 2 namespaces, got %d", len(got.Namespaces))
@@ -455,5 +474,94 @@ func TestNamespaceMissingFromOneUsageResultIsFlagged(t *testing.T) {
 	}
 	if !got.Namespaces[0].UsageUnavailable {
 		t.Error("namespace present in the CPU usage result but absent from memory was not flagged; partial evidence is still incomplete")
+	}
+}
+
+// Without node cost the source never measured unallocated capacity, and a zero
+// there would claim the nodes are fully packed.
+func TestComputeCostSummaryWithoutNodeCostLeavesUnallocatedUnknown(t *testing.T) {
+	client := scriptedProm(t, []scriptedCase{
+		{contains: "container_cpu_allocation", body: vectorBody(map[string]float64{"checkout": 2.0})},
+		{contains: "container_memory_allocation_bytes", body: vectorBody(map[string]float64{"checkout": 1.0})},
+	})
+	got := ComputeCostSummaryFromProm(context.Background(), client, SummaryOptions{})
+	if !got.Available {
+		t.Fatalf("summary unavailable: %+v", got)
+	}
+	if got.TotalUnallocatedCost != nil {
+		t.Errorf("TotalUnallocatedCost=%v, want nil when node cost is absent", *got.TotalUnallocatedCost)
+	}
+	if got.HourlyCostBasis != HourlyCostBasisAllocated || got.TotalHourlyCost != got.TotalAllocatedCost {
+		t.Errorf("basis=%q hourly=%v allocated=%v, want allocated and equal totals", got.HourlyCostBasis, got.TotalHourlyCost, got.TotalAllocatedCost)
+	}
+}
+
+func TestComputeCostSummaryClampsUnallocatedAtZero(t *testing.T) {
+	client := scriptedProm(t, []scriptedCase{
+		{contains: "container_cpu_allocation", body: vectorBody(map[string]float64{"checkout": 2.0})},
+		{contains: "container_memory_allocation_bytes", body: vectorBody(map[string]float64{"checkout": 1.0})},
+		{contains: "node_total_hourly_cost", body: scalarBody(2.9)},
+		{contains: "node_gpu_count", body: scalarBody(0)},
+	})
+	got := ComputeCostSummaryFromProm(context.Background(), client, SummaryOptions{})
+	if got.TotalUnallocatedCost == nil || *got.TotalUnallocatedCost != 0 {
+		t.Errorf("TotalUnallocatedCost=%v, want 0 when price rounding puts allocation above node cost", got.TotalUnallocatedCost)
+	}
+}
+
+// node_total_hourly_cost includes GPU spend the CPU and memory allocation does
+// not, so on GPU nodes the difference would report allocated GPUs as idle.
+func TestComputeCostSummaryLeavesUnallocatedUnknownOnGPUNodes(t *testing.T) {
+	client := scriptedProm(t, []scriptedCase{
+		{contains: "container_cpu_allocation", body: vectorBody(map[string]float64{"training": 2.0})},
+		{contains: "container_memory_allocation_bytes", body: vectorBody(map[string]float64{"training": 1.0})},
+		{contains: "node_total_hourly_cost", body: scalarBody(9.0)},
+		{contains: "node_gpu_count", body: scalarBody(6.0)},
+	})
+	got := ComputeCostSummaryFromProm(context.Background(), client, SummaryOptions{})
+	if got.TotalUnallocatedCost != nil {
+		t.Errorf("TotalUnallocatedCost=%v, want nil when nodes carry GPU spend", *got.TotalUnallocatedCost)
+	}
+	if got.HourlyCostBasis != HourlyCostBasisNodeCapacity {
+		t.Errorf("HourlyCostBasis=%q, want node_capacity", got.HourlyCostBasis)
+	}
+}
+
+// OpenCost can be configured not to emit its GPU metrics while node cost still
+// includes GPU spend, so an absent GPU result cannot be read as no GPUs.
+func TestComputeCostSummaryTreatsMissingGPUMetricsAsUnknown(t *testing.T) {
+	client := scriptedProm(t, []scriptedCase{
+		{contains: "container_cpu_allocation", body: vectorBody(map[string]float64{"a": 2.0})},
+		{contains: "container_memory_allocation_bytes", body: vectorBody(map[string]float64{"a": 1.0})},
+		{contains: "node_total_hourly_cost", body: scalarBody(9.0)},
+	})
+	if got := ComputeCostSummaryFromProm(context.Background(), client, SummaryOptions{}); got.TotalUnallocatedCost != nil {
+		t.Errorf("TotalUnallocatedCost=%v, want nil without GPU metrics", *got.TotalUnallocatedCost)
+	}
+}
+
+func TestComputeCostSummaryWithholdsUnallocatedWhenAnAllocationFamilyIsMissing(t *testing.T) {
+	client := scriptedProm(t, []scriptedCase{
+		{contains: "container_cpu_allocation", body: vectorBody(map[string]float64{"a": 2.0})},
+		{contains: "node_total_hourly_cost", body: scalarBody(9.0)},
+		{contains: "node_gpu_count", body: scalarBody(0)},
+	})
+	if got := ComputeCostSummaryFromProm(context.Background(), client, SummaryOptions{}); got.TotalUnallocatedCost != nil {
+		t.Errorf("TotalUnallocatedCost=%v, want nil when memory allocation is absent", *got.TotalUnallocatedCost)
+	}
+}
+
+// One namespace using more than it was allocated must not cancel another's
+// unused allocation in the total, as it does in the aggregate idle figure.
+func TestUnusedRequestCostDoesNotNetOveruseAgainstWaste(t *testing.T) {
+	client := scriptedProm(t, []scriptedCase{
+		{contains: "container_cpu_allocation", body: vectorBody(map[string]float64{"idle": 4.0, "busy": 1.0})},
+		{contains: "container_memory_allocation_bytes", body: vectorBody(map[string]float64{"idle": 0.0, "busy": 0.0})},
+		{contains: "container_cpu_usage_seconds_total", body: vectorBody(map[string]float64{"idle": 1.0, "busy": 4.0})},
+		{contains: "container_memory_working_set_bytes", body: vectorBody(map[string]float64{"idle": 0.0, "busy": 0.0})},
+	})
+	got := ComputeCostSummaryFromProm(context.Background(), client, SummaryOptions{})
+	if got.TotalUnusedRequestCost != 3 {
+		t.Errorf("TotalUnusedRequestCost=%v, want 3 from the idle namespace alone", got.TotalUnusedRequestCost)
 	}
 }

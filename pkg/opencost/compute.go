@@ -303,6 +303,26 @@ func ComputeCostSummary(ctx context.Context, client *RESTClient, opts SummaryOpt
 	}
 }
 
+// mayHaveGPUCost reports whether node cost may carry GPU spend. Only an
+// explicit zero rules it out: a failed query, or an empty result from GPU
+// metrics OpenCost was configured not to emit, leaves the share unknown.
+func mayHaveGPUCost(ctx context.Context, client *prom.Client) bool {
+	result, err := client.Query(ctx, nodeGPUHourlyCostExpr)
+	if err != nil || len(result.Series) == 0 || len(result.Series[0].DataPoints) == 0 {
+		return true
+	}
+	return result.Series[0].DataPoints[0].Value > 0
+}
+
+// optionalCost returns nil when the figure was never measured, so a reader
+// cannot mistake "unknown" for zero.
+func optionalCost(measured bool, value float64) *float64 {
+	if !measured {
+		return nil
+	}
+	return &value
+}
+
 // safeRatio returns num/den or 0 when den is non-positive.
 func safeRatio(num, den float64) float64 {
 	if den <= 0 {
@@ -388,7 +408,7 @@ func ComputeCostSummaryFromProm(ctx context.Context, client *prom.Client, opts S
 	mergeSeriesIntoNamespaceField(cpuResult, nsMap, func(nc *NamespaceCost, v float64) { nc.CPUCost = v })
 	mergeSeriesIntoNamespaceField(memResult, nsMap, func(nc *NamespaceCost, v float64) { nc.MemoryCost = v })
 
-	var totalHourlyCost, totalStorageCost, totalUsageCost, totalAllocCost float64
+	var totalHourlyCost, totalStorageCost, totalUsageCost, totalAllocCost, computeAllocCost, unusedRequestCost float64
 	namespaces := make([]NamespaceCost, 0, len(nsMap))
 	for _, nc := range nsMap {
 		nc.HourlyCost = nc.CPUCost + nc.MemoryCost
@@ -412,20 +432,36 @@ func ComputeCostSummaryFromProm(ctx context.Context, client *prom.Client, opts S
 		// nothing still has a series carrying 0.
 		nc.UsageUnavailable = cpuUsageErr != nil || memUsageErr != nil || !cpuMeasured || !memMeasured
 		allocCost := nc.CPUCost + nc.MemoryCost
+		computeAllocCost += allocCost
 		usageCost := nc.CPUUsageCost + nc.MemoryUsageCost
 		if !nc.UsageUnavailable {
 			nc.Efficiency = EfficiencyPercent(usageCost, allocCost)
 			nc.IdleCost = idleFromUsage(usageCost, allocCost)
 			totalAllocCost += allocCost
 			totalUsageCost += usageCost
+			unusedRequestCost += nc.IdleCost
 		}
 		totalHourlyCost += nc.HourlyCost
 		namespaces = append(namespaces, *nc)
 	}
 
+	allocatedCost := totalHourlyCost
+	basis := HourlyCostBasisAllocated
+	var unallocatedCost *float64
 	if nodeResult, err := client.Query(ctx, `sum(`+nodeTotalHourlyCostExpr+`)`); err == nil && len(nodeResult.Series) > 0 && len(nodeResult.Series[0].DataPoints) > 0 {
-		if nodeCost := nodeResult.Series[0].DataPoints[0].Value; nodeCost > totalHourlyCost {
+		nodeCost := nodeResult.Series[0].DataPoints[0].Value
+		// Node cost includes GPU spend the CPU and memory allocation does not,
+		// so on GPU nodes the difference would report allocated GPUs as
+		// unallocated. Price rounding can put the allocation slightly above
+		// node cost, hence the clamp.
+		// A missing CPU or memory allocation family would be subtracted as zero.
+		if len(cpuResult.Series) > 0 && len(memResult.Series) > 0 && !mayHaveGPUCost(ctx, client) {
+			unallocated := roundTo(max(nodeCost-computeAllocCost, 0), 4)
+			unallocatedCost = &unallocated
+		}
+		if nodeCost > totalHourlyCost {
 			totalHourlyCost = nodeCost
+			basis = HourlyCostBasisNodeCapacity
 		}
 	}
 
@@ -450,14 +486,20 @@ func ComputeCostSummaryFromProm(ctx context.Context, client *prom.Client, opts S
 	}
 
 	return &CostSummary{
-		Available:         true,
-		Currency:          opts.Currency,
-		Window:            opts.Window,
-		TotalHourlyCost:   totalHourlyCost,
-		TotalStorageCost:  totalStorageCost,
-		TotalIdleCost:     totalIdleCost,
-		ClusterEfficiency: clusterEfficiency,
-		Namespaces:        namespaces,
+		Available:            true,
+		Currency:             opts.Currency,
+		Window:               opts.Window,
+		TotalHourlyCost:      totalHourlyCost,
+		TotalStorageCost:     totalStorageCost,
+		TotalIdleCost:        totalIdleCost,
+		TotalUnallocatedCost: unallocatedCost,
+		// Summed per namespace like Kubecost's: the aggregate TotalIdleCost lets
+		// one namespace's overuse cancel another's unused allocation.
+		TotalUnusedRequestCost: roundTo(unusedRequestCost, 4),
+		TotalAllocatedCost:     roundTo(allocatedCost, 4),
+		HourlyCostBasis:        basis,
+		ClusterEfficiency:      clusterEfficiency,
+		Namespaces:             namespaces,
 	}
 }
 

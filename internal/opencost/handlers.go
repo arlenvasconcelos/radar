@@ -287,6 +287,11 @@ func FilterCostSummary(resp *pkgopencost.CostSummary, allowed []string) {
 	resp.TotalStorageCost = 0
 	resp.TotalNetworkCost = 0
 	resp.TotalIdleCost = 0
+	// Unrequested node capacity cannot be attributed to a namespace, so a
+	// scoped summary has no unallocated figure, and its total is the rows'.
+	resp.TotalUnallocatedCost = nil
+	resp.TotalUnusedRequestCost = 0
+	resp.HourlyCostBasis = pkgopencost.HourlyCostBasisAllocated
 	var allocated, usage float64
 	for _, row := range resp.Namespaces {
 		if _, ok := allow[row.Name]; !ok {
@@ -297,12 +302,14 @@ func FilterCostSummary(resp *pkgopencost.CostSummary, allowed []string) {
 		resp.TotalStorageCost += row.StorageCost
 		resp.TotalNetworkCost += row.NetworkCost
 		resp.TotalIdleCost += row.IdleCost
+		resp.TotalUnusedRequestCost += row.IdleCost
 		if !row.UsageUnavailable {
 			allocated += row.CPUCost + row.MemoryCost
 			usage += row.CPUUsageCost + row.MemoryUsageCost
 		}
 	}
 	resp.Namespaces = filtered
+	resp.TotalAllocatedCost = resp.TotalHourlyCost
 	if sourceAvailable && len(filtered) == 0 {
 		resp.Available = false
 		resp.Reason = pkgopencost.ReasonNoMetrics

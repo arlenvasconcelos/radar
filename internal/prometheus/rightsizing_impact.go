@@ -220,8 +220,10 @@ func ClassifyWorkloadRows(rows []RightsizingRow, replicas int, scaledToZero bool
 		byContainer[row.Container] = append(byContainer[row.Container], row)
 	}
 	evidenced := make([]RightsizingRow, 0, len(rows))
+	dropped := false
 	for _, container := range order {
 		if ClassifyRows(byContainer[container], replicas, scaledToZero) == ClassNeedData {
+			dropped = true
 			continue
 		}
 		evidenced = append(evidenced, byContainer[container]...)
@@ -229,5 +231,11 @@ func ClassifyWorkloadRows(rows []RightsizingRow, replicas int, scaledToZero bool
 	if len(evidenced) == 0 {
 		return ClassNeedData
 	}
-	return ClassifyRows(evidenced, replicas, scaledToZero)
+	class := ClassifyRows(evidenced, replicas, scaledToZero)
+	// "Nothing to change" is a verdict the unjudged container never received;
+	// only an actionable class from the others stands without it.
+	if dropped && class == ClassInRange {
+		return ClassNeedData
+	}
+	return class
 }

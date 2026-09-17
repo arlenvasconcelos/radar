@@ -175,6 +175,29 @@ func TestFilterCostSummaryRecomputesVisibleTotals(t *testing.T) {
 	}
 }
 
+// Unrequested node capacity belongs to the cluster, so a scoped summary cannot
+// carry it, and its total is the visible rows' rather than node cost.
+func TestFilterCostSummaryDropsClusterLevelUnallocatedCost(t *testing.T) {
+	unallocated := 4.0
+	resp := &pkgopencost.CostSummary{
+		Available:            true,
+		TotalHourlyCost:      20,
+		HourlyCostBasis:      pkgopencost.HourlyCostBasisNodeCapacity,
+		TotalUnallocatedCost: &unallocated,
+		Namespaces: []pkgopencost.NamespaceCost{
+			{Name: "allowed", HourlyCost: 3, CPUCost: 2, MemoryCost: 1, CPUUsageCost: 1, MemoryUsageCost: 0.5, IdleCost: 1.5},
+			{Name: "private", HourlyCost: 8, CPUCost: 4, MemoryCost: 4, IdleCost: 2},
+		},
+	}
+	FilterCostSummary(resp, []string{"allowed"})
+	if resp.TotalUnallocatedCost != nil {
+		t.Errorf("TotalUnallocatedCost=%v, want nil on a scoped summary", *resp.TotalUnallocatedCost)
+	}
+	if resp.HourlyCostBasis != pkgopencost.HourlyCostBasisAllocated || resp.TotalAllocatedCost != 3 || resp.TotalUnusedRequestCost != 1.5 {
+		t.Errorf("basis=%q allocated=%v unused=%v, want allocated, 3 and 1.5", resp.HourlyCostBasis, resp.TotalAllocatedCost, resp.TotalUnusedRequestCost)
+	}
+}
+
 func TestFilterCostSummaryExcludesUnavailableUsageFromEfficiency(t *testing.T) {
 	resp := &pkgopencost.CostSummary{
 		Available:         true,

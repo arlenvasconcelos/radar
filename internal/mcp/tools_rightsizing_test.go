@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -85,12 +87,16 @@ func rightsizingRow(fit prometheuspkg.RightsizingFit, current, recommended float
 }
 
 func TestFilterRightsizingRowsDropsBalancedByDefault(t *testing.T) {
+	// The unevidenced row belongs to a container with nothing else returned:
+	// a returned container keeps its unevidenced rows, which is tested apart.
+	unjudged := rightsizingRow(prometheuspkg.FitInsufficientHistory, 1, 1)
+	unjudged.Container = "sidecar"
 	rows := []prometheuspkg.RightsizingRow{
 		rightsizingRow(prometheuspkg.FitBalanced, 1, 1),
 		rightsizingRow(prometheuspkg.FitOversized, 4, 1),
 		rightsizingRow(prometheuspkg.FitUnderRequested, 1, 4),
 		rightsizingRow(prometheuspkg.FitMissingRequest, 0, 2),
-		rightsizingRow(prometheuspkg.FitInsufficientHistory, 1, 1),
+		unjudged,
 	}
 
 	filtered := filterRightsizingRows(rows, false, false, 1, false)
@@ -278,21 +284,41 @@ func TestPartialGuidanceNamesTheCausePresent(t *testing.T) {
 		t.Errorf("partial caching can be the only reason for partial, so it must be named: %q", cached)
 	}
 
-	// An early stop is the case where workloads went unevaluated. Counting
-	// batches alone cannot distinguish it from a batch whose queries failed,
-	// so the fixture states the workload counts that make it a stop.
+	// Only the deadline warning makes a short batch count an early stop.
 	truncatedScan := rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "cluster",
 		coverage: &prometheuspkg.RightsizingScanCoverage{
 			Batches: 3, CompletedBatches: 1,
 			WorkloadsDiscovered: 10, WorkloadsEvaluated: 4,
 		},
+		deadlineExceeded: true,
 	})
-	if !strings.Contains(truncatedScan, "1 of 3 batches") {
-		t.Errorf("an early stop must be stated with its counts: %q", truncatedScan)
-	}
-	if !strings.Contains(truncatedScan, "4 of 10 workloads") {
+	if !strings.Contains(truncatedScan, "stopped early, evaluating 4 of 10 workloads") {
 		t.Errorf("an early stop must say how many workloads went unevaluated: %q", truncatedScan)
+	}
+	if strings.Contains(truncatedScan, "had a failure") || strings.Contains(truncatedScan, "failed query") {
+		t.Errorf("batches the deadline left unrun are not failed batches: %q", truncatedScan)
+	}
+	stoppedAfterFailure := rightsizingGuidance(rightsizingGuidanceInput{
+		state: prometheuspkg.RightsizingScanPartial, scope: "cluster",
+		coverage:         &prometheuspkg.RightsizingScanCoverage{Batches: 3, CompletedBatches: 0, WorkloadsDiscovered: 10, WorkloadsEvaluated: 4},
+		deadlineExceeded: true, batchQueryFailed: true,
+	})
+	if !strings.Contains(stoppedAfterFailure, "stopped early") || !strings.Contains(stoppedAfterFailure, "failed query") {
+		t.Errorf("a deadline must not hide a failure in a batch that ran: %q", stoppedAfterFailure)
+	}
+
+	// Dropped Deployments leave evaluated below discovered with every batch run.
+	droppedDeployments := rightsizingGuidance(rightsizingGuidanceInput{
+		state: prometheuspkg.RightsizingScanPartial, scope: "cluster",
+		coverage: &prometheuspkg.RightsizingScanCoverage{
+			Batches: 3, CompletedBatches: 2,
+			WorkloadsDiscovered: 10, WorkloadsEvaluated: 6,
+			UnavailableKinds: []string{"Deployment"},
+		},
+	})
+	if strings.Contains(droppedDeployments, "stopped") {
+		t.Errorf("a scan that ran every batch did not stop: %q", droppedDeployments)
 	}
 
 	// CompletedBatches counts batches whose queries all answered, not batches
@@ -334,7 +360,7 @@ func TestGuidanceExplainsClampedReductions(t *testing.T) {
 	got := rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanComplete, scope: "cluster", reductionLimited: true,
 	})
-	if !strings.Contains(got, "conservative step") {
+	if !strings.Contains(got, "bounded step") || !strings.Contains(got, "three quarters") {
 		t.Errorf("a clamped reduction needs explaining in the response: %q", got)
 	}
 }
@@ -428,8 +454,9 @@ func TestRightsizingPartialGuidanceNamesEveryCoverageCause(t *testing.T) {
 			WorkloadsDiscovered:  10,
 			WorkloadsEvaluated:   4,
 		},
+		deadlineExceeded: true,
 	})
-	for _, cause := range []string{"restrictedKinds", "unavailableKinds", "partiallyCachedKinds", "1 of 3 batches"} {
+	for _, cause := range []string{"restrictedKinds", "unavailableKinds", "partiallyCachedKinds", "4 of 10 workloads"} {
 		if !strings.Contains(all, cause) {
 			t.Errorf("partial guidance omits %q, so that cause reads as complete coverage: %q", cause, all)
 		}
@@ -684,6 +711,7 @@ func TestEveryScanReasonCarriesRemediation(t *testing.T) {
 	engineReasons = append(engineReasons,
 		reasonRowEvidenceIncomplete,
 		reasonNamespaceScopeLimited,
+		reasonNamespacesExcluded,
 		ReasonOutsideNamespaceScope,
 		"access_denied",
 		"scan_deadline_exceeded",
@@ -875,5 +903,283 @@ func TestThrottleAvailabilityOnlyEmittedForCPURows(t *testing.T) {
 	}
 	if out[1].ThrottleAvailable != nil {
 		t.Error("throttling never gates a memory recommendation; the flag must be absent there")
+	}
+}
+
+// The engine computes a demand target before its HPA, OOM and limit checks
+// return, so it exists on rows whose recommendation was withheld. Emitting it
+// there would hand the agent a value for the null those checks left.
+func TestDemandTargetOnlyAccompaniesAClampedRecommendation(t *testing.T) {
+	calculated := "253Mi"
+	clamped := rightsizingRow(prometheuspkg.FitOversized, 4, 2)
+	clamped.Resource = "memory"
+	clamped.ReductionLimited = true
+	clamped.CalculatedReq = &calculated
+	clamped.Observed = &prometheuspkg.ObservedStatistic{Name: "Max", Value: 220 * 1024 * 1024, Formatted: "220Mi"}
+
+	out := filterRightsizingRows([]prometheuspkg.RightsizingRow{clamped}, false, true, 1, false).rows
+	if out[0].DemandTarget == nil || out[0].DemandTarget.Value != "253Mi" || out[0].DemandTarget.Basis == "" {
+		t.Fatalf("a clamped row must carry its demand target and basis, got %+v", out[0].DemandTarget)
+	}
+	if out[0].ObservedStatistic != "Max" {
+		t.Errorf("observedStatistic = %q, want Max", out[0].ObservedStatistic)
+	}
+
+	for _, reason := range []string{"hpa_managed", "hpa_evidence_unavailable", "oom_evidence", "oom_evidence_unavailable", "recommended_request_exceeds_limit", "request_within_fit_range"} {
+		withheld := clamped
+		withheld.RecommendedReq = nil
+		withheld.RecommendedRequestValue = nil
+		withheld.ReductionLimited = false
+		withheld.RecommendationReason = reason
+		row := filterRightsizingRows([]prometheuspkg.RightsizingRow{withheld}, false, true, 1, false).rows[0]
+		if row.DemandTarget != nil {
+			t.Errorf("%s: a withheld recommendation must not expose the demand target, got %+v", reason, row.DemandTarget)
+		}
+	}
+}
+
+func TestGuidanceWarnsAgainstApplyingTheDemandTarget(t *testing.T) {
+	got := rightsizingGuidance(rightsizingGuidanceInput{state: prometheuspkg.RightsizingScanComplete, scope: "cluster", reductionLimited: true})
+	for _, want := range []string{"demandTarget is the demand-based end state, not a value to apply", "risks OOM"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("clamped guidance missing %q: %q", want, got)
+		}
+	}
+}
+
+// One failed query makes a container need_data; without the failed row the
+// workload's class has no visible cause beside a clean recommendation.
+func TestReturnedContainerKeepsItsFailedRow(t *testing.T) {
+	failed := rightsizingRow(prometheuspkg.FitInsufficientHistory, 1, 0)
+	failed.RecommendedReq = nil
+	failed.QueryError = prometheuspkg.RowUsageQueryFailed
+	memory := rightsizingRow(prometheuspkg.FitOversized, 4, 2)
+	memory.Resource = "memory"
+	sidecarFailed := failed
+	sidecarFailed.Container = "sidecar"
+
+	filtered := filterRightsizingRows([]prometheuspkg.RightsizingRow{failed, memory, sidecarFailed}, false, false, 2, false)
+	if len(filtered.rows) != 2 || filtered.rows[0].QueryError == "" {
+		t.Fatalf("the returned container must keep its failed row, got %+v", filtered.rows)
+	}
+	if filtered.returnedQueryErrors != 1 || filtered.omitted.QueryError != 1 {
+		t.Errorf("returned=%d omitted=%d, want 1 and 1: a container with nothing else returned stays omitted", filtered.returnedQueryErrors, filtered.omitted.QueryError)
+	}
+	if filtered.classification != prometheuspkg.ClassNeedData {
+		t.Errorf("classification = %q, want need_data: the missing evidence still decides the rank", filtered.classification)
+	}
+
+	pointQueryErrorsAtWarnings(filtered.rows)
+	if got := filtered.rows[0].QueryError; got != "cpu usage query failed; see warnings code cpu_query_failed" {
+		t.Errorf("queryError = %q", got)
+	}
+
+	guidance := rightsizingGuidance(rightsizingGuidanceInput{
+		state: prometheuspkg.RightsizingScanPartial, scope: "cluster", reason: "some_evidence_unavailable",
+		coverage: &prometheuspkg.RightsizingScanCoverage{}, omitted: filtered.omitted, returnedQueryErrors: filtered.returnedQueryErrors,
+	})
+	for _, want := range []string{"2 row(s) failed their usage query (1 in omitted.queryError, 1 returned with queryError)", "not because that recommendation is doubtful"} {
+		if !strings.Contains(guidance, want) {
+			t.Errorf("guidance missing %q: %q", want, guidance)
+		}
+	}
+}
+
+func TestRightsizingScanNamespacesValidation(t *testing.T) {
+	for name, tc := range map[string]struct {
+		scope string
+		input getRightsizingInput
+		want  string
+	}{
+		// A comma-joined name authorizes as a namespace that does not exist and
+		// used to come back as a complete scan with no workloads.
+		"comma in namespace":      {"namespace", getRightsizingInput{Namespace: "dev,staging"}, `namespaces: ["dev", "staging"]`},
+		"both forms":              {"namespace", getRightsizingInput{Namespace: "dev", Namespaces: []string{"staging"}}, "not both"},
+		"empty entry":             {"namespace", getRightsizingInput{Namespaces: []string{"dev", " "}}, "non-empty"},
+		"cluster with namespaces": {"cluster", getRightsizingInput{Namespaces: []string{"dev"}}, "namespaces"},
+		"nothing":                 {"namespace", getRightsizingInput{}, "needs a namespace"},
+	} {
+		_, err := rightsizingScanNamespaces(tc.scope, tc.input)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want it to mention %q", name, err, tc.want)
+		}
+	}
+
+	got, err := rightsizingScanNamespaces("namespace", getRightsizingInput{Namespaces: []string{" dev", "staging", "dev"}})
+	if err != nil || !reflect.DeepEqual(got, []string{"dev", "staging"}) {
+		t.Errorf("namespaces = %v, %v; want trimmed and deduplicated", got, err)
+	}
+
+	_, _, err = handleGetRightsizing(context.Background(), nil, getRightsizingInput{Scope: "workload", Kind: "Deployment", Name: "api", Namespace: "dev", Namespaces: []string{"dev"}})
+	if err == nil || !strings.Contains(err.Error(), "namespaces") {
+		t.Errorf("scope=workload must reject namespaces, got %v", err)
+	}
+}
+
+func TestExcludedRequestedNamespacesNamesEachDroppedName(t *testing.T) {
+	if got := excludedRequestedNamespaces([]string{"dev"}, nil); got != nil {
+		t.Errorf("an unrestricted identity excludes nothing, got %+v", got)
+	}
+	got := excludedRequestedNamespaces([]string{"dev", "autopush", "staging"}, []string{"dev", "staging"})
+	if !reflect.DeepEqual(got, []excludedNamespace{{Name: "autopush", Reason: "access_denied"}}) {
+		t.Errorf("excluded = %+v", got)
+	}
+}
+
+func TestNamespacesWithoutWorkloadsNeedsAFullyCoveredScan(t *testing.T) {
+	workloads := []prometheuspkg.RightsizingScanWorkload{{Namespace: "dev"}}
+	if got := namespacesWithoutWorkloads([]string{"dev", "stagin"}, workloads, nil); !reflect.DeepEqual(got, []string{"stagin"}) {
+		t.Errorf("empty namespaces = %v", got)
+	}
+	// A namespace holding only DaemonSets that match no node holds workloads;
+	// calling it empty sends the agent looking for a typo that is not there.
+	if got := namespacesWithoutWorkloads([]string{"dev", "gpu-operator"}, workloads, []string{"gpu-operator"}); len(got) != 0 {
+		t.Errorf("a namespace of skipped DaemonSets is not empty, got %v", got)
+	}
+	if !scanCoveredEveryWorkload(prometheuspkg.RightsizingScanCoverage{WorkloadsDiscovered: 3, WorkloadsEvaluated: 3}) {
+		t.Error("a complete scan can name empty namespaces")
+	}
+	for name, coverage := range map[string]prometheuspkg.RightsizingScanCoverage{
+		"deadline":        {WorkloadsDiscovered: 3, WorkloadsEvaluated: 2},
+		"restricted kind": {RestrictedKinds: []string{"Deployment"}},
+		"partial cache":   {PartiallyCachedKinds: []string{"DaemonSet"}},
+	} {
+		if scanCoveredEveryWorkload(coverage) {
+			t.Errorf("%s: an absent namespace may just be unread", name)
+		}
+	}
+}
+
+func TestScanGuidanceNamesNamespaceGapsDaemonSetsAndOwnership(t *testing.T) {
+	got := rightsizingGuidance(rightsizingGuidanceInput{
+		state: prometheuspkg.RightsizingScanPartial, scope: "namespace", reason: reasonNamespacesExcluded,
+		coverage:                   &prometheuspkg.RightsizingScanCoverage{DaemonSetsWithoutNodes: 25},
+		excludedNamespaces:         []excludedNamespace{{Name: "autopush", Reason: "access_denied"}},
+		namespacesWithoutWorkloads: []string{"stagin"},
+		workloadsShown:             true,
+	})
+	for _, want := range []string{
+		"autopush (access_denied)",
+		"stagin had no workload to scan",
+		"25 DaemonSet(s) match no node",
+		"A missing managedBy does not mean unmanaged",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("guidance missing %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "not the whole cluster") {
+		t.Errorf("a namespace list is what was asked, not a narrowed cluster scan: %q", got)
+	}
+	if rightsizingRemediation(reasonNamespacesExcluded) == "" {
+		t.Error("the excluded-namespaces reason needs remediation")
+	}
+}
+
+func TestSplitByKindAccessExcludesNamespacesNoKindCanList(t *testing.T) {
+	kept, denied := splitByKindAccess([]string{"dev", "locked"}, map[string][]string{
+		"Deployment":  {"dev"},
+		"StatefulSet": {"dev"},
+	})
+	if !reflect.DeepEqual(kept, []string{"dev"}) || !reflect.DeepEqual(denied, []excludedNamespace{{Name: "locked", Reason: "access_denied"}}) {
+		t.Errorf("kept=%v denied=%+v", kept, denied)
+	}
+	// A kind listable everywhere covers every requested namespace.
+	kept, denied = splitByKindAccess([]string{"dev", "locked"}, map[string][]string{"Deployment": {"dev"}, "DaemonSet": nil})
+	if len(kept) != 2 || denied != nil {
+		t.Errorf("a nil per-kind list covers all namespaces, got kept=%v denied=%+v", kept, denied)
+	}
+	// Every kind denied everywhere leaves nothing scanned.
+	if kept, denied = splitByKindAccess([]string{"dev"}, map[string][]string{}); len(kept) != 0 || len(denied) != 1 {
+		t.Errorf("no listable kind, got kept=%v denied=%+v", kept, denied)
+	}
+}
+
+func TestEmptyScanReasonsAreOverriddenByANarrowedScope(t *testing.T) {
+	for _, reason := range []string{"no_workloads", reasonOnlyDaemonSetsWithoutNodes} {
+		if !scanClaimsFullCoverage(reason) {
+			t.Errorf("%s claims the whole scope was read and must yield to a narrowed-scope reason", reason)
+		}
+	}
+	if scanClaimsFullCoverage("some_evidence_unavailable") {
+		t.Error("a reason about evidence is not a coverage claim")
+	}
+}
+
+func TestQueryErrorGuidanceSeparatesRowsPastTheLimit(t *testing.T) {
+	got := rightsizingGuidance(rightsizingGuidanceInput{
+		state: prometheuspkg.RightsizingScanPartial, scope: "cluster", reason: "some_evidence_unavailable",
+		coverage: &prometheuspkg.RightsizingScanCoverage{}, omitted: rightsizingOmissions{QueryError: 94},
+		returnedQueryErrors: 20, truncatedQueryErrors: 28,
+	})
+	if !strings.Contains(got, "142 row(s) failed their usage query (94 in omitted.queryError, 20 returned with queryError, 28 on workloads past the limit)") {
+		t.Errorf("guidance must not call truncated rows returned: %q", got)
+	}
+}
+
+func TestSkippedDaemonSetGuidanceKeepsTheScaledDownPoolCase(t *testing.T) {
+	got := rightsizingGuidance(rightsizingGuidanceInput{
+		state: prometheuspkg.RightsizingScanComplete, scope: "cluster", reason: reasonOnlyDaemonSetsWithoutNodes,
+		coverage: &prometheuspkg.RightsizingScanCoverage{DaemonSetsWithoutNodes: 2},
+	})
+	if !strings.Contains(got, "match no node right now") || !strings.Contains(got, "still has history") {
+		t.Errorf("a pool scaled to zero is not a DaemonSet that never runs: %q", got)
+	}
+	if remediation := rightsizingRemediation(reasonOnlyDaemonSetsWithoutNodes); !strings.Contains(remediation, "holds workloads") {
+		t.Errorf("remediation must not say no workloads were found: %q", remediation)
+	}
+}
+
+// A container with a failed query is left out of classification so it cannot
+// demote the others, but it cannot be vouched for either: the workload is not
+// "in range" while one of its containers was never judged.
+func TestUnjudgedContainerKeepsTheWorkloadOutOfInRange(t *testing.T) {
+	balanced := rightsizingRow(prometheuspkg.FitBalanced, 1, 1)
+	balanced.RecommendedReq = nil
+	balanced.RecommendedRequestValue = nil
+	failed := rightsizingRow(prometheuspkg.FitInsufficientHistory, 1, 0)
+	failed.Container = "sidecar"
+	failed.RecommendedReq = nil
+	failed.QueryError = prometheuspkg.RowUsageQueryFailed
+	if got := prometheuspkg.ClassifyWorkloadRows([]prometheuspkg.RightsizingRow{balanced, failed}, 2, false); got != prometheuspkg.ClassNeedData {
+		t.Errorf("classification = %q, want need_data", got)
+	}
+}
+
+func TestReturnedShortHistoryRowsAreNamedAsACause(t *testing.T) {
+	got := rightsizingGuidance(rightsizingGuidanceInput{
+		state: prometheuspkg.RightsizingScanPartial, scope: "cluster", reason: reasonRowEvidenceIncomplete,
+		coverage: &prometheuspkg.RightsizingScanCoverage{}, returnedShortHistory: 2,
+	})
+	if !strings.Contains(got, "2 returned row(s) had too little history to judge") {
+		t.Errorf("a short-history row kept beside its container's recommendation is a cause: %q", got)
+	}
+}
+
+func TestShortHistoryPastTheLimitIsNamedAsACause(t *testing.T) {
+	got := rightsizingGuidance(rightsizingGuidanceInput{
+		state: prometheuspkg.RightsizingScanPartial, scope: "cluster", reason: reasonRowEvidenceIncomplete,
+		coverage: &prometheuspkg.RightsizingScanCoverage{}, truncatedShortHistory: 3,
+	})
+	if !strings.Contains(got, "3 row(s) with too little history sit on workloads past the limit") {
+		t.Errorf("truncated short-history rows are still a cause: %q", got)
+	}
+}
+
+func TestEarlyUnavailableResponsesCarryGuidance(t *testing.T) {
+	out := rightsizingUnavailable("workload", "prometheus_unavailable")
+	if !strings.Contains(out.Guidance, "State is unavailable") {
+		t.Errorf("every response explains its state in guidance, got %q", out.Guidance)
+	}
+}
+
+func TestSkippedDaemonSetNamesAreCappedWithTheCountKept(t *testing.T) {
+	names := make([]string, skippedDaemonSetsMax+5)
+	for i := range names {
+		names[i] = fmt.Sprintf("kube-system/ds-%03d", i)
+	}
+	kept, truncated := truncateRows(names, skippedDaemonSetsMax)
+	if len(kept) != skippedDaemonSetsMax || !truncated {
+		t.Errorf("kept %d truncated %v, want %d and true", len(kept), truncated, skippedDaemonSetsMax)
 	}
 }

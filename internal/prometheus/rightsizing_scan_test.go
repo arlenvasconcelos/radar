@@ -292,6 +292,34 @@ func TestRightsizingScanReportsMissingReplicaSetOwnersForDeploymentOnlyScope(t *
 	}
 }
 
+func TestRightsizingScanReportsFailedReplicaSetOwnerQueryAsFailure(t *testing.T) {
+	client := &fakeScanQuerier{queryFn: func(query string) (*prom.QueryResult, error) {
+		if query == "count(kube_pod_owner)" {
+			return ksmAvailable(), nil
+		}
+		return nil, errors.New("prometheus timeout")
+	}}
+	resp := computeRightsizingScan(context.Background(), client, []scanWorkload{
+		scanTestWorkload("Deployment", "prod", "api", "app"),
+	}, newRightsizingScanResponse(time.Now(), RightsizingScanScope{}))
+	if resp.State != RightsizingScanUnavailable || resp.Reason != "deployment_owner_metrics_query_failed" {
+		t.Fatalf("a failed query is not missing metrics: %+v", resp)
+	}
+}
+
+func TestRightsizingScanKindReadableSomewhereIsNotUnreadable(t *testing.T) {
+	// Every kind is readable in "dev" but not in "monitoring": the scope is
+	// narrowed, and an empty "dev" is not every kind being unreadable.
+	resp := newRightsizingScanResponse(time.Now(), RightsizingScanScope{
+		NamespacesByKind: map[string][]string{"Deployment": {"dev"}, "StatefulSet": {"dev"}, "DaemonSet": {"dev"}},
+		RestrictedKinds:  []string{"Deployment", "StatefulSet", "DaemonSet"},
+	})
+	resp = computeRightsizingScan(context.Background(), &fakeScanQuerier{}, nil, resp)
+	if resp.State != RightsizingScanPartial || resp.Reason != "limited_scope_no_workloads" {
+		t.Fatalf("narrowed empty scope = %+v", resp)
+	}
+}
+
 func TestRightsizingScanDoesNotCallRestrictedEmptyScopeComplete(t *testing.T) {
 	resp := newRightsizingScanResponse(time.Now(), RightsizingScanScope{RestrictedKinds: []string{"Deployment"}})
 	resp = computeRightsizingScan(context.Background(), &fakeScanQuerier{}, nil, resp)

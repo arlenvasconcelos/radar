@@ -146,6 +146,7 @@ type RightsizingResponse struct {
 	Replicas        int              `json:"replicas"`
 	ScaledToZero    bool             `json:"scaledToZero"`
 	SampleAvailable bool             `json:"sampleAvailable"`
+	ManagedBy       *WorkloadManager `json:"managedBy,omitempty"`
 	Rows            []RightsizingRow `json:"rows"`
 	Reason          string           `json:"reason,omitempty"`
 }
@@ -279,6 +280,7 @@ type rightsizingWorkload struct {
 	// The live pod list could not be read, so podNames and currentPodOOM are
 	// empty because nothing answered — not because the workload has no pods.
 	liveInventoryUnavailable bool
+	managedBy                *WorkloadManager
 }
 
 // warmingRetryBudget bounds how long a rightsizing read waits for an informer
@@ -313,6 +315,7 @@ func loadRightsizingWorkload(ctx context.Context, kind, namespace, name string) 
 	}
 
 	var podTemplate *corev1.PodSpec
+	var managedBy *WorkloadManager
 	scaledToZero := false
 	replicas := 0
 	switch strings.ToLower(kind) {
@@ -325,6 +328,7 @@ func loadRightsizingWorkload(ctx context.Context, kind, namespace, name string) 
 			return rightsizingWorkload{}, fmt.Errorf("%w: deployment %s/%s", errWorkloadMissing, namespace, name)
 		}
 		podTemplate = &d.Spec.Template.Spec
+		managedBy = detectWorkloadManager(d)
 		replicas = specReplicas(d.Spec.Replicas)
 		scaledToZero = d.Spec.Replicas != nil && *d.Spec.Replicas == 0
 	case "statefulset":
@@ -336,6 +340,7 @@ func loadRightsizingWorkload(ctx context.Context, kind, namespace, name string) 
 			return rightsizingWorkload{}, fmt.Errorf("%w: statefulset %s/%s", errWorkloadMissing, namespace, name)
 		}
 		podTemplate = &ss.Spec.Template.Spec
+		managedBy = detectWorkloadManager(ss)
 		replicas = specReplicas(ss.Spec.Replicas)
 		scaledToZero = ss.Spec.Replicas != nil && *ss.Spec.Replicas == 0
 	case "daemonset":
@@ -347,8 +352,11 @@ func loadRightsizingWorkload(ctx context.Context, kind, namespace, name string) 
 			return rightsizingWorkload{}, fmt.Errorf("%w: daemonset %s/%s", errWorkloadMissing, namespace, name)
 		}
 		podTemplate = &ds.Spec.Template.Spec
+		managedBy = detectWorkloadManager(ds)
 		replicas = int(ds.Status.DesiredNumberScheduled)
-		scaledToZero = ds.Status.DesiredNumberScheduled == 0
+		// Scans skip these, but a caller naming one gets its retained history,
+		// which is exactly the scaled-to-zero case: a node pool scaled away.
+		scaledToZero = daemonSetMatchesNoNode(ds)
 	}
 
 	if podTemplate == nil {
@@ -363,6 +371,7 @@ func loadRightsizingWorkload(ctx context.Context, kind, namespace, name string) 
 		hpaAvailable:  hpaAvailable,
 		replicas:      replicas,
 		scaledToZero:  scaledToZero,
+		managedBy:     managedBy,
 	}
 	pods, err := workloadPodsOnceWarm(ctx, cache, kind, namespace, name)
 	if ctx.Err() != nil {
@@ -494,7 +503,7 @@ func computeRightsizing(ctx context.Context, client rightsizingQuerier, kind, na
 	expected := int(rightsizingWindow / rightsizingStep)
 	resp := RightsizingResponse{
 		Kind: kind, Namespace: namespace, Name: name, Window: "7d", Source: "radar",
-		OwnerCoverage: coverage, Replicas: workload.replicas, ScaledToZero: workload.scaledToZero,
+		OwnerCoverage: coverage, Replicas: workload.replicas, ScaledToZero: workload.scaledToZero, ManagedBy: workload.managedBy,
 		Rows: make([]RightsizingRow, 0, len(workload.containers)*2),
 	}
 	for _, container := range workload.containers {
@@ -667,7 +676,7 @@ func buildRightsizingRow(container containerSpec, resourceName string, expected 
 	stat := results[resourceName+"_stat"]
 	coverage := results[resourceName+"_coverage"]
 	if stat.err != nil {
-		row.QueryError = "usage query failed"
+		row.QueryError = RowUsageQueryFailed
 		return row
 	}
 	if coverage.err != nil {
@@ -798,6 +807,26 @@ func classifyRightsizingFit(row *RightsizingRow, observed float64, req, lim *res
 	row.RecommendedReq = &recommended
 	row.RecommendedRequestValue = &recommendedValue
 	row.ReductionLimited = reductionLimited
+}
+
+// RowUsageQueryFailed is the queryError a row carries when its own usage query
+// failed, as opposed to a supporting query such as sample coverage.
+const RowUsageQueryFailed = "usage query failed"
+
+// DemandTargetBasis names how CalculatedReq was derived, so a reader can tell a
+// memory target built from a 7-day max from a CPU P95, or from the floor.
+func DemandTargetBasis(row RightsizingRow) string {
+	if row.Observed == nil {
+		return ""
+	}
+	minimum := float64(rightsizingMemoryMin)
+	if row.Resource == "cpu" {
+		minimum = rightsizingCPUMin
+	}
+	if row.Observed.Value*rightsizingHeadroom < minimum {
+		return "minimum request " + formatRightsizingValue(minimum, row.Resource)
+	}
+	return fmt.Sprintf("7d %s x %.2f", row.Observed.Name, rightsizingHeadroom)
 }
 
 func calculatedRequest(observed float64, resourceName string) string {

@@ -7,7 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/skyhook-io/radar/internal/opencost"
 	pkgopencost "github.com/skyhook-io/radar/pkg/opencost"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestGetCostRejectsUnknownView(t *testing.T) {
@@ -220,18 +223,85 @@ func TestHourlyTotalsAreRounded(t *testing.T) {
 	}
 }
 
-func TestIdleGuidanceFiresOnlyWhenIdleExceedsAllocated(t *testing.T) {
-	// Kubecost's idle includes unallocated node capacity while hourlyCost is
-	// allocated spend, so idle > total is correct and needs saying.
-	exceeds := idleGuidance(&costTotals{HourlyCost: 0.0886, IdleCost: 0.2677})
-	if !strings.Contains(exceeds, "unallocated") {
-		t.Errorf("idle above allocated must be explained, got %q", exceeds)
+// hourlyCost means different things per source: on the Prometheus path it can
+// be node cost, which already contains the unallocated capacity an agent would
+// otherwise add on top.
+func TestCostSplitGuidanceNamesTheHourlyBasis(t *testing.T) {
+	unallocated := 0.2
+	node := costSplitGuidance(&pkgopencost.CostSummary{HourlyCostBasis: pkgopencost.HourlyCostBasisNodeCapacity, TotalUnallocatedCost: &unallocated}, false)
+	if !strings.Contains(node, "do not add unallocatedCost") || !strings.Contains(node, "storageCost") {
+		t.Errorf("node-capacity basis must warn against double counting and name the missing storage: %q", node)
 	}
-	if got := idleGuidance(&costTotals{HourlyCost: 1.0, IdleCost: 0.2}); got != "" {
-		t.Errorf("a subset idle needs no caveat, got %q", got)
+	allocated := costSplitGuidance(&pkgopencost.CostSummary{HourlyCostBasis: pkgopencost.HourlyCostBasisAllocated, TotalUnallocatedCost: &unallocated}, false)
+	if !strings.Contains(allocated, "does not include unallocatedCost") || strings.Contains(allocated, "null") {
+		t.Errorf("allocated basis with a measured figure: %q", allocated)
 	}
-	if got := idleGuidance(nil); got != "" {
-		t.Errorf("no totals, no caveat, got %q", got)
+	scoped := costSplitGuidance(&pkgopencost.CostSummary{HourlyCostBasis: pkgopencost.HourlyCostBasisAllocated}, true)
+	if !strings.Contains(scoped, "belongs to the cluster") {
+		t.Errorf("a scoped null must say why it is null: %q", scoped)
+	}
+	unmeasured := costSplitGuidance(&pkgopencost.CostSummary{HourlyCostBasis: pkgopencost.HourlyCostBasisAllocated}, false)
+	if !strings.Contains(unmeasured, "not the same as none") {
+		t.Errorf("an unmeasured null must not read as zero: %q", unmeasured)
+	}
+}
+
+func TestUnallocatedCostIsNullNotZeroWhenUnknown(t *testing.T) {
+	marshal := func(totals costTotals) string {
+		blob, err := json.Marshal(totals)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(blob)
+	}
+	if got := marshal(costTotals{UnallocatedCost: &nullableCost{}}); !strings.Contains(got, `"unallocatedCost":null`) {
+		t.Errorf("unknown unallocated cost must be an explicit null: %s", got)
+	}
+	zero := 0.0
+	if got := marshal(costTotals{UnallocatedCost: &nullableCost{value: &zero}}); !strings.Contains(got, `"unallocatedCost":0`) {
+		t.Errorf("a measured zero must survive: %s", got)
+	}
+	if got := marshal(costTotals{}); strings.Contains(got, "unallocatedCost") || strings.Contains(got, "idleCost") {
+		t.Errorf("views that never report the split must not carry it: %s", got)
+	}
+}
+
+func TestTrendBasisFollowsTheCostSource(t *testing.T) {
+	if trendBasis(opencost.SourceKubecost) != trendBasisNamespaceAllocation {
+		t.Error("Kubecost trends sum every allocated component")
+	}
+	if basis := trendBasis(opencost.SourcePrometheus); basis != trendBasisCPUMemoryAllocation {
+		t.Errorf("the OpenCost trend query sums CPU and memory only, got %q", basis)
+	}
+	if !strings.Contains(trendBasisExplainer(opencost.SourcePrometheus), "allocatedCost minus totals.storageCost") {
+		t.Error("the Prometheus trend must name the summary field it is comparable with")
+	}
+}
+
+func TestLabelNodeRowsAddsPoolAndCountsNodesThatAreGone(t *testing.T) {
+	nodes := map[string]*corev1.Node{
+		"spot": {ObjectMeta: metav1.ObjectMeta{Name: "spot", Labels: map[string]string{"cloud.google.com/gke-nodepool": "spot-pool", "cloud.google.com/gke-spot": "true"}}},
+		"std":  {ObjectMeta: metav1.ObjectMeta{Name: "std", Labels: map[string]string{"cloud.google.com/gke-nodepool": "pool-1"}}},
+	}
+	lookup := func(name string) (*corev1.Node, bool) {
+		if name == "unanswerable" {
+			return nil, false
+		}
+		node := nodes[name]
+		return node, true
+	}
+	returned := []nodeCostRow{{Name: "spot"}, {Name: "gone"}}
+	all := []pkgopencost.NodeCost{{Name: "spot"}, {Name: "gone"}, {Name: "std"}, {Name: "unanswerable"}}
+
+	missing := labelNodeRows(returned, all, lookup)
+	if missing != 1 {
+		t.Errorf("nodesNotInCluster = %d, want 1: a node the cache cannot answer for is not gone", missing)
+	}
+	if returned[0].Pool == nil || returned[0].Pool.Name != "spot-pool" || returned[0].Pool.Source != "gke" || returned[0].CapacityType != "spot" {
+		t.Errorf("spot row = %+v", returned[0])
+	}
+	if returned[1].Pool != nil || returned[1].CapacityType != "" {
+		t.Errorf("a node that no longer exists has no labels to report: %+v", returned[1])
 	}
 }
 
@@ -431,11 +501,11 @@ func TestClusterEfficiencyIsNullWhenNoNamespaceHasUsage(t *testing.T) {
 		t.Error("one measured row is enough to report the aggregate")
 	}
 	// Zero is a measurement and must survive the wire.
-	measured := measuredEfficiency(0, false)
+	measured := measuredValue(0, false)
 	if measured == nil || *measured != 0 {
 		t.Errorf("0%% efficiency is a measurement, got %v", measured)
 	}
-	if measuredEfficiency(0, true) != nil {
+	if measuredValue(0, true) != nil {
 		t.Error("unavailable usage must report null, not zero")
 	}
 }
@@ -453,5 +523,57 @@ func TestPartialUsageEvidenceIsNamedInGuidance(t *testing.T) {
 	}
 	if partialUsageGuidance([]pkgopencost.NamespaceCost{{Name: "a", UsageUnavailable: true}}) != "" {
 		t.Error("a fully unmeasured result reports null efficiency instead")
+	}
+}
+
+func TestUnusedRequestCostIsAbsentWithoutUsageEvidence(t *testing.T) {
+	unmeasured := &pkgopencost.CostSummary{Namespaces: []pkgopencost.NamespaceCost{{Name: "a", UsageUnavailable: true}}}
+	if got := measuredUnusedRequestCost(unmeasured); got != nil {
+		t.Errorf("no usage evidence must not read as zero waste, got %v", *got)
+	}
+	measured := &pkgopencost.CostSummary{TotalUnusedRequestCost: 0.2, Namespaces: []pkgopencost.NamespaceCost{{Name: "a"}}}
+	if got := measuredUnusedRequestCost(measured); got == nil || *got != 0.2 {
+		t.Errorf("measured unused request cost = %v, want 0.2", got)
+	}
+}
+
+// A measured zero is a figure; only missing evidence may drop it from the wire.
+func TestCostWireSeparatesMeasuredZeroFromUnmeasured(t *testing.T) {
+	marshal := func(v any) string {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	if got := marshal(hourlyTotals(1)); strings.Contains(got, "clusterEfficiency") {
+		t.Errorf("views that never measure clusterEfficiency must not report it as null: %s", got)
+	}
+	unmeasured := hourlyTotals(1)
+	unmeasured.ClusterEfficiency = &nullableCost{value: measuredValue(0, true)}
+	if got := marshal(unmeasured); !strings.Contains(got, `"clusterEfficiency":null`) {
+		t.Errorf("a summary without usage evidence reports null: %s", got)
+	}
+	if got := marshal(workloadCostRow{UnusedRequestCost: measuredValue(0, false)}); !strings.Contains(got, `"unusedRequestCost":0`) {
+		t.Errorf("a measured zero must survive: %s", got)
+	}
+	if got := marshal(workloadCostRow{UnusedRequestCost: measuredValue(0, true)}); strings.Contains(got, "unusedRequestCost") {
+		t.Errorf("unavailable usage must not report unusedRequestCost: %s", got)
+	}
+}
+
+// A namespace that appears mid-range spends from nothing; measured from its
+// own first point, a steady new namespace would read as flat.
+func TestTrendSeriesAreMeasuredAtTheRangeEndpoints(t *testing.T) {
+	series := []pkgopencost.CostTrendSeries{
+		{Namespace: "old", DataPoints: []pkgopencost.CostDataPoint{{Timestamp: 100, Value: 1}, {Timestamp: 200, Value: 1}, {Timestamp: 300, Value: 1}}},
+		{Namespace: "new", DataPoints: []pkgopencost.CostDataPoint{{Timestamp: 200, Value: 2}, {Timestamp: 300, Value: 2}}},
+	}
+	out, _ := summarizeTrend(series)
+	if out[1].Start != 0 || out[1].End != 2 || out[1].ChangePercent != nil {
+		t.Errorf("new namespace = start %v end %v change %v, want 0, 2 and absent", out[1].Start, out[1].End, out[1].ChangePercent)
+	}
+	if out[0].ChangePercent == nil || *out[0].ChangePercent != 0 {
+		t.Errorf("a steady namespace present throughout is flat, got %v", out[0].ChangePercent)
 	}
 }

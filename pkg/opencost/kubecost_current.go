@@ -61,8 +61,9 @@ func ComputeKubecostSummary(ctx context.Context, client *KubecostClient, opts Ku
 		return &CostSummary{Available: false, Reason: ReasonNoMetrics, Currency: opts.Currency, Source: "kubecost"}, nil
 	}
 
-	out := &CostSummary{Available: true, Currency: opts.Currency, Window: window, Source: "kubecost"}
-	var totalAlloc, totalUsage float64
+	out := &CostSummary{Available: true, Currency: opts.Currency, Window: window, Source: "kubecost", HourlyCostBasis: HourlyCostBasisAllocated}
+	var totalAlloc, totalUsage, unallocated float64
+	sawIdleRow := false
 	for key, allocation := range kubecostAllocationRows(resp) {
 		if allocation == nil {
 			continue
@@ -73,6 +74,14 @@ func ComputeKubecostSummary(ctx context.Context, client *KubecostClient, opts Ku
 				return nil, fmt.Errorf("allocation %q: %w", key, err)
 			}
 			out.TotalIdleCost += maxZero((allocation.CPUCost + allocation.RAMCost) / hours)
+			// The idle row's total also carries GPU idle, which "no workload
+			// requested or used" covers; TotalIdleCost keeps its CPU+RAM basis.
+			idleTotal := allocation.TotalCost
+			if idleTotal == 0 {
+				idleTotal = allocation.CPUCost + allocation.RAMCost
+			}
+			unallocated += maxZero(idleTotal / hours)
+			sawIdleRow = true
 			out.DataThrough = LatestKubecostTimestamp(out.DataThrough, allocation.End)
 			continue
 		}
@@ -122,6 +131,7 @@ func ComputeKubecostSummary(ctx context.Context, client *KubecostClient, opts Ku
 		out.TotalStorageCost += row.StorageCost
 		out.TotalNetworkCost += row.NetworkCost
 		out.TotalIdleCost += row.IdleCost
+		out.TotalUnusedRequestCost += row.IdleCost
 		out.Namespaces = append(out.Namespaces, row)
 		out.DataThrough = LatestKubecostTimestamp(out.DataThrough, allocation.End)
 	}
@@ -133,6 +143,9 @@ func ComputeKubecostSummary(ctx context.Context, client *KubecostClient, opts Ku
 	out.TotalStorageCost = roundTo(out.TotalStorageCost, 4)
 	out.TotalNetworkCost = roundTo(out.TotalNetworkCost, 4)
 	out.TotalIdleCost = roundTo(out.TotalIdleCost, 4)
+	out.TotalUnusedRequestCost = roundTo(out.TotalUnusedRequestCost, 4)
+	out.TotalUnallocatedCost = optionalCost(sawIdleRow, roundTo(unallocated, 4))
+	out.TotalAllocatedCost = out.TotalHourlyCost
 	out.ClusterEfficiency = EfficiencyPercent(totalUsage, totalAlloc)
 	return out, nil
 }

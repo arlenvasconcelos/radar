@@ -525,7 +525,7 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 			"which workloads are over-provisioned or starved, or where resource waste is. Returns " +
 			"per-container recommendations derived from 7 DAYS of observed usage, not live " +
 			"metrics — ALWAYS check each row's confidence before recommending a change, because " +
-			"low confidence means insufficient history, not correctly sized. scope is REQUIRED: " +
+			"low confidence means short or sparse history, not correctly sized. scope is REQUIRED: " +
 			"scope=workload with kind+name+namespace is cheap, precise, and returns every row of " +
 			"that workload; scope=namespace scans one namespace; scope=cluster scans every " +
 			"Deployment/StatefulSet/DaemonSet with 7-day range queries and can take 45s — call it " +

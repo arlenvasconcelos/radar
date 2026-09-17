@@ -105,6 +105,18 @@ type RightsizingScanScope struct {
 	RestrictedKinds  []string
 }
 
+// deniedKinds are the restricted kinds readable in no requested namespace. A
+// kind readable in some of them is narrowed, not unreadable.
+func (s RightsizingScanScope) deniedKinds() []string {
+	var denied []string
+	for _, kind := range s.RestrictedKinds {
+		if _, readable := s.NamespacesByKind[kind]; !readable {
+			denied = append(denied, kind)
+		}
+	}
+	return denied
+}
+
 type RightsizingScanWarning struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -124,6 +136,17 @@ type RightsizingScanCoverage struct {
 	// subset. Without this a namespace-scoped Radar reports a cluster scan of
 	// one namespace as complete.
 	PartiallyCachedKinds []string `json:"partiallyCachedKinds,omitempty"`
+
+	// DaemonSetsWithoutNodes counts DaemonSets left out because their node
+	// selector matches no node: no pods, nothing to size, and on managed
+	// clusters dozens of them would otherwise fill the ranked list.
+	DaemonSetsWithoutNodes int `json:"daemonSetsWithoutNodes,omitempty"`
+	// SkippedDaemonSets names them as namespace/name, sorted, so a caller can
+	// read one's retained history directly; SkippedDaemonSetNamespaces keeps a
+	// namespace holding only them from being reported as empty.
+	SkippedDaemonSets          []string `json:"-"`
+	SkippedDaemonSetNamespaces []string `json:"-"`
+	deniedKinds                []string
 }
 
 type RightsizingScanWorkload struct {
@@ -132,6 +155,7 @@ type RightsizingScanWorkload struct {
 	Name         string           `json:"name"`
 	Replicas     int              `json:"replicas"`
 	ScaledToZero bool             `json:"scaledToZero"`
+	ManagedBy    *WorkloadManager `json:"managedBy,omitempty"`
 	Rows         []RightsizingRow `json:"rows"`
 }
 
@@ -190,8 +214,15 @@ func ScanRightsizing(ctx context.Context, scope RightsizingScanScope) Rightsizin
 	}
 	effective, partiallyCached := clampScopeToCacheCoverage(cache, scope.NamespacesByKind)
 	resp.Coverage.PartiallyCachedKinds = partiallyCached
-	workloads, unavailable := snapshotScanWorkloads(ctx, cache, effective)
+	workloads, unavailable, skippedDaemonSets := snapshotScanWorkloads(ctx, cache, effective)
 	resp.Coverage.UnavailableKinds = unavailable
+	resp.Coverage.DaemonSetsWithoutNodes = len(skippedDaemonSets)
+	sort.Strings(skippedDaemonSets)
+	resp.Coverage.SkippedDaemonSets = skippedDaemonSets
+	for _, identity := range skippedDaemonSets {
+		namespace, _, _ := strings.Cut(identity, "/")
+		resp.Coverage.SkippedDaemonSetNamespaces = appendUniqueSorted(resp.Coverage.SkippedDaemonSetNamespaces, namespace)
+	}
 	return computeRightsizingScan(ctx, client, workloads, resp)
 }
 
@@ -259,7 +290,7 @@ func newRightsizingScanResponse(now time.Time, scope RightsizingScanScope) Right
 	sort.Strings(restricted)
 	return RightsizingScanResponse{
 		State: RightsizingScanUnavailable, ScannedAt: now, Window: "7d", Source: "radar",
-		Coverage:  RightsizingScanCoverage{RestrictedKinds: restricted},
+		Coverage:  RightsizingScanCoverage{RestrictedKinds: restricted, deniedKinds: scope.deniedKinds()},
 		Workloads: []RightsizingScanWorkload{},
 	}
 }
@@ -272,7 +303,7 @@ func computeRightsizingScan(ctx context.Context, client rightsizingScanQuerier, 
 		// informer covers only some namespaces is still readable, so folding it
 		// in here would report "every workload kind is unreadable" for a
 		// namespace-scoped Radar whose covered namespaces simply hold none.
-		unreadable := countDistinct(resp.Coverage.RestrictedKinds, resp.Coverage.UnavailableKinds)
+		unreadable := countDistinct(resp.Coverage.deniedKinds, resp.Coverage.UnavailableKinds)
 		narrowed := countDistinct(resp.Coverage.RestrictedKinds, resp.Coverage.UnavailableKinds, resp.Coverage.PartiallyCachedKinds)
 		switch {
 		case unreadable >= len(RightsizingScanKinds):
@@ -281,6 +312,11 @@ func computeRightsizingScan(ctx context.Context, client rightsizingScanQuerier, 
 		case narrowed > 0:
 			resp.State = RightsizingScanPartial
 			resp.Reason = "limited_scope_no_workloads"
+		case resp.Coverage.DaemonSetsWithoutNodes > 0:
+			// Workloads exist; every one was skipped on purpose, which
+			// no_workloads' "found none" would contradict.
+			resp.State = RightsizingScanComplete
+			resp.Reason = "only_daemonsets_without_nodes"
 		default:
 			resp.State = RightsizingScanComplete
 			resp.Reason = "no_workloads"
@@ -298,18 +334,23 @@ func computeRightsizingScan(ctx context.Context, client rightsizingScanQuerier, 
 		resp.Reason = "owner_metrics_missing"
 		return resp
 	}
+	replicaSetOwnersQueryFailed := false
 	if hasScanKind(workloads, "Deployment") {
 		replicaSetOwners, queryErr := client.Query(ctx, `count(kube_replicaset_owner)`)
 		if queryErr != nil || firstValue(replicaSetOwners) == nil || *firstValue(replicaSetOwners) <= 0 {
 			resp.Coverage.UnavailableKinds = appendUniqueSorted(resp.Coverage.UnavailableKinds, "Deployment")
 			workloads = withoutScanKind(workloads, "Deployment")
 			if queryErr != nil {
+				replicaSetOwnersQueryFailed = true
 				appendScanWarning(&resp, "deployment_owner_metrics_query_failed", queryErr.Error())
 			}
 		}
 	}
 	if len(workloads) == 0 {
 		resp.Reason = "deployment_owner_metrics_missing"
+		if replicaSetOwnersQueryFailed {
+			resp.Reason = "deployment_owner_metrics_query_failed"
+		}
 		return resp
 	}
 
@@ -580,7 +621,7 @@ func scanSeriesKey(labels map[string]string) (scanKey, bool) {
 }
 
 func buildScanWorkload(input scanWorkload, evidence scanBatchEvidence) RightsizingScanWorkload {
-	out := RightsizingScanWorkload{Kind: input.kind, Namespace: input.namespace, Name: input.name, Replicas: input.replicas, ScaledToZero: input.workload.scaledToZero, Rows: make([]RightsizingRow, 0, len(input.workload.containers)*2)}
+	out := RightsizingScanWorkload{Kind: input.kind, Namespace: input.namespace, Name: input.name, Replicas: input.replicas, ScaledToZero: input.workload.scaledToZero, ManagedBy: input.workload.managedBy, Rows: make([]RightsizingRow, 0, len(input.workload.containers)*2)}
 	expected := int(rightsizingWindow/rightsizingStep) + 1
 	for _, container := range input.workload.containers {
 		key := scanKey{namespace: input.namespace, kind: input.kind, workload: input.name, container: container.name}
@@ -615,7 +656,7 @@ func buildScanRow(container containerSpec, resourceName string, key scanKey, exp
 	}
 	setCurrentQuantities(&row, request, limit, resourceName)
 	if queryErr := evidence.errors[resourceName]; queryErr != nil {
-		row.QueryError = "usage query failed"
+		row.QueryError = RowUsageQueryFailed
 		return row
 	}
 	if len(series) == 0 {
@@ -782,13 +823,16 @@ func sortScanWorkloads(workloads []scanWorkload) {
 	})
 }
 
-func snapshotScanWorkloads(ctx context.Context, cache *k8s.ResourceCache, scopes map[string][]string) ([]scanWorkload, []string) {
+// snapshotScanWorkloads also returns each DaemonSet it skipped for matching no
+// node, as namespace/name.
+func snapshotScanWorkloads(ctx context.Context, cache *k8s.ResourceCache, scopes map[string][]string) ([]scanWorkload, []string, []string) {
 	workloads := map[string]*scanWorkload{}
-	var unavailable []string
-	add := func(kind, namespace, name string, replicas int, podSpec *corev1.PodSpec, scaledToZero bool) {
-		key := workloadIdentity(kind, namespace, name)
-		workloads[key] = &scanWorkload{kind: kind, namespace: namespace, name: name, replicas: replicas, workload: rightsizingWorkload{
+	var unavailable, skippedDaemonSets []string
+	add := func(obj metav1.Object, kind string, replicas int, podSpec *corev1.PodSpec, scaledToZero bool) {
+		key := workloadIdentity(kind, obj.GetNamespace(), obj.GetName())
+		workloads[key] = &scanWorkload{kind: kind, namespace: obj.GetNamespace(), name: obj.GetName(), replicas: replicas, workload: rightsizingWorkload{
 			containers: extractRuntimeContainers(podSpec), currentPodOOM: map[string]bool{}, hpaManaged: map[string]bool{}, scaledToZero: scaledToZero,
+			managedBy: detectWorkloadManager(obj),
 		}}
 	}
 
@@ -804,7 +848,7 @@ func snapshotScanWorkloads(ctx context.Context, cache *k8s.ResourceCache, scopes
 				if item.Spec.Replicas != nil {
 					replicas = *item.Spec.Replicas
 				}
-				add("Deployment", item.Namespace, item.Name, int(replicas), &item.Spec.Template.Spec, replicas == 0)
+				add(item, "Deployment", int(replicas), &item.Spec.Template.Spec, replicas == 0)
 			}
 		}
 	}
@@ -820,7 +864,7 @@ func snapshotScanWorkloads(ctx context.Context, cache *k8s.ResourceCache, scopes
 				if item.Spec.Replicas != nil {
 					replicas = *item.Spec.Replicas
 				}
-				add("StatefulSet", item.Namespace, item.Name, int(replicas), &item.Spec.Template.Spec, replicas == 0)
+				add(item, "StatefulSet", int(replicas), &item.Spec.Template.Spec, replicas == 0)
 			}
 		}
 	}
@@ -832,7 +876,14 @@ func snapshotScanWorkloads(ctx context.Context, cache *k8s.ResourceCache, scopes
 			unavailable = append(unavailable, "DaemonSet")
 		} else {
 			for _, item := range items {
-				add("DaemonSet", item.Namespace, item.Name, int(item.Status.DesiredNumberScheduled), &item.Spec.Template.Spec, item.Status.DesiredNumberScheduled == 0)
+				// Skipped before batching, not filtered afterwards: they would
+				// still spend query budget and turn the scan partial on rows
+				// that can never carry evidence.
+				if daemonSetMatchesNoNode(item) {
+					skippedDaemonSets = append(skippedDaemonSets, item.Namespace+"/"+item.Name)
+					continue
+				}
+				add(item, "DaemonSet", int(item.Status.DesiredNumberScheduled), &item.Spec.Template.Spec, false)
 			}
 		}
 	}
@@ -844,7 +895,14 @@ func snapshotScanWorkloads(ctx context.Context, cache *k8s.ResourceCache, scopes
 		out = append(out, *workload)
 	}
 	sort.Strings(unavailable)
-	return out, unavailable
+	return out, unavailable, skippedDaemonSets
+}
+
+// daemonSetMatchesNoNode trusts a zero desired count only once the controller
+// has observed the current spec: a selector changed to match nodes keeps the
+// old status until the controller reconciles it.
+func daemonSetMatchesNoNode(ds *appsv1.DaemonSet) bool {
+	return ds.Status.DesiredNumberScheduled == 0 && ds.Status.ObservedGeneration >= ds.Generation
 }
 
 func listDeployments(lister listersappsv1.DeploymentLister, namespaces []string) ([]*appsv1.Deployment, error) {

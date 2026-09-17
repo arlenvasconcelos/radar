@@ -3367,6 +3367,7 @@ export interface RightsizingScanCoverage {
   restrictedKinds?: string[];
   unavailableKinds?: string[];
   partiallyCachedKinds?: string[];
+  daemonSetsWithoutNodes?: number;
 }
 
 export interface RightsizingScanResponse {

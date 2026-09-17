@@ -23,21 +23,41 @@ const (
 	ReasonInsufficientHistory = "insufficient_history"
 )
 
+// HourlyCost bases. On the Prometheus path the cluster total is raised to the
+// summed node cost when nodes cost more than the namespace allocations; that
+// total then already contains unallocated capacity and carries no storage.
+const (
+	HourlyCostBasisAllocated    = "allocated"
+	HourlyCostBasisNodeCapacity = "node_capacity"
+)
+
 // CostSummary is the response for the /api/opencost/summary endpoint.
 type CostSummary struct {
-	Available         bool            `json:"available"`
-	Reason            string          `json:"reason,omitempty"` // Set when available=false; see the Reason* constants above.
-	Source            string          `json:"source,omitempty"`
-	DataThrough       string          `json:"dataThrough,omitempty"`
-	Currency          string          `json:"currency"`
-	Window            string          `json:"window,omitempty"`
-	TotalHourlyCost   float64         `json:"totalHourlyCost,omitempty"`
-	TotalStorageCost  float64         `json:"totalStorageCost,omitempty"`
-	TotalNetworkCost  float64         `json:"totalNetworkCost,omitempty"`
-	TotalIdleCost     float64         `json:"totalIdleCost,omitempty"`
-	ClusterEfficiency float64         `json:"clusterEfficiency,omitempty"` // 0-100
-	NamespaceScope    []string        `json:"namespaceScope,omitempty"`
-	Namespaces        []NamespaceCost `json:"namespaces,omitempty"`
+	Available        bool    `json:"available"`
+	Reason           string  `json:"reason,omitempty"` // Set when available=false; see the Reason* constants above.
+	Source           string  `json:"source,omitempty"`
+	DataThrough      string  `json:"dataThrough,omitempty"`
+	Currency         string  `json:"currency"`
+	Window           string  `json:"window,omitempty"`
+	TotalHourlyCost  float64 `json:"totalHourlyCost,omitempty"`
+	TotalStorageCost float64 `json:"totalStorageCost,omitempty"`
+	TotalNetworkCost float64 `json:"totalNetworkCost,omitempty"`
+	TotalIdleCost    float64 `json:"totalIdleCost,omitempty"`
+	// TotalIdleCost adds two different things: node capacity no workload
+	// requested, and requested capacity no workload used. They are recovered
+	// by different actions (removing nodes vs rightsizing), so they are also
+	// reported apart. TotalUnallocatedCost is nil when the source cannot
+	// measure it, and always on a namespace-scoped summary: unrequested node
+	// capacity belongs to the cluster, not to any namespace.
+	TotalUnallocatedCost   *float64 `json:"totalUnallocatedCost,omitempty"`
+	TotalUnusedRequestCost float64  `json:"totalUnusedRequestCost,omitempty"`
+	// TotalAllocatedCost is the sum of the namespace rows. TotalHourlyCost
+	// equals it unless HourlyCostBasis is HourlyCostBasisNodeCapacity.
+	TotalAllocatedCost float64         `json:"totalAllocatedCost,omitempty"`
+	HourlyCostBasis    string          `json:"hourlyCostBasis,omitempty"`
+	ClusterEfficiency  float64         `json:"clusterEfficiency,omitempty"` // 0-100
+	NamespaceScope     []string        `json:"namespaceScope,omitempty"`
+	Namespaces         []NamespaceCost `json:"namespaces,omitempty"`
 }
 
 // NamespaceCost holds per-row cost breakdown. The name reflects the

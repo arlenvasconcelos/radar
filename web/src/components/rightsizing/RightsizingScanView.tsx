@@ -335,7 +335,13 @@ export function RightsizingScanView({ namespaces }: RightsizingScanViewProps) {
               onSelect={(value) => setFilter('rfClass', value === 'actions' ? undefined : value)}
             />
             <ScanNotices result={result} rows={rows} />
-            {result.coverage.workloadsDiscovered === 0 || rows.length === 0 ? (
+            {result.reason === 'only_daemonsets_without_nodes' ? (
+              <EmptyState
+                variant="card"
+                headline="Only DaemonSets with no nodes in this scope"
+                body="Every workload here is a DaemonSet that runs on no node right now, so none was scanned. Open one from Resources to see recommendations from its retained history."
+              />
+            ) : result.coverage.workloadsDiscovered === 0 || rows.length === 0 ? (
               <EmptyState
                 variant="card"
                 headline="No supported workloads in this scope"
@@ -542,6 +548,11 @@ function ScanNotices({ result, rows }: { result: ScanResult; rows: RightsizingSc
   if ((result.coverage.partiallyCachedKinds?.length ?? 0) > 0)
     notices.push(
       'Radar is caching only some namespaces, so this scan covered a narrower scope than the whole cluster.',
+    )
+  const daemonSetsWithoutNodes = result.coverage.daemonSetsWithoutNodes ?? 0
+  if (daemonSetsWithoutNodes > 0)
+    notices.push(
+      `${daemonSetsWithoutNodes} DaemonSet${daemonSetsWithoutNodes === 1 ? '' : 's'} run on no node right now and ${daemonSetsWithoutNodes === 1 ? 'is' : 'are'} not listed. Open one from Resources to see recommendations from its retained history.`,
     )
   for (const warning of result.warnings ?? []) notices.push(warningMessage(warning.code))
   if (rows.length > 0 && rows.every((row) => row.classification === 'need_data'))
