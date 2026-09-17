@@ -1094,7 +1094,7 @@ func TestSplitByKindAccessExcludesNamespacesNoKindCanList(t *testing.T) {
 		"Deployment":  {"dev"},
 		"StatefulSet": {"dev"},
 	})
-	if !reflect.DeepEqual(kept, []string{"dev"}) || !reflect.DeepEqual(denied, []excludedNamespace{{Name: "locked", Reason: "access_denied"}}) {
+	if !reflect.DeepEqual(kept, []string{"dev"}) || !reflect.DeepEqual(denied, []string{"locked"}) {
 		t.Errorf("kept=%v denied=%+v", kept, denied)
 	}
 	// A kind listable everywhere covers every requested namespace.
@@ -1105,6 +1105,26 @@ func TestSplitByKindAccessExcludesNamespacesNoKindCanList(t *testing.T) {
 	// Every kind denied everywhere leaves nothing scanned.
 	if kept, denied = splitByKindAccess([]string{"dev"}, map[string][]string{}); len(kept) != 0 || len(denied) != 1 {
 		t.Errorf("no listable kind, got kept=%v denied=%+v", kept, denied)
+	}
+}
+
+// RBAC can allow a namespace the informer cache never held. The scan's own
+// scope is what was read, so the namespace is excluded under the cache's
+// reason instead of being reported in namespaceScope.
+func TestNamespacesTheCacheDoesNotHoldAreExcludedAsNotCached(t *testing.T) {
+	scan := prometheuspkg.RightsizingScanResponse{Coverage: prometheuspkg.RightsizingScanCoverage{
+		ScannedNamespacesByKind: map[string][]string{
+			"Deployment":  {"prod"},
+			"StatefulSet": {"prod"},
+		},
+	}}
+	kept, uncached := splitByKindAccess([]string{"prod", "staging"}, scan.Coverage.ScannedNamespacesByKind)
+	if !reflect.DeepEqual(kept, []string{"prod"}) ||
+		!reflect.DeepEqual(excludedWithReason(uncached, reasonNamespaceNotCached), []excludedNamespace{{Name: "staging", Reason: reasonNamespaceNotCached}}) {
+		t.Errorf("kept=%v uncached=%v", kept, uncached)
+	}
+	if !strings.Contains(rightsizingRemediation(reasonNamespacesExcluded), reasonNamespaceNotCached) {
+		t.Error("the excluded-namespaces remediation must explain the not_cached reason")
 	}
 }
 

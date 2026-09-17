@@ -833,6 +833,27 @@ func TestScanWarningsDoNotCarryWholeQueryURLs(t *testing.T) {
 	}
 }
 
+// Warnings reach MCP clients, which must never see the backend address or
+// credentials a --prometheus-url carries in its userinfo.
+func TestScanWarningsDoNotCarryTheBackendAddress(t *testing.T) {
+	for _, raw := range []string{
+		`upstream returned 503 for https://admin:s3cret@prom.internal:9090/api/v1/query_range?query=up&start=1: overloaded`,
+		`prom: query error from https://admin:s3cret@prom.internal:9090: bad_data (execution)`,
+		`Get "http://prom.internal:9090/api/v1/query": dial tcp: i/o timeout`,
+	} {
+		got := boundWarningMessage(raw)
+		for _, leaked := range []string{"admin", "s3cret", "prom.internal", "9090"} {
+			if strings.Contains(got, leaked) {
+				t.Errorf("warning leaked %q: %q", leaked, got)
+			}
+		}
+	}
+	got := boundWarningMessage(`upstream returned 503 for https://admin:s3cret@prom.internal:9090/api/v1/query_range?query=up: overloaded`)
+	if !strings.Contains(got, "/api/v1/query_range") || !strings.Contains(got, "503") || !strings.Contains(got, "overloaded") {
+		t.Errorf("the redacted message should still identify the failing call and its cause: %q", got)
+	}
+}
+
 func TestBoundWarningMessageLeavesShortMessagesAlone(t *testing.T) {
 	const short = "kube_pod_owner returned no series"
 	if got := boundWarningMessage(short); got != short {

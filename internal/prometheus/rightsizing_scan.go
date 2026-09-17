@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -144,7 +143,14 @@ type RightsizingScanCoverage struct {
 	// SkippedDaemonSets names them as namespace/name, sorted, so a caller can
 	// read one's retained history directly.
 	SkippedDaemonSets []string `json:"-"`
-	deniedKinds       []string
+
+	// ScannedNamespacesByKind is the requested scope narrowed to what the
+	// informer cache holds, once the scan reaches the cache. A caller naming
+	// the namespaces that were scanned must read them here rather than from
+	// its own request, which the cache can be narrower than.
+	ScannedNamespacesByKind map[string][]string `json:"-"`
+
+	deniedKinds []string
 }
 
 type RightsizingScanWorkload struct {
@@ -212,6 +218,7 @@ func ScanRightsizing(ctx context.Context, scope RightsizingScanScope) Rightsizin
 	}
 	effective, partiallyCached := clampScopeToCacheCoverage(cache, scope.NamespacesByKind)
 	resp.Coverage.PartiallyCachedKinds = partiallyCached
+	resp.Coverage.ScannedNamespacesByKind = effective
 	workloads, unavailable, skippedDaemonSets := snapshotScanWorkloads(ctx, cache, effective)
 	resp.Coverage.UnavailableKinds = unavailable
 	resp.Coverage.DaemonSetsWithoutNodes = len(skippedDaemonSets)
@@ -284,7 +291,12 @@ func newRightsizingScanResponse(now time.Time, scope RightsizingScanScope) Right
 	sort.Strings(restricted)
 	return RightsizingScanResponse{
 		State: RightsizingScanUnavailable, ScannedAt: now, Window: "7d", Source: "radar",
-		Coverage:  RightsizingScanCoverage{RestrictedKinds: restricted, deniedKinds: scope.deniedKinds()},
+		Coverage: RightsizingScanCoverage{
+			RestrictedKinds: restricted, deniedKinds: scope.deniedKinds(),
+			// Seeded with the request so the early returns below — no client,
+			// no cache — report the scope as unnarrowed rather than as empty.
+			ScannedNamespacesByKind: scope.NamespacesByKind,
+		},
 		Workloads: []RightsizingScanWorkload{},
 	}
 }
@@ -752,23 +764,22 @@ func appendScanWarning(resp *RightsizingScanResponse, code, message string) {
 	sort.Slice(resp.Warnings, func(i, j int) bool { return resp.Warnings[i].Code < resp.Warnings[j].Code })
 }
 
-// maxWarningMessageBytes bounds one warning message. Prometheus transport
-// errors embed the whole query_range URL, so an unbounded scan warning can run
-// to tens of kilobytes and crowd out the rows it is annotating.
+// maxWarningMessageBytes bounds one warning message. A Prometheus error can
+// quote the whole failing query, so an unbounded scan warning runs to tens of
+// kilobytes and crowds out the rows it is annotating.
 const maxWarningMessageBytes = 400
 
-// boundWarningMessage strips the query string from any URL in the message and
-// caps what is left. Consumers key on Code, never on Message, so the detail is
-// diagnostic rather than load-bearing.
+// boundWarningMessage redacts the backend address from the message and caps
+// what is left. Warnings reach MCP clients, so the address must go — it names
+// the backend and can carry credentials. Consumers key on Code, never on
+// Message, so the detail is diagnostic rather than load-bearing.
 func boundWarningMessage(message string) string {
-	message = queryStringPattern.ReplaceAllString(message, "?<query elided>")
+	message = prom.RedactURLs(message)
 	if len(message) > maxWarningMessageBytes {
 		message = message[:maxWarningMessageBytes] + "… (truncated)"
 	}
 	return message
 }
-
-var queryStringPattern = regexp.MustCompile(`\?[^\s"]{40,}`)
 
 func hasScanKind(workloads []scanWorkload, kind string) bool {
 	for _, workload := range workloads {

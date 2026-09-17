@@ -12,6 +12,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	prometheuspkg "github.com/skyhook-io/radar/internal/prometheus"
+	pkgopencost "github.com/skyhook-io/radar/pkg/opencost"
 )
 
 // Reasons Radar's MCP layer assigns on top of the engine's own, so a partial
@@ -20,6 +21,11 @@ const (
 	reasonRowEvidenceIncomplete = "row_evidence_incomplete"
 	reasonNamespaceScopeLimited = "namespace_scope_limited"
 	reasonNamespacesExcluded    = "requested_namespaces_excluded"
+	// excludedNamespaces reasons. access_denied is this identity's own limit;
+	// not_cached is Radar's, whose informer cache holds no workload kind for
+	// that namespace however much the caller may read there.
+	reasonNamespaceAccessDenied = pkgopencost.ReasonAccessDenied
+	reasonNamespaceNotCached    = "not_cached"
 	// Assigned by the scan engine; named here because this layer overrides it.
 	reasonOnlyDaemonSetsWithoutNodes = "only_daemonsets_without_nodes"
 )
@@ -318,19 +324,6 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 	}
 
 	scanScope := prometheuspkg.ResolveScanScope(allowed, mcpScanAuthorizer{ctx: scanCtx})
-	var scanned []string
-	if listForm {
-		scanned = requested
-		if allowed != nil {
-			scanned = allowed
-		}
-		// The namespace check above is a broad sentinel; the per-kind checks
-		// can still deny every workload kind in a namespace, which is then as
-		// unscanned as one the sentinel refused.
-		var denied []excludedNamespace
-		scanned, denied = splitByKindAccess(scanned, scanScope.NamespacesByKind)
-		excluded = append(excluded, denied...)
-	}
 
 	if scanCtx.Err() != nil {
 		return toJSONResult(rightsizingScanUnavailable(scope, namespace, prometheuspkg.ReasonScanDeadlineExceeded))
@@ -349,6 +342,23 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 	if scanCtx.Err() != nil && (scan.State == prometheuspkg.RightsizingScanUnavailable || deadlineCut) {
 		scan.Reason = prometheuspkg.ReasonScanDeadlineExceeded
 	}
+	// Both narrowings land here, after the scan, because the second one is the
+	// scope the engine resolved: the namespace check above is a broad sentinel
+	// that per-kind access can still deny outright, and the informer cache can
+	// then hold nothing for a namespace this identity may read. A namespace
+	// either survives both or is named with the reason that dropped it.
+	var scanned []string
+	if listForm {
+		scanned = requested
+		if allowed != nil {
+			scanned = allowed
+		}
+		var denied, uncached []string
+		scanned, denied = splitByKindAccess(scanned, scanScope.NamespacesByKind)
+		scanned, uncached = splitByKindAccess(scanned, scan.Coverage.ScannedNamespacesByKind)
+		excluded = append(excluded, excludedWithReason(denied, reasonNamespaceAccessDenied)...)
+		excluded = append(excluded, excludedWithReason(uncached, reasonNamespaceNotCached)...)
+	}
 	coverage := scan.Coverage
 
 	out := rightsizingResponse{
@@ -366,9 +376,9 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 	// server's --namespace pin. Without naming that set the caller cannot tell
 	// a two-namespace scan from a cluster-wide one.
 	if scope == "cluster" && allowed != nil {
-		// Same per-kind narrowing as a namespaces list: a namespace no workload
-		// kind can be listed in was not scanned, whatever the sentinel allowed.
-		kept, _ := splitByKindAccess(allowed, scanScope.NamespacesByKind)
+		// Same narrowing as a namespaces list: a namespace no workload kind was
+		// read in, by RBAC or by the cache, was not scanned.
+		kept, _ := splitByKindAccess(allowed, scan.Coverage.ScannedNamespacesByKind)
 		out.NamespaceScope = slices.Sorted(slices.Values(kept))
 	}
 	if listForm {
@@ -593,7 +603,7 @@ func excludedRequestedNamespaces(requested, allowed []string) []excludedNamespac
 		if kept[name] {
 			continue
 		}
-		reason := "access_denied"
+		reason := reasonNamespaceAccessDenied
 		if !namespaceWithinPin(name) {
 			reason = ReasonOutsideNamespaceScope
 		}
@@ -602,10 +612,11 @@ func excludedRequestedNamespaces(requested, allowed []string) []excludedNamespac
 	return excluded
 }
 
-// splitByKindAccess drops the namespaces no workload kind can be listed in. A
-// kind with a nil list covers every namespace; a kind that is absent was
-// denied everywhere.
-func splitByKindAccess(namespaces []string, byKind map[string][]string) ([]string, []excludedNamespace) {
+// splitByKindAccess partitions namespaces by whether any workload kind covers
+// them. A kind with a nil list covers every namespace; a kind that is absent
+// covers none. Why a namespace was dropped is the caller's to say — the same
+// split runs for RBAC and for the informer cache.
+func splitByKindAccess(namespaces []string, byKind map[string][]string) (kept, dropped []string) {
 	readable := map[string]bool{}
 	for _, kindNamespaces := range byKind {
 		if kindNamespaces == nil {
@@ -615,16 +626,22 @@ func splitByKindAccess(namespaces []string, byKind map[string][]string) ([]strin
 			readable[name] = true
 		}
 	}
-	var kept []string
-	var denied []excludedNamespace
 	for _, name := range namespaces {
 		if readable[name] {
 			kept = append(kept, name)
 		} else {
-			denied = append(denied, excludedNamespace{Name: name, Reason: "access_denied"})
+			dropped = append(dropped, name)
 		}
 	}
-	return kept, denied
+	return kept, dropped
+}
+
+func excludedWithReason(names []string, reason string) []excludedNamespace {
+	excluded := make([]excludedNamespace, 0, len(names))
+	for _, name := range names {
+		excluded = append(excluded, excludedNamespace{Name: name, Reason: reason})
+	}
+	return excluded
 }
 
 // scanClaimsFullCoverage marks the empty-scan reasons that assert the whole
@@ -868,13 +885,13 @@ func rightsizingRemediation(reason string) string {
 	case prometheuspkg.ReasonNoUsageSamples, "no_usage_samples":
 		return "Prometheus answered but held no workload usage samples for the 7-day window. Check that it is scraping cAdvisor/kubelet metrics and has 7 days of retention."
 	case reasonNamespacesExcluded:
-		return "Some requested namespaces were not scanned. excludedNamespaces names each one: access_denied means this identity cannot list workloads there; outside_namespace_scope means radar is pinned with --namespace-scope. The rows cover namespaceScope only."
+		return "Some requested namespaces were not scanned. excludedNamespaces names each one: access_denied means this identity cannot list workloads there; outside_namespace_scope means radar is pinned with --namespace-scope; not_cached means radar's informer cache does not hold workloads for that namespace (see coverage.partiallyCachedKinds), which is a limit of radar's own access, not this identity's. The rows cover namespaceScope only."
 	case reasonNamespaceScopeLimited:
 		if pinned, ok := NamespacePinned(); ok {
 			return fmt.Sprintf("The scan succeeded but reached only namespace %s, which radar is pinned to with --namespace-scope. Report it as that scope; this identity's permissions are not the limit.", pinned)
 		}
 		return "The scan succeeded but reached only the namespaces in namespaceScope — scope was resolved from this identity's per-namespace access rather than a cluster-wide grant, so namespaces outside that list were not scanned."
-	case "access_denied":
+	case reasonNamespaceAccessDenied:
 		return "This identity cannot list workloads in the requested scope."
 	case ReasonOutsideNamespaceScope:
 		// The pinned namespace is not named: this caller was denied, and may have

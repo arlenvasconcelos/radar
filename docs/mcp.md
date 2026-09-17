@@ -302,7 +302,7 @@ A partial response carries a `reason`, and `guidance` names the causes that are 
 | Reason | Cause |
 |--------|-------|
 | `row_evidence_incomplete` | Row-level gaps: rows short of history, failed usage queries, or a recommendation withheld for missing HPA/OOM evidence. Cluster coverage is complete. |
-| `requested_namespaces_excluded` | A `namespaces` list included names this identity cannot scan. `excludedNamespaces` lists each with `access_denied` or `outside_namespace_scope`; report only `namespaceScope`. |
+| `requested_namespaces_excluded` | A `namespaces` list included names that were not scanned. `excludedNamespaces` lists each with `access_denied`, `outside_namespace_scope`, or `not_cached` (Radar's informer cache does not hold that namespace); report only `namespaceScope`. |
 | `namespace_scope_limited` | The scan reached only the namespaces in `namespaceScope` — scope was resolved from this identity's per-namespace access rather than a cluster-wide grant, or radar is pinned with `--namespace-scope`. `remediation` says which. |
 | `limited_scope_no_workloads` | No workloads found, and the scan did not cover everything requested. An empty result here is **not** evidence the cluster has no workloads. |
 
