@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,6 +32,7 @@ import (
 	"time"
 
 	"github.com/skyhook-io/radar/internal/investigationrefs"
+	"github.com/skyhook-io/radar/pkg/prom"
 )
 
 // ErrNoCLI means no usable agent CLI was found on PATH — the feature stays
@@ -112,28 +112,7 @@ func metricsNudge(m MetricsAvailability) string {
 	if !m.Connected {
 		return ""
 	}
-	return fmt.Sprintf("Prometheus is connected at %s; for resource, restart, throttling or latency questions run one `query_prometheus` range query over the failure window and cite it. Scope pod-level series to the workload's own pods with the diagnose bundle's `podNames` as pod=~\"^(a|b)$\", or with the workload identity labels on kube-state-metrics series; never a name prefix like pod=~\"api-.*\", which also matches sibling workloads.", promptSafeAddress(m.Address))
-}
-
-// promptSafeAddress reduces a configured URL to where the backend is: scheme,
-// host and path. The prompt is model-visible and leaves the machine, and a
-// Prometheus behind an auth proxy is commonly configured with the credential
-// in the query string (`?token=…`) rather than in userinfo, so stripping
-// userinfo alone still discloses it. The fragment goes for the same reason.
-func promptSafeAddress(address string) string {
-	u, err := url.Parse(address)
-	if err != nil {
-		return address
-	}
-	if u.User == nil && u.RawQuery == "" && u.Fragment == "" {
-		return address
-	}
-	u.User = nil
-	u.RawQuery = ""
-	u.ForceQuery = false
-	u.Fragment = ""
-	u.RawFragment = ""
-	return u.String()
+	return fmt.Sprintf("Prometheus is connected at %s; for resource, restart, throttling or latency questions run one `query_prometheus` range query over the failure window and cite it. Scope pod-level series to the workload's own pods with the diagnose bundle's `podNames` as pod=~\"^(a|b)$\", or with the workload identity labels on kube-state-metrics series; never a name prefix like pod=~\"api-.*\", which also matches sibling workloads.", prom.SafeAddress(m.Address))
 }
 
 // turnPrompt selects the prompt for a turn. Apply and explanation turns are

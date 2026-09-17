@@ -36,3 +36,25 @@ func RedactURLs(message string) string {
 		return redactedURLPlaceholder + parsed.EscapedPath() + suffix
 	})
 }
+
+// SafeAddress reduces a configured URL to where the backend is: scheme, host
+// and path. Unlike RedactURLs it keeps the host, because an address is shown
+// to say WHICH backend answered — but a Prometheus behind an auth proxy is
+// commonly configured with the credential in the query string (?token=…)
+// rather than in userinfo, so stripping userinfo alone still discloses it. The
+// fragment goes for the same reason.
+func SafeAddress(address string) string {
+	parsed, err := url.Parse(address)
+	if err != nil {
+		return address
+	}
+	if parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == "" {
+		return address
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	return parsed.String()
+}

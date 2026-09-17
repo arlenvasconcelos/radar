@@ -43,3 +43,15 @@ func TestRedactURLsDropsTheAddressAndKeepsTheCall(t *testing.T) {
 		})
 	}
 }
+
+func TestSafeAddressKeepsTheHostAndDropsTheCredential(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"https://admin:s3cret@prom.internal:9090", "https://prom.internal:9090"},
+		{"https://prom.internal:9090/prefix?token=hunter2", "https://prom.internal:9090/prefix"},
+		{"http://prom.internal:9090", "http://prom.internal:9090"},
+	} {
+		if got := SafeAddress(tc.in); got != tc.want {
+			t.Errorf("SafeAddress(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
