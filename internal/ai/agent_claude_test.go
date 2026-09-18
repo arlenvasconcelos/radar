@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/skyhook-io/radar/pkg/investigation"
 )
 
 func TestClaudeExecutionProfiles(t *testing.T) {
@@ -63,7 +65,7 @@ func TestClaudeSafeguardedApplyAllowsEveryRadarWriteTool(t *testing.T) {
 	}
 	defer cleanup()
 	args := strings.Join(cmd.Args, " ")
-	for _, tool := range radarWriteTools {
+	for _, tool := range investigation.WriteTools {
 		if !strings.Contains(args, "mcp__radar__"+tool) {
 			t.Errorf("safeguarded apply command missing write tool %q: %q", tool, args)
 		}

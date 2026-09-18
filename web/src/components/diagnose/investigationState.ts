@@ -76,7 +76,7 @@ export function canOfferInvestigationApply(input: {
   lastApplyAttemptIdx: number;
   localApplyAttemptAssessmentIdx: number;
   interactionsBlocked: boolean;
-  hosted: boolean;
+  canApply: boolean;
   hasNewerEvidence: boolean;
 }): boolean {
   return (
@@ -87,7 +87,7 @@ export function canOfferInvestigationApply(input: {
         input.localApplyAttemptAssessmentIdx,
       ) &&
     !input.interactionsBlocked &&
-    !input.hosted &&
+    input.canApply &&
     !input.hasNewerEvidence
   );
 }

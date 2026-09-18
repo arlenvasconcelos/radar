@@ -54,7 +54,7 @@ export interface InvestigationCaseResolution {
 }
 
 /**
- * One half of a Go↔TS contract: `evidenceRoles` in internal/ai/parse.go and the
+ * One half of a Go↔TS contract: `Roles` in pkg/investigation/verdict.go and the
  * DiagnosisEvidenceRole union in api/diagnose.ts must list exactly these roles.
  * A role the parser accepts but this set omits is bound server-side and then
  * silently dropped here. Change all three together.

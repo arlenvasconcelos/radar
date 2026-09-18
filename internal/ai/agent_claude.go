@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+
+	"github.com/skyhook-io/radar/pkg/investigation"
 )
 
 // claudeAgent drives Claude Code. In safeguarded mode, --tools "" disables all
@@ -41,11 +43,11 @@ func (a *claudeAgent) command(ctx context.Context, s turnSpec) (*exec.Cmd, func(
 			"--tools", "", // disable all built-in tools — cluster access is MCP-only
 			"--allowedTools",
 		)
-		for _, t := range radarReadTools {
+		for _, t := range investigation.ReadOnlyTools {
 			args = append(args, "mcp__radar__"+t)
 		}
 		if s.apply {
-			for _, t := range radarWriteTools {
+			for _, t := range investigation.WriteTools {
 				args = append(args, "mcp__radar__"+t)
 			}
 		}

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/skyhook-io/radar/pkg/investigation"
 )
 
 // RunManager owns AI investigations as durable, server-side jobs. An investigation
@@ -607,31 +609,6 @@ type runTurn struct {
 	timeout           time.Duration
 }
 
-func isRadarWriteTool(tool string) bool {
-	tool = normalizeRadarToolName(tool)
-	for _, candidate := range radarWriteTools {
-		if tool == candidate {
-			return true
-		}
-	}
-	return false
-}
-
-func isRadarReadTool(tool string) bool {
-	tool = normalizeRadarToolName(tool)
-	for _, candidate := range radarReadTools {
-		if tool == candidate {
-			return true
-		}
-	}
-	return false
-}
-
-func normalizeRadarToolName(tool string) string {
-	tool = strings.TrimPrefix(tool, "mcp__radar__")
-	return strings.TrimPrefix(tool, "radar.")
-}
-
 // launchTurn emits a turn marker then runs the agent in a manager-owned goroutine.
 // The caller has already marked the run in-flight (atomically with the cap check).
 // Subscribers stay attached across turns — only stale / evict closes them (a
@@ -913,23 +890,16 @@ func (r *Run) finishTurnWithBarrier(diag Diagnosis, turnErr error, apply bool, t
 	if r.activeTurnLocked().ExplainAssessment != 0 {
 		// An explanation is prose about a saved assessment, even if the model
 		// repeats the structured diagnosis format from its resumed session.
-		diag = Diagnosis{Report: diag.Report, SessionID: diag.SessionID, CostUSD: diag.CostUSD, Turns: diag.Turns}
+		diag = Diagnosis{Verdict: diag.Verdict.AsExplanation(), SessionID: diag.SessionID, CostUSD: diag.CostUSD, Turns: diag.Turns}
 	}
 	if !apply {
 		r.bindRootCauseEvidenceLocked(&diag)
 	}
-	// A revision must be a complete verdict; the flag alone can never retire
-	// the assessment the reader is looking at.
-	if diag.RevisesAssessment && !diag.completeVerdict() {
+	if diag.SettleRevision() {
 		log.Printf("[ai] run %s: revises_assessment set without a complete verdict; treating the turn as an answer", r.ID)
-		diag.RevisesAssessment = false
 	}
-	if diag.Summary != "" && (diag.RootCause != "" || diag.Healthy || diag.Inconclusive) {
-		r.preview = diag.Summary
-	} else if diag.RootCause != "" {
-		r.preview = diag.RootCause
-	} else if diag.Healthy {
-		r.preview = "Healthy"
+	if preview := diag.Preview(); preview != "" {
+		r.preview = preview
 	}
 	r.status = "done"
 	if beforeTerminalAppend != nil {
@@ -961,8 +931,7 @@ func (r *Run) bindRootCauseEvidenceLocked(diag *Diagnosis) {
 	// on every branch so the terminal in-memory event does not retain duplicate
 	// producer payloads or untrusted model requests after public provenance exists.
 	defer func() {
-		diag.evidenceRequest = evidenceReferenceRequest{}
-		diag.caseRequest = caseRequest{}
+		diag.citations = investigation.Citations{}
 		diag.evidenceScope = ""
 		diag.issuedEvidence = nil
 	}()
@@ -971,8 +940,7 @@ func (r *Run) bindRootCauseEvidenceLocked(diag *Diagnosis) {
 		candidate := matches[ref]
 		return candidate.count == 1 && candidate.valid
 	}
-	bindRootCauseRefs(diag, refLinked)
-	bindCase(diag, refLinked)
+	investigation.Bind(&diag.Verdict, diag.citations, refLinked)
 }
 
 type evidenceMatch struct {
@@ -988,7 +956,7 @@ func (r *Run) runEvidenceMatchesLocked(diag *Diagnosis) map[string]evidenceMatch
 			break
 		}
 	}
-	scopeValid := evidenceScopeRe.MatchString(diag.evidenceScope)
+	scopeValid := investigation.ValidScope(diag.evidenceScope)
 	scopePrefix := "ev_" + diag.evidenceScope + "_"
 	// Claude omits the tool name from terminal result rows, so establish one
 	// unambiguous tool identity per host call ID within each turn before
@@ -1017,7 +985,7 @@ func (r *Run) runEvidenceMatchesLocked(diag *Diagnosis) map[string]evidenceMatch
 		if retained.Event.Type != "step" || step == nil || step.ID == "" || step.Tool == "" {
 			continue
 		}
-		tool := normalizeRadarToolName(step.Tool)
+		tool := investigation.NormalizeToolName(step.Tool)
 		key := stepKey{turn, step.ID}
 		identity := toolsByStep[key]
 		if !identity.known {
@@ -1055,85 +1023,13 @@ func (r *Run) runEvidenceMatchesLocked(diag *Diagnosis) map[string]evidenceMatch
 		candidate.valid = candidate.count == 1 &&
 			authenticated &&
 			step.RadarEvidence &&
-			step.ID != "" && tool.known && !tool.conflicts && isRadarReadTool(tool.name) &&
+			step.ID != "" && tool.known && !tool.conflicts && investigation.IsReadOnlyTool(tool.name) &&
 			step.Status == "done" &&
 			step.IsError != nil && !*step.IsError &&
 			!step.Truncated && strings.TrimSpace(step.Result) != ""
 		matches[step.EvidenceRef] = candidate
 	}
 	return matches
-}
-
-func bindRootCauseRefs(diag *Diagnosis, refLinked func(string) bool) {
-	if diag.RootCause == "" {
-		diag.RootCauseEvidence = nil
-		return
-	}
-	request := diag.evidenceRequest
-	if request.invalid {
-		diag.RootCauseEvidence = &RootCauseEvidence{Status: EvidenceInvalid}
-		return
-	}
-	if !request.present || len(request.refs) == 0 {
-		diag.RootCauseEvidence = &RootCauseEvidence{Status: EvidenceMissing}
-		return
-	}
-	for _, ref := range request.refs {
-		if !refLinked(ref) {
-			diag.RootCauseEvidence = &RootCauseEvidence{Status: EvidenceInvalid}
-			return
-		}
-	}
-	diag.RootCauseEvidence = &RootCauseEvidence{
-		Status: EvidenceLinked,
-		Refs:   append([]string(nil), request.refs...),
-	}
-}
-
-// bindCase keeps every item at its parsed index so ruled_out indexes stay
-// meaningful; an item that fails validation becomes unlinked and a ruled-out
-// entry pointing at an unlinked or missing item is dropped. UnlinkedEvidence
-// rolls those losses up with the entries the cap cut before parsing, which
-// have no slot to carry a status.
-func bindCase(diag *Diagnosis, refLinked func(string) bool) {
-	request := diag.caseRequest
-	diag.Evidence = nil
-	diag.RuledOut = nil
-	diag.UnlinkedEvidence = request.dropped
-	diag.EvidenceMalformed = request.malformed
-	if len(request.items) == 0 {
-		return
-	}
-	items := make([]DiagnosisEvidenceItem, len(request.items))
-	for i, item := range request.items {
-		if !item.valid || !refLinked(item.ref) {
-			items[i] = DiagnosisEvidenceItem{Status: EvidenceUnlinked}
-			diag.UnlinkedEvidence++
-			continue
-		}
-		items[i] = DiagnosisEvidenceItem{
-			Status: EvidenceLinked, Ref: item.ref, Role: item.role, Claim: item.claim, Gap: item.gap,
-		}
-		if item.subject != nil {
-			subject := *item.subject
-			if subject.Group != nil {
-				group := *subject.Group
-				subject.Group = &group
-			}
-			if subject.Namespace != nil {
-				namespace := *subject.Namespace
-				subject.Namespace = &namespace
-			}
-			items[i].Subject = &subject
-		}
-	}
-	diag.Evidence = items
-	for _, entry := range request.ruledOut {
-		if entry.EvidenceIndex >= len(items) || items[entry.EvidenceIndex].Status != EvidenceLinked {
-			continue
-		}
-		diag.RuledOut = append(diag.RuledOut, entry)
-	}
 }
 
 // Stop cancels a run's in-flight agent (killing its process group) and marks it stopped.

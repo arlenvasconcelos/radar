@@ -13,6 +13,7 @@ import (
 
 	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/internal/meaningfulchanges"
+	"github.com/skyhook-io/radar/pkg/investigation"
 )
 
 // setupDialogCatalogPath is the human-facing tool catalog rendered by the MCP
@@ -645,18 +646,6 @@ func listRegisteredToolsWithRegistry(t *testing.T, includeWrites bool) ([]*mcpsd
 	return result.Tools, registry
 }
 
-// diagnoserAllowlistPath holds radarReadTools, the allowlist deciding which MCP
-// read tools Radar's own Diagnose agent may call. A tool absent from it is
-// invisible to the product's highest-value consumer while still reaching every
-// external client, and nothing else fails.
-const diagnoserAllowlistPath = "../ai/diagnoser.go"
-
-// radarReadToolsBlock captures the var block's body so a tool name appearing in
-// radarWriteTools or in prose elsewhere in the file cannot false-match.
-var radarReadToolsBlock = regexp.MustCompile(`(?s)var radarReadTools = \[\]string\{(.*?)\n\}`)
-
-var quotedToolName = regexp.MustCompile(`"([a-z][a-z0-9_]*)"`)
-
 // TestDiagnoserAllowlistCoversAllReadTools fails when a read tool is registered
 // for MCP but never added to the agent's allowlist. Every registered read tool
 // must appear there: one that does not reaches every external client but not
@@ -667,20 +656,9 @@ func TestDiagnoserAllowlistCoversAllReadTools(t *testing.T) {
 		writes[w] = true
 	}
 
-	raw, err := os.ReadFile(diagnoserAllowlistPath)
-	if err != nil {
-		t.Fatalf("read %s: %v", diagnoserAllowlistPath, err)
-	}
-	block := radarReadToolsBlock.FindSubmatch(raw)
-	if block == nil {
-		t.Fatalf("could not locate radarReadTools in %s — did the declaration change?", diagnoserAllowlistPath)
-	}
 	allowed := map[string]bool{}
-	for _, m := range quotedToolName.FindAllSubmatch(block[1], -1) {
-		allowed[string(m[1])] = true
-	}
-	if len(allowed) == 0 {
-		t.Fatalf("no tool names parsed from radarReadTools — did the format change?")
+	for _, name := range investigation.ReadOnlyTools {
+		allowed[name] = true
 	}
 
 	var missing, stale []string
@@ -700,9 +678,9 @@ func TestDiagnoserAllowlistCoversAllReadTools(t *testing.T) {
 	sort.Strings(missing)
 	sort.Strings(stale)
 	if len(missing) > 0 {
-		t.Errorf("read tools registered for MCP but not callable by Radar's own agent: %v — add them to radarReadTools in %s", missing, diagnoserAllowlistPath)
+		t.Errorf("read tools registered for MCP but not callable by Radar's own agent: %v — add them to investigation.ReadOnlyTools", missing)
 	}
 	if len(stale) > 0 {
-		t.Errorf("radarReadTools names tools that are not registered: %v", stale)
+		t.Errorf("investigation.ReadOnlyTools names tools that are not registered: %v", stale)
 	}
 }

@@ -176,19 +176,17 @@ export function InvestigationView({
   onOpenTimeline?: (scope: InvestigationTimelineScope) => void;
 }) {
   const { kind, namespace, name } = run;
-  // Apply is off for hosted agents (read-only server-side). Keyed on the selected
-  // agent, which matches run.agent unless a deployment mixes hosted + local agents.
-  const {
-    refreshRuns,
-    openInvestigation,
-    startError,
-    dismissError,
-    hosted,
-    agents,
-  } = useDiagnose();
-  const explanationEnabled = supportsAssessmentExplanation(
-    agents.find((agent) => agent.name === run.agent),
-  );
+  const { refreshRuns, openInvestigation, startError, dismissError, agents } =
+    useDiagnose();
+  // Capabilities are the declared ones of the agent that ran this run, not
+  // the picker's: a reopened run keeps the backend it was made with.
+  const runAgent = agents.find((agent) => agent.name === run.agent);
+  const explanationEnabled = supportsAssessmentExplanation(runAgent);
+  const canApply = runAgent?.apply === true;
+  // Read through a ref by the stream callback, which lives as long as the
+  // run and would otherwise keep the value from before the agents loaded.
+  const verifiesAfterApplyRef = useRef(false);
+  verifiesAfterApplyRef.current = runAgent?.verification === true;
   // Investigate again means look again, so it asks for a new session explicitly and only
   // carries the issue forward — being handed the previous answer is the one
   // thing someone clicking this doesn't want.
@@ -536,10 +534,13 @@ export function InvestigationView({
               });
               pendingApplyStartedLiveRef.current = false;
               if (effects.refreshClusterState) refreshClusterState();
-              // A successful apply is one compound server-owned job. Its next
-              // durable event is the automatic read-only verification turn; hold
-              // the controls through that adjacent event so there is no idle flash.
-              if (effects.verificationPending) setVerificationPending(true);
+              // On a backend that verifies, a successful apply is one compound
+              // server-owned job whose next durable event is the automatic
+              // read-only verification turn; hold the controls through that
+              // adjacent event so there is no idle flash. A backend that
+              // declares no verification sends no such turn, so nothing waits.
+              if (effects.verificationPending && verifiesAfterApplyRef.current)
+                setVerificationPending(true);
             }
             if (live || (isApply && applyStartedLive)) refreshRuns();
             break;
@@ -1345,8 +1346,7 @@ export function InvestigationView({
   );
   // While the first assessment is still running the pane keeps the story
   // shape, so the page fills in rather than rearranging when the verdict lands.
-  const storyShell =
-    !hosted && !currentAssessment && lastTurn?.status === "running";
+  const storyShell = !currentAssessment && lastTurn?.status === "running";
   const currentAssessmentEvidenceConflict =
     currentAssessment?.diagnosis?.healthy === true &&
     investigationEvidenceConflictsWithHealthy(projection);
@@ -1660,7 +1660,7 @@ export function InvestigationView({
               lastApplyAttemptIdx,
               localApplyAttemptAssessmentIdx,
               interactionsBlocked,
-              hosted,
+              canApply,
               hasNewerEvidence: hasEvidenceCollectedAfterAssessment,
             })
               ? requestApply

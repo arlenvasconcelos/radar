@@ -611,14 +611,14 @@ describe("investigation action gating", () => {
       lastApplyAttemptIdx: -1,
       localApplyAttemptAssessmentIdx: -1,
       interactionsBlocked: false,
-      hosted: false,
+      canApply: true,
       hasNewerEvidence: false,
     };
     expect(canOfferInvestigationApply(base)).toBe(true);
     expect(
       canOfferInvestigationApply({ ...base, hasNewerEvidence: true }),
     ).toBe(false);
-    expect(canOfferInvestigationApply({ ...base, hosted: true })).toBe(false);
+    expect(canOfferInvestigationApply({ ...base, canApply: false })).toBe(false);
     expect(
       canOfferInvestigationApply({ ...base, interactionsBlocked: true }),
     ).toBe(false);
