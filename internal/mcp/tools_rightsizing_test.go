@@ -407,7 +407,7 @@ func TestRightsizingScanKindsComeFromTheSharedCatalogue(t *testing.T) {
 func TestRightsizingRemediationCoversTheScanDeadline(t *testing.T) {
 	// The scan budget covers authorization as well as the queries, so a blown
 	// deadline is reachable on the authorization path too.
-	if rightsizingRemediation("scan_deadline_exceeded") == "" {
+	if rightsizingRemediation("cluster", "scan_deadline_exceeded") == "" {
 		t.Error("a blown scan budget reaches the model with no remediation")
 	}
 }
@@ -424,11 +424,11 @@ func TestRightsizingRemediationCoversScanFailureReasons(t *testing.T) {
 		"workload_kinds_unavailable",
 		"access_denied",
 	} {
-		if rightsizingRemediation(reason) == "" {
+		if rightsizingRemediation("cluster", reason) == "" {
 			t.Errorf("reason %q reaches the model with no remediation", reason)
 		}
 	}
-	if rightsizingRemediation("something_new") != "" {
+	if rightsizingRemediation("cluster", "something_new") != "" {
 		t.Error("unknown reasons should get no invented remediation")
 	}
 }
@@ -500,7 +500,7 @@ func TestNarrowedClusterScanGuidanceRefusesClusterWideFraming(t *testing.T) {
 func TestNarrowedClusterScopeRemediationNamesTheRealCause(t *testing.T) {
 	// Unpinned, the only cause left is RBAC — attributing it to --namespace
 	// would send the reader to a flag that was never passed.
-	remediation := rightsizingRemediation(reasonNamespaceScopeLimited)
+	remediation := rightsizingRemediation("cluster", reasonNamespaceScopeLimited)
 	if !strings.Contains(remediation, "cluster-wide") {
 		t.Errorf("remediation must state what the scan could not reach: %q", remediation)
 	}
@@ -509,7 +509,7 @@ func TestNarrowedClusterScopeRemediationNamesTheRealCause(t *testing.T) {
 	}
 
 	// The pin is a startup flag, not a permissions problem.
-	pinned := rightsizingRemediation(ReasonOutsideNamespaceScope)
+	pinned := rightsizingRemediation("cluster", ReasonOutsideNamespaceScope)
 	if !strings.Contains(pinned, "--namespace") || !strings.Contains(pinned, "not a permissions problem") {
 		t.Errorf("a pin-excluded scope must be attributed to the flag: %q", pinned)
 	}
@@ -731,7 +731,7 @@ func TestEveryScanReasonCarriesRemediation(t *testing.T) {
 	)
 
 	for _, reason := range engineReasons {
-		if rightsizingRemediation(reason) == "" {
+		if rightsizingRemediation("cluster", reason) == "" {
 			t.Errorf("reason %q reaches the agent with no remediation", reason)
 		}
 	}
@@ -1084,7 +1084,7 @@ func TestScanGuidanceNamesNamespaceGapsDaemonSetsAndOwnership(t *testing.T) {
 	if strings.Contains(got, "not the whole cluster") {
 		t.Errorf("a namespace list is what was asked, not a narrowed cluster scan: %q", got)
 	}
-	if rightsizingRemediation(reasonNamespacesExcluded) == "" {
+	if rightsizingRemediation("cluster", reasonNamespacesExcluded) == "" {
 		t.Error("the excluded-namespaces reason needs remediation")
 	}
 }
@@ -1123,7 +1123,7 @@ func TestNamespacesTheCacheDoesNotHoldAreExcludedAsNotCached(t *testing.T) {
 		!reflect.DeepEqual(excludedWithReason(uncached, reasonNamespaceNotCached), []excludedNamespace{{Name: "staging", Reason: reasonNamespaceNotCached}}) {
 		t.Errorf("kept=%v uncached=%v", kept, uncached)
 	}
-	if !strings.Contains(rightsizingRemediation(reasonNamespacesExcluded), reasonNamespaceNotCached) {
+	if !strings.Contains(rightsizingRemediation("cluster", reasonNamespacesExcluded), reasonNamespaceNotCached) {
 		t.Error("the excluded-namespaces remediation must explain the not_cached reason")
 	}
 }
@@ -1164,7 +1164,7 @@ func TestSkippedDaemonSetGuidanceKeepsTheScaledDownPoolCase(t *testing.T) {
 	if strings.Contains(got, "still has history") {
 		t.Errorf("the hint must not promise history a workload read may not find: %q", got)
 	}
-	if remediation := rightsizingRemediation(reasonOnlyDaemonSetsWithoutNodes); !strings.Contains(remediation, "holds workloads") {
+	if remediation := rightsizingRemediation("cluster", reasonOnlyDaemonSetsWithoutNodes); !strings.Contains(remediation, "holds workloads") {
 		t.Errorf("remediation must not say no workloads were found: %q", remediation)
 	}
 }
@@ -1328,5 +1328,50 @@ func TestWorkloadScopeStateKeepsTheEnginesOwnReason(t *testing.T) {
 	_, reason := workloadScopeState(true, true, nil, prometheuspkg.ReasonNoUsageSamples)
 	if reason != prometheuspkg.ReasonNoUsageSamples {
 		t.Errorf("an engine reason must survive, got %q", reason)
+	}
+}
+
+func TestWorkloadQueryFailureIsNotDescribedAsAMissingRow(t *testing.T) {
+	// A workload answer partial only because a supporting query failed has
+	// intact rows and no coverage block, so neither text may send the reader
+	// hunting for a withheld row or for scan-only fields.
+	guidance := rightsizingGuidance(rightsizingGuidanceInput{
+		state: prometheuspkg.RightsizingScanPartial, scope: "workload",
+		reason: prometheuspkg.ReasonSomeEvidenceUnavailable,
+	})
+	if strings.Contains(guidance, "had no usable evidence") {
+		t.Errorf("the rows are intact; this describes a different partial: %q", guidance)
+	}
+	if !strings.Contains(guidance, "warnings") {
+		t.Errorf("guidance must point at the warnings that name the failed query: %q", guidance)
+	}
+
+	remediation := rightsizingRemediation("workload", prometheuspkg.ReasonSomeEvidenceUnavailable)
+	for _, scanOnly := range []string{"coverage.restrictedKinds", "unavailableKinds", "partiallyCachedKinds", "The scan ran"} {
+		if strings.Contains(remediation, scanOnly) {
+			t.Errorf("a workload response carries no %s: %q", scanOnly, remediation)
+		}
+	}
+	// The scan keeps its own wording.
+	if scan := rightsizingRemediation("cluster", prometheuspkg.ReasonSomeEvidenceUnavailable); !strings.Contains(scan, "coverage.restrictedKinds") {
+		t.Errorf("scan remediation must still name its coverage fields: %q", scan)
+	}
+}
+
+func TestReviewGuidanceDoesNotPromiseARecommendation(t *testing.T) {
+	// hpa_managed, limit_conflict and a withheld reason all return before a
+	// recommendation is set, so asserting the row carries the engine's best
+	// value is wrong for most flagged rows.
+	got := rightsizingGuidance(rightsizingGuidanceInput{
+		state: prometheuspkg.RightsizingScanComplete, scope: "workload", needsManualReview: true,
+	})
+	if strings.Contains(got, "is still the engine's best value") {
+		t.Errorf("most flagged rows carry no recommendedRequest at all: %q", got)
+	}
+	if !strings.Contains(got, "no recommendedRequest at all") {
+		t.Errorf("guidance must say the recommendation is usually absent: %q", got)
+	}
+	if !strings.Contains(got, "needs judgement") {
+		t.Errorf("the flag must not read as a blanket prohibition: %q", got)
 	}
 }

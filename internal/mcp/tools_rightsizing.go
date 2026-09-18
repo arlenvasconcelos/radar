@@ -272,7 +272,7 @@ func rightsizingWorkloadScope(ctx context.Context, input getRightsizingInput) (*
 	if filtered.omitted.total() > 0 {
 		out.Omitted = &filtered.omitted
 	}
-	out.Remediation = rightsizingRemediation(out.Reason)
+	out.Remediation = rightsizingRemediation("workload", out.Reason)
 	out.Guidance = rightsizingGuidance(rightsizingGuidanceInput{
 		state:             out.State,
 		includeBalanced:   input.IncludeBalanced,
@@ -416,7 +416,7 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 	out.SkippedDaemonSets, out.SkippedDaemonSetsTruncated = truncateRows(scan.Coverage.SkippedDaemonSets, skippedDaemonSetsMax)
 	out.Warnings = scan.Warnings
 	if scan.State == prometheuspkg.RightsizingScanUnavailable {
-		out.Remediation = rightsizingRemediation(scan.Reason)
+		out.Remediation = rightsizingRemediation(scope, scan.Reason)
 		out.Workloads = []rightsizingWorkloadDTO{}
 		out.Guidance = rightsizingGuidance(rightsizingGuidanceInput{
 			state:          out.State,
@@ -506,7 +506,7 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 	}
 	// Remediation travels with the reason on every path, not only the
 	// unavailable one — it is the field the tool description points agents at.
-	out.Remediation = rightsizingRemediation(out.Reason)
+	out.Remediation = rightsizingRemediation(scope, out.Reason)
 	out.Guidance = rightsizingGuidance(rightsizingGuidanceInput{
 		state:                      out.State,
 		includeBalanced:            input.IncludeBalanced,
@@ -869,7 +869,7 @@ func rightsizingUnavailable(scope, reason string) rightsizingResponse {
 		State:       prometheuspkg.RightsizingScanUnavailable,
 		Window:      "7d",
 		Reason:      reason,
-		Remediation: rightsizingRemediation(reason),
+		Remediation: rightsizingRemediation(scope, reason),
 		Workloads:   []rightsizingWorkloadDTO{},
 		Guidance: rightsizingGuidance(rightsizingGuidanceInput{
 			state: prometheuspkg.RightsizingScanUnavailable, scope: scope, reason: reason,
@@ -877,7 +877,13 @@ func rightsizingUnavailable(scope, reason string) rightsizingResponse {
 	}
 }
 
-func rightsizingRemediation(reason string) string {
+func rightsizingRemediation(scope, reason string) string {
+	// A workload answer is not a scan and carries no coverage block, so the
+	// scan's wording would point at fields this response does not have.
+	if scope == "workload" && reason == prometheuspkg.ReasonSomeEvidenceUnavailable {
+		return "A query behind this workload's rows did not answer — warnings names which one. The rows themselves are complete: read them, but treat whatever that query decides as unknown rather than settled, and re-read the workload once Prometheus answers again."
+	}
+
 	switch reason {
 	case "prometheus_unavailable":
 		return "No Prometheus found. Radar auto-discovers it, or start radar with --prometheus-url. Recommendations also need kube-state-metrics for 7 days of workload history."
@@ -1002,7 +1008,7 @@ func rightsizingGuidance(in rightsizingGuidanceInput) string {
 		parts = append(parts, "Rows with reductionLimited=true were clamped: recommendedRequest is a bounded step, not the full cut: at most half for memory, for CPU of 1 core or more, and for bursty or throttled CPU; up to three quarters for smaller CPU requests. demandTarget is the demand-based end state, not a value to apply: apply recommendedRequest, observe a full 7-day window, then re-check. For memory, demandTarget comes from the 7-day max, so a monthly or batch peak outside the window is not seen and jumping straight to it risks OOM.")
 	}
 	if in.needsManualReview {
-		parts = append(parts, "Rows with needsManualReview=true are excluded from the workload's impact and must not be applied unattended: reviewReasons says why — an autoscaler owns the request, the container has OOM history, its limit conflicts with the recommendation, or the cut runs against bursty or throttled usage. The recommendedRequest on those rows is still the engine's best value, not a safe one.")
+		parts = append(parts, "Rows with needsManualReview=true are excluded from the workload's impact, and reviewReasons says why — an autoscaler owns the request, the container has OOM history, its limit conflicts with the recommendation, or the cut runs against bursty or throttled usage. Most of those rows carry no recommendedRequest at all, because the same signal withheld it; where one is present, weigh it against the reason instead of applying it unattended. The flag marks a row that needs judgement, not one that must never change: raising a request on a container with OOM history is often exactly what the evidence asks for.")
 	}
 	if in.workloadsShown {
 		parts = append(parts, "managedBy names what owns a workload's spec: change requests at that source (Git, chart values, the controller's resource, the add-on configuration), not with a direct patch. A missing managedBy does not mean unmanaged — Argo CD label tracking, Terraform and kubectl apply leave no signal Radar reads.")
@@ -1017,6 +1023,9 @@ func rightsizingGuidance(in rightsizingGuidanceInput) string {
 // causes are row-level evidence and a narrowed namespace scope, not kinds.
 func partialGuidance(in rightsizingGuidanceInput) []string {
 	if in.scope == "workload" {
+		if in.reason == prometheuspkg.ReasonSomeEvidenceUnavailable {
+			return []string{"State is partial because a supporting query did not answer, not because a row is missing evidence — warnings names which one. The rows are intact and their recommendations stand, but a signal that would have qualified them is absent: a lost throttle or peak reading leaves needsManualReview clear and the clamp looser than it would otherwise have been."}
+		}
 		return []string{"State is partial — some of this workload's containers had no usable evidence. Do not treat their rows as a verdict that the container is correctly sized."}
 	}
 
