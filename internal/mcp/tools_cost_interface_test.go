@@ -139,6 +139,26 @@ func TestCostInterfaceThroughMCP(t *testing.T) {
 			t.Fatalf("unavailable summary: %s", raw)
 		}
 		totals := wire["totals"].(map[string]any)
+		for _, key := range []string{"unallocatedHourlyCost", "efficiencyPercent"} {
+			if _, ok := totals[key]; !ok {
+				t.Fatalf("missing explicit %s: %s", key, raw)
+			}
+		}
+		row := wire["namespaces"].([]any)[0].(map[string]any)
+		for _, key := range []string{"cpuHourlyCost", "memoryHourlyCost", "efficiencyPercent"} {
+			if _, ok := row[key]; !ok {
+				t.Fatalf("missing explicit %s: %s", key, raw)
+			}
+		}
+		if namespace != "" && !reflect.DeepEqual(wire["effectiveNamespaces"], []any{namespace}) {
+			t.Fatalf("missing effective scope: %s", raw)
+		}
+		for _, key := range []string{"namespaceScope", "clusterEfficiency", "efficiency", "cpuCost", "memoryCost", "storageCost", "networkCost", "unallocatedCost", "unusedRequestCost"} {
+			if strings.Contains(raw, `"`+key+`":`) {
+				t.Fatalf("stale field %s: %s", key, raw)
+			}
+		}
+
 		if totals["allocatedHourlyCost"] != float64(3) || totals["allocatedMonthlyProjection"] != float64(2190) {
 			t.Fatalf("wrong allocation: %s", raw)
 		}

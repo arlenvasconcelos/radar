@@ -148,6 +148,32 @@ func rowHasIncompleteEvidence(row prometheuspkg.RightsizingRow) bool {
 		prometheuspkg.IsWithheldRecommendationReason(row.RecommendationReason)
 }
 
+type rightsizingCoverage struct {
+	WorkloadsDiscovered    int      `json:"workloadsDiscovered"`
+	WorkloadsEvaluated     int      `json:"workloadsEvaluated"`
+	WorkloadsWithData      int      `json:"workloadsWithData"`
+	Batches                int      `json:"batches"`
+	SuccessfulBatches      int      `json:"successfulBatches"`
+	RestrictedKinds        []string `json:"restrictedKinds,omitempty"`
+	UnavailableKinds       []string `json:"unavailableKinds,omitempty"`
+	PartiallyCachedKinds   []string `json:"partiallyCachedKinds,omitempty"`
+	DaemonSetsWithoutNodes int      `json:"daemonSetsWithoutNodes,omitempty"`
+}
+
+func newRightsizingCoverage(coverage prometheuspkg.RightsizingScanCoverage) *rightsizingCoverage {
+	return &rightsizingCoverage{
+		WorkloadsDiscovered:    coverage.WorkloadsDiscovered,
+		WorkloadsEvaluated:     coverage.WorkloadsEvaluated,
+		WorkloadsWithData:      coverage.WorkloadsWithData,
+		Batches:                coverage.Batches,
+		SuccessfulBatches:      coverage.CompletedBatches,
+		RestrictedKinds:        coverage.RestrictedKinds,
+		UnavailableKinds:       coverage.UnavailableKinds,
+		PartiallyCachedKinds:   coverage.PartiallyCachedKinds,
+		DaemonSetsWithoutNodes: coverage.DaemonSetsWithoutNodes,
+	}
+}
+
 type rightsizingResponse struct {
 	Scope          string                             `json:"scope"`
 	State          prometheuspkg.RightsizingScanState `json:"state"`
@@ -155,7 +181,7 @@ type rightsizingResponse struct {
 	Source         string                             `json:"source,omitempty"`
 	ScannedAt      string                             `json:"evaluatedAt,omitempty"`
 	Namespace      string                             `json:"namespace,omitempty"`
-	NamespaceScope []string                           `json:"namespaceScope,omitempty"`
+	NamespaceScope []string                           `json:"effectiveNamespaces,omitempty"`
 	// Excluded requested namespaces are listed by name: a namespace dropped
 	// silently reads as one that had nothing to change.
 	ExcludedNamespaces []excludedNamespace `json:"excludedNamespaces,omitempty"`
@@ -166,7 +192,7 @@ type rightsizingResponse struct {
 	SkippedDaemonSetsTruncated bool                                   `json:"skippedDaemonSetsTruncated,omitempty"`
 	SampleAvailable            *bool                                  `json:"sampleAvailable,omitempty"`
 	OwnerCoverage              prometheuspkg.OwnerCoverage            `json:"ownerCoverage,omitempty"`
-	Coverage                   *prometheuspkg.RightsizingScanCoverage `json:"coverage,omitempty"`
+	Coverage                   *rightsizingCoverage                   `json:"coverage,omitempty"`
 	Omitted                    *rightsizingOmissions                  `json:"omitted,omitempty"`
 	Workloads                  []rightsizingWorkloadDTO               `json:"workloads"`
 	Warnings                   []prometheuspkg.RightsizingScanWarning `json:"warnings,omitempty"`
@@ -418,9 +444,9 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 		Source:    scan.Source,
 		Namespace: namespace,
 		Reason:    scan.Reason,
-		// Counters are always emitted: "0 of 1 batches completed" is precisely
+		// Counters are always emitted: "0 of 1 batches succeeded" is precisely
 		// the case a reader needs, and omitempty would hide it.
-		Coverage: &coverage,
+		Coverage: newRightsizingCoverage(coverage),
 	}
 	// scope="cluster" resolves to whatever this identity can list, or to the
 	// server's --namespace pin. Without naming that set the caller cannot tell
@@ -444,10 +470,10 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 		out.Remediation = rightsizingRemediation(scope, scan.Reason)
 		out.Workloads = []rightsizingWorkloadDTO{}
 		out.Guidance = rightsizingGuidance(rightsizingGuidanceInput{
-			state:          out.State,
-			scope:          scope,
-			reason:         out.Reason,
-			namespaceScope: clusterNamespaceScope(scope, out.NamespaceScope),
+			state:               out.State,
+			scope:               scope,
+			reason:              out.Reason,
+			effectiveNamespaces: clusterNamespaceScope(scope, out.NamespaceScope),
 		})
 		return toJSONResult(out)
 	}
@@ -484,7 +510,7 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 	if scope == "cluster" && len(out.NamespaceScope) > 0 {
 		out.State = prometheuspkg.RightsizingScanPartial
 		// no_workloads claims the requested scope was covered; for a cluster
-		// request narrowed to namespaceScope that is exactly what did not happen.
+		// request narrowed to effectiveNamespaces that is exactly what did not happen.
 		if out.Reason == "" || scanClaimsFullCoverage(out.Reason) {
 			out.Reason = reasonNamespaceScopeLimited
 		}
@@ -503,7 +529,7 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 		includeAll:                 input.IncludeAll || input.Classification != "",
 		scope:                      scope,
 		reason:                     out.Reason,
-		namespaceScope:             clusterNamespaceScope(scope, out.NamespaceScope),
+		effectiveNamespaces:        clusterNamespaceScope(scope, out.NamespaceScope),
 		coverage:                   &coverage,
 		omitted:                    omitted,
 		reductionLimited:           returned.reductionLimited,
@@ -698,13 +724,13 @@ func namespacesWithoutWorkloads(scanned []string, workloads []prometheuspkg.Righ
 	return empty
 }
 
-// clusterNamespaceScope passes namespaceScope to the guidance only where it
+// clusterNamespaceScope passes effectiveNamespaces to the guidance only where it
 // means "narrower than the cluster"; on a namespace list it is what was asked.
-func clusterNamespaceScope(scope string, namespaceScope []string) []string {
+func clusterNamespaceScope(scope string, effectiveNamespaces []string) []string {
 	if scope != "cluster" {
 		return nil
 	}
-	return namespaceScope
+	return effectiveNamespaces
 }
 
 // pointQueryErrorsAtWarnings rewrites a scan row's generic usage failure to
@@ -969,7 +995,7 @@ func rightsizingRemediation(scope, reason string) string {
 		// query broke. guidance names whichever cause this response carries.
 		return "The scan ran but did not cover everything: either some usage, restart or throttle evidence was missing or its query did not answer (the warnings name which), or coverage.restrictedKinds, unavailableKinds or partiallyCachedKinds narrowed what it could read. Treat the affected containers as unjudged rather than correctly sized."
 	case "scan_incomplete":
-		return "The scan did not finish every batch within its budget — coverage.workloadsEvaluated reports evaluated workloads; coverage.completedBatches counts batches whose queries all succeeded, not batches attempted. The returned rows are a subset; narrow with scope=\"namespace\" or target one workload with scope=\"workload\" for a complete answer."
+		return "The scan did not finish every batch within its budget — coverage.workloadsEvaluated reports evaluated workloads; coverage.successfulBatches counts batches whose queries all succeeded, not batches attempted. The returned rows are a subset; narrow with scope=\"namespace\" or target one workload with scope=\"workload\" for a complete answer."
 	case "no_containers":
 		return "The workload's pod template declares no runtime containers (init-only or an empty spec), so there is nothing to size. This is the workload's own shape, not missing evidence."
 	case "queries_failed":
@@ -979,12 +1005,12 @@ func rightsizingRemediation(scope, reason string) string {
 	case "no_usage_samples":
 		return "Prometheus answered but held no workload usage samples for the 7-day window. Check that it is scraping cAdvisor/kubelet metrics and has 7 days of retention."
 	case reasonNamespacesExcluded:
-		return "Some requested namespaces were not scanned. excludedNamespaces names each one: access_denied means this identity cannot list workloads there; outside_namespace_scope means radar is pinned with --namespace-scope; not_cached means radar's informer cache does not hold workloads for that namespace (see coverage.partiallyCachedKinds), which is a limit of radar's own access, not this identity's. The rows cover namespaceScope only."
+		return "Some requested namespaces were not scanned. excludedNamespaces names each one: access_denied means this identity cannot list workloads there; outside_namespace_scope means radar is pinned with --namespace-scope; not_cached means radar's informer cache does not hold workloads for that namespace (see coverage.partiallyCachedKinds), which is a limit of radar's own access, not this identity's. The rows cover effectiveNamespaces only."
 	case reasonNamespaceScopeLimited:
 		if pinned, ok := NamespacePinned(); ok {
 			return fmt.Sprintf("The scan succeeded but reached only namespace %s, which radar is pinned to with --namespace-scope. Report it as that scope; this identity's permissions are not the limit.", pinned)
 		}
-		return "The scan succeeded but reached only the namespaces in namespaceScope — scope was resolved from this identity's per-namespace access rather than a cluster-wide grant, so namespaces outside that list were not scanned."
+		return "The scan succeeded but reached only the namespaces in effectiveNamespaces — scope was resolved from this identity's per-namespace access rather than a cluster-wide grant, so namespaces outside that list were not scanned."
 	case reasonNamespaceAccessDenied:
 		return "This identity cannot list workloads in the requested scope."
 	case ReasonOutsideNamespaceScope:
@@ -1002,15 +1028,15 @@ func rightsizingRemediation(scope, reason string) string {
 // guidance can name the causes that are present instead of a fixed paragraph
 // pointing at coverage fields that may all be empty.
 type rightsizingGuidanceInput struct {
-	state             prometheuspkg.RightsizingScanState
-	includeAll        bool
-	scope             string
-	reason            string
-	namespaceScope    []string
-	coverage          *prometheuspkg.RightsizingScanCoverage
-	omitted           rightsizingOmissions
-	reductionLimited  bool
-	needsManualReview bool
+	state               prometheuspkg.RightsizingScanState
+	includeAll          bool
+	scope               string
+	reason              string
+	effectiveNamespaces []string
+	coverage            *prometheuspkg.RightsizingScanCoverage
+	omitted             rightsizingOmissions
+	reductionLimited    bool
+	needsManualReview   bool
 	// deadlineExceeded marks a scan the budget cut, before a batch or inside
 	// one. Evaluated below discovered does not: dropped Deployments do that too.
 	deadlineExceeded bool
@@ -1043,8 +1069,8 @@ func rightsizingGuidance(in rightsizingGuidanceInput) []string {
 	if in.state == prometheuspkg.RightsizingScanPartial {
 		parts = append(parts, partialGuidance(in)...)
 	}
-	if len(in.namespaceScope) > 0 {
-		parts = append(parts, fmt.Sprintf("This scan reached only the %d namespace(s) named in namespaceScope, not the whole cluster — report it as that scope, never as cluster-wide.", len(in.namespaceScope)))
+	if len(in.effectiveNamespaces) > 0 {
+		parts = append(parts, fmt.Sprintf("This scan reached only the %d namespace(s) named in effectiveNamespaces, not the whole cluster — report it as that scope, never as cluster-wide.", len(in.effectiveNamespaces)))
 	}
 	if len(in.excludedNamespaces) > 0 {
 		names := make([]string, 0, len(in.excludedNamespaces))

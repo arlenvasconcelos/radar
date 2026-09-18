@@ -239,29 +239,29 @@ Workloads carry `managedBy: {tool, kind, group, namespace, name, signal}` when R
 
 A missing `managedBy` does **not** mean the workload is unmanaged. Argo CD's default tracking label is also every Helm chart's `app.kubernetes.io/instance`, and Terraform or `kubectl apply` leave nothing distinguishable.
 
-### `efficiency` is not request headroom
+### `efficiencyPercent` is not request headroom
 
-`get_cost` emits `efficiency` on namespace and workload rows and `clusterEfficiency` on summary totals. The denominator is **cost allocation, which is the greater of requested and observed** usage — not the request. Two consequences that the numbers alone do not reveal:
+`get_cost` emits `efficiencyPercent` on namespace and workload rows and `efficiencyPercent` on summary totals. The denominator is **cost allocation, which is the greater of requested and observed** usage — not the request. Two consequences that the numbers alone do not reveal:
 
 - The value is capped at 100 and can never exceed it. A container consuming well above its request reads as ~100%, which is not the same as correctly sized.
 - A low value is not by itself a defect and not recoverable money. Bursty workloads, P95-sized requests and HPA headroom all produce low ratios by design.
 
 It answers "how much of what this is costing me is being used", not "how much can I cut". Use `get_rightsizing` for the second question — it applies the OOM and HPA gating above, which a ratio cannot.
 
-`usageUnavailable: true` on a row means the usage evidence behind it is missing or incomplete — the usage query failed, the cost source reported no usage for the row. `efficiency` is then `null` rather than a number, and `unusedRequestCost` is not reported. That is distinct from measuring efficiency as zero, which a row using nothing genuinely does and which is emitted as `0`.
+`usageUnavailable: true` on a row means the usage evidence behind it is missing or incomplete — the usage query failed, the cost source reported no usage for the row. `efficiencyPercent` is then `null` rather than a number, and `unusedRequestHourlyCost` is not reported. That is distinct from measuring efficiency as zero, which a row using nothing genuinely does and which is emitted as `0`.
 
 ### What `hourlyCost` contains, and the two kinds of idle
 
 `view=summary` totals report idle as two figures, because they are recovered by different actions:
 
-- **`unallocatedCost`** — node compute capacity no workload requested or used. It comes back only when nodes are removed.
-- **`unusedRequestCost`** — capacity requested but not used. It comes back only after rightsizing frees enough requests for a node to be removed.
+- **`unallocatedHourlyCost`** — node compute capacity no workload requested or used. It comes back only when nodes are removed.
+- **`unusedRequestHourlyCost`** — capacity requested but not used. It comes back only after rightsizing frees enough requests for a node to be removed.
 
-The two do not overlap. Rows carry `unusedRequestCost` only; unrequested node capacity belongs to the cluster, so `unallocatedCost` is `null` on a namespace-scoped or RBAC-narrowed summary, and also when the source did not measure it or GPU spend on the nodes keeps it from being separated — never `0`, which would claim the nodes are fully packed. `unusedRequestCost` is likewise absent when no namespace has usage evidence, and it covers CPU and memory requests only — idle GPUs are not in it.
+The two do not overlap. Rows carry `unusedRequestHourlyCost` only; unrequested node capacity belongs to the cluster, so `unallocatedHourlyCost` is `null` on a namespace-scoped or RBAC-narrowed summary, and also when the source did not measure it or GPU spend on the nodes keeps it from being separated — never `0`, which would claim the nodes are fully packed. `unusedRequestHourlyCost` is likewise absent when no namespace has usage evidence, and it covers CPU and memory requests only — idle GPUs are not in it.
 
 `allocatedHourlyCost` always sums the namespace allocations; `allocatedMonthlyProjection` projects that rate over 730 hours. `nodeHourlyCost` independently measures node capacity, with `nodeMonthlyProjection` on the same basis. Node figures are explicit `null` when unmeasured, including namespace-scoped summaries and Kubecost summaries (which do not query node assets). Never add allocation and node totals together: node capacity already contains unallocated capacity. Their component coverage differs, so allocation can exceed node cost. OpenCost allocations include CPU, memory and storage, but not GPU or network.
 
-Workload-view totals carry allocation fields; node-view totals carry node fields. Monthly projections use the same 730-hour convention as the Costs UI. Component names such as `cpuCost` and `unusedRequestCost` remain hourly rates.
+Workload-view totals carry allocation fields; node-view totals carry node fields. Monthly projections use the same 730-hour convention as the Costs UI. Component names such as `cpuHourlyCost` and `unusedRequestHourlyCost` explicitly identify hourly rates.
 
 ### Node rows carry no CPU/memory split
 
@@ -301,8 +301,8 @@ A partial response carries a `reason`, and `guidance` names the causes that are 
 | Reason | Cause |
 |--------|-------|
 | `row_evidence_incomplete` | Row-level gaps: rows short of history, failed usage queries, or a recommendation withheld for missing HPA/OOM evidence. Cluster coverage is complete. |
-| `requested_namespaces_excluded` | A `namespaces` list included names that were not scanned. `excludedNamespaces` lists each with `access_denied`, `outside_namespace_scope`, or `not_cached` (Radar's informer cache does not hold that namespace); report only `namespaceScope`. |
-| `namespace_scope_limited` | The scan reached only the namespaces in `namespaceScope` — scope was resolved from this identity's per-namespace access rather than a cluster-wide grant, or radar is pinned with `--namespace-scope`. `remediation` says which. |
+| `requested_namespaces_excluded` | A `namespaces` list included names that were not scanned. `excludedNamespaces` lists each with `access_denied`, `outside_namespace_scope`, or `not_cached` (Radar's informer cache does not hold that namespace); report only `effectiveNamespaces`. |
+| `namespace_scope_limited` | The scan reached only the namespaces in `effectiveNamespaces` — scope was resolved from this identity's per-namespace access rather than a cluster-wide grant, or radar is pinned with `--namespace-scope`. `remediation` says which. |
 | `limited_scope_no_workloads` | No workloads found, and the scan did not cover everything requested. An empty result here is **not** evidence the cluster has no workloads. |
 
 `coverage.partiallyCachedKinds` — kinds whose informer covers only some namespaces — can be the **only** reason a scan is partial, and does **not** mean the kind is unreadable. It is counted separately from `restrictedKinds` and `unavailableKinds`: only those two decide whether every kind is genuinely unreadable (`state: unavailable`, `reason: workload_kinds_unavailable`).
@@ -323,6 +323,8 @@ Only the highest-spending namespaces get individual `type: namespace` series, ea
 
 `trendTotal.basis` is `cpu_memory_allocation` for OpenCost via Prometheus (compare `endHourlyCost` with summary `allocatedHourlyCost` minus storage) or `namespace_allocation` for Kubecost (all allocated components, idle excluded). Differences can also come from window alignment.
 
+`effectiveNamespaces` identifies the namespaces actually covered when scope is narrowed. Rightsizing `coverage.successfulBatches` counts batches whose queries all succeeded, not batches attempted.
+
 Both tools return `guidance` as an array of interpretation notes; read notes about missing evidence and scope before reporting a conclusion.
 
 ## Available Tools
@@ -331,7 +333,7 @@ Both tools return `guidance` as an array of interpretation notes; read notes abo
 
 For interpreting workload bundles, see [Diagnose evidence limits](#diagnose-evidence-limits), including collection failures, sampling, source timestamps, and the public MCP versus local investigation boundary.
 
-For `get_cost` and `get_rightsizing`, see [Cost and rightsizing evidence limits](#cost-and-rightsizing-evidence-limits) — what each `recommendationReason` means (two of them are deliberate withholdings) and why `efficiency` is not request headroom.
+For `get_cost` and `get_rightsizing`, see [Cost and rightsizing evidence limits](#cost-and-rightsizing-evidence-limits) — what each `recommendationReason` means (two of them are deliberate withholdings) and why `efficiencyPercent` is not request headroom.
 
 | Tool | Description | Parameters |
 |------|-------------|------------|

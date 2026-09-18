@@ -37,7 +37,7 @@ const (
 	// The denominator is allocation — max(requested, observed) — not the
 	// request, so the ratio caps at 100 and a low value is not by itself a
 	// defect. Neither fact is derivable from the numbers in the response.
-	costEfficiencyExplainer = "efficiency compares observed use against cost allocation, which is the greater of requested and observed usage — not against the request. It therefore caps at 100, and a low value is not by itself a defect or recoverable money (bursty workloads, P95-sized requests and HPA headroom all read low). Use get_rightsizing to judge whether a request should change; it applies OOM and HPA gating a ratio cannot."
+	costEfficiencyExplainer = "efficiencyPercent compares observed use against cost allocation, which is the greater of requested and observed usage — not against the request. It therefore caps at 100, and a low value is not by itself a defect or recoverable money (bursty workloads, P95-sized requests and HPA headroom all read low). Use get_rightsizing to judge whether a request should change; it applies OOM and HPA gating a ratio cannot."
 	// Enumerating what the workload total leaves out would go stale: the
 	// namespace row's basis is the cost source's own total, which carries
 	// storage, network, shared and external cost on Kubecost.
@@ -55,7 +55,7 @@ const (
 	// pin as a permission problem would have an agent tell a cluster-admin
 	// their access is restricted.
 	costPinnedViewFmt               = "Totals cover only namespace %s, which radar is pinned to with --namespace-scope — not the whole cluster, and not a limit on this identity's permissions."
-	costWasteExplainer              = "unallocatedCost is node compute capacity no workload requested or used; unusedRequestCost is capacity requested but not used. The two do not overlap, and neither is money saved until nodes are actually removed. unusedRequestCost covers CPU and memory requests only, so idle GPUs are not in it."
+	costWasteExplainer              = "unallocatedHourlyCost is node compute capacity no workload requested or used; unusedRequestHourlyCost is capacity requested but not used. The two do not overlap, and neither is money saved until nodes are actually removed. unusedRequestHourlyCost covers CPU and memory requests only, so idle GPUs are not in it."
 	costWorkloadNotFoundRemediation = "The cost source answered for this namespace but reported no allocation for the requested workload. Check the kind and name, or call view=workloads without kind/name to see what the namespace does have."
 	costTrendSeriesExplainer        = "Series values are hourly rates at each point, not cumulative spend. Each series and the top-level trendTotal carry startHourlyCost, endHourlyCost and changePercent so growth can be read without summing the points. changePercent spans the trendTotal's from..to, which is shorter than range when the source retains less history."
 	// The cost source caps the series and sums the remainder into one named
@@ -91,11 +91,11 @@ type costTotals struct {
 	AllocatedMonthlyProjection *float64      `json:"allocatedMonthlyProjection,omitempty"`
 	NodeHourlyCost             *nullableCost `json:"nodeHourlyCost,omitempty"`
 	NodeMonthlyProjection      *nullableCost `json:"nodeMonthlyProjection,omitempty"`
-	UnallocatedCost            *nullableCost `json:"unallocatedCost,omitempty"`
-	UnusedRequestCost          *float64      `json:"unusedRequestCost,omitempty"`
-	StorageCost                float64       `json:"storageCost,omitempty"`
-	NetworkCost                float64       `json:"networkCost,omitempty"`
-	ClusterEfficiency          *nullableCost `json:"clusterEfficiency,omitempty"`
+	UnallocatedCost            *nullableCost `json:"unallocatedHourlyCost,omitempty"`
+	UnusedRequestCost          *float64      `json:"unusedRequestHourlyCost,omitempty"`
+	StorageCost                float64       `json:"storageHourlyCost,omitempty"`
+	NetworkCost                float64       `json:"networkHourlyCost,omitempty"`
+	ClusterEfficiency          *nullableCost `json:"efficiencyPercent,omitempty"`
 }
 
 // nullableCost marshals as a number or an explicit null. A summary that could
@@ -114,14 +114,14 @@ func (c nullableCost) MarshalJSON() ([]byte, error) {
 type namespaceCostRow struct {
 	Name        string  `json:"name"`
 	HourlyCost  float64 `json:"hourlyCost"`
-	CPUCost     float64 `json:"cpuCost"`
-	MemoryCost  float64 `json:"memoryCost"`
-	StorageCost float64 `json:"storageCost,omitempty"`
-	NetworkCost float64 `json:"networkCost,omitempty"`
+	CPUCost     float64 `json:"cpuHourlyCost"`
+	MemoryCost  float64 `json:"memoryHourlyCost"`
+	StorageCost float64 `json:"storageHourlyCost,omitempty"`
+	NetworkCost float64 `json:"networkHourlyCost,omitempty"`
 	// Pointer: nil drops it when usage is unavailable, while a measured 0 stays.
-	UnusedRequestCost *float64 `json:"unusedRequestCost,omitempty"`
+	UnusedRequestCost *float64 `json:"unusedRequestHourlyCost,omitempty"`
 	// Pointer, not omitempty: 0% is a measurement on a row using nothing.
-	Efficiency       *float64 `json:"efficiency"`
+	Efficiency       *float64 `json:"efficiencyPercent"`
 	UsageUnavailable bool     `json:"usageUnavailable,omitempty"`
 }
 
@@ -130,12 +130,12 @@ type workloadCostRow struct {
 	Kind       string  `json:"kind"`
 	Replicas   int     `json:"replicas"`
 	HourlyCost float64 `json:"hourlyCost"`
-	CPUCost    float64 `json:"cpuCost"`
-	MemoryCost float64 `json:"memoryCost"`
+	CPUCost    float64 `json:"cpuHourlyCost"`
+	MemoryCost float64 `json:"memoryHourlyCost"`
 	// Pointer: nil drops it when usage is unavailable, while a measured 0 stays.
-	UnusedRequestCost *float64 `json:"unusedRequestCost,omitempty"`
+	UnusedRequestCost *float64 `json:"unusedRequestHourlyCost,omitempty"`
 	// Pointer, not omitempty: 0% is a measurement on a row using nothing.
-	Efficiency       *float64 `json:"efficiency"`
+	Efficiency       *float64 `json:"efficiencyPercent"`
 	UsageUnavailable bool     `json:"usageUnavailable,omitempty"`
 }
 
@@ -199,7 +199,7 @@ type costResponse struct {
 	Range          string               `json:"range,omitempty"`
 	DataThrough    string               `json:"dataThrough,omitempty"`
 	Namespace      string               `json:"namespace,omitempty"`
-	NamespaceScope []string             `json:"namespaceScope,omitempty"`
+	NamespaceScope []string             `json:"effectiveNamespaces,omitempty"`
 	Totals         *costTotals          `json:"totals,omitempty"`
 	Namespaces     []namespaceCostRow   `json:"namespaces,omitempty"`
 	Workloads      []workloadCostRow    `json:"workloads,omitempty"`
@@ -421,14 +421,14 @@ func costSummaryView(ctx context.Context, input getCostInput, limit int) (costRe
 }
 
 // measuredUnusedRequestCost is nil when no row has usage evidence, like
-// clusterEfficiency: a 0 there would claim nothing is wasted rather than that
+// efficiencyPercent: a 0 there would claim nothing is wasted rather than that
 // nothing was measured.
 func measuredUnusedRequestCost(summary *pkgopencost.CostSummary) *float64 {
 	return measuredValue(summary.TotalUnusedRequestCost, allUsageUnavailable(summary.Namespaces))
 }
 
 func costSplitGuidance(summary *pkgopencost.CostSummary, scoped bool) []string {
-	parts := []string{"allocatedHourlyCost covers workload allocation; nodeHourlyCost independently measures node capacity and already includes unallocatedCost. Do not add them together. Storage and GPU coverage can differ, so allocation can exceed node cost."}
+	parts := []string{"allocatedHourlyCost covers workload allocation; nodeHourlyCost independently measures node capacity and already includes unallocatedHourlyCost. Do not add them together. Storage and GPU coverage can differ, so allocation can exceed node cost."}
 	if summary.TotalNodeCost == nil {
 		parts = append(parts, "nodeHourlyCost and nodeMonthlyProjection are null: node capacity cost was not measured for this scope/source.")
 	}
@@ -438,9 +438,9 @@ func costSplitGuidance(summary *pkgopencost.CostSummary, scoped bool) []string {
 	parts = append(parts, costWasteExplainer)
 	if summary.TotalUnallocatedCost == nil {
 		if scoped {
-			parts = append(parts, "unallocatedCost is null: unrequested node capacity belongs to the cluster, not to a namespace.")
+			parts = append(parts, "unallocatedHourlyCost is null: unrequested node capacity belongs to the cluster, not to a namespace.")
 		} else {
-			parts = append(parts, "unallocatedCost is null: the cost source did not report unallocated node capacity, or GPU spend on the nodes keeps it from being separated — not the same as none.")
+			parts = append(parts, "unallocatedHourlyCost is null: the cost source did not report unallocated node capacity, or GPU spend on the nodes keeps it from being separated — not the same as none.")
 		}
 	}
 	return parts
@@ -459,7 +459,7 @@ func partialUsageGuidance(rows []pkgopencost.NamespaceCost) string {
 	if missing == 0 || missing == len(rows) {
 		return ""
 	}
-	return fmt.Sprintf(" %d of %d namespaces reported no usage evidence, so clusterEfficiency and unusedRequestCost cover only the rest — they are not whole-cluster figures, and the rows they exclude may be past the returned list.", missing, len(rows))
+	return fmt.Sprintf(" %d of %d namespaces reported no usage evidence, so efficiencyPercent and unusedRequestHourlyCost cover only the rest — they are not whole-cluster figures, and the rows they exclude may be past the returned list.", missing, len(rows))
 }
 
 // allUsageUnavailable reports whether every row lacked usage evidence, which is
@@ -851,7 +851,7 @@ func trendBasisExplainer(source opencost.Source) string {
 	if trendBasis(source) == trendBasisNamespaceAllocation {
 		return "trendTotal.basis is namespace_allocation: the same components as view=summary totals.allocatedHourlyCost, idle excluded. Small differences come from window alignment — the summary covers the latest window, the trend's last point its last bucket."
 	}
-	return "trendTotal.basis is cpu_memory_allocation: CPU and memory allocation only, excluding storage and unallocated node capacity. Compare trendTotal.endHourlyCost with view=summary totals.allocatedHourlyCost minus totals.storageCost, not with totals.nodeHourlyCost."
+	return "trendTotal.basis is cpu_memory_allocation: CPU and memory allocation only, excluding storage and unallocated node capacity. Compare trendTotal.endHourlyCost with view=summary totals.allocatedHourlyCost minus totals.storageHourlyCost, not with totals.nodeHourlyCost."
 }
 
 // summarizeTrend answers "is spend growing" in the response. The raw points

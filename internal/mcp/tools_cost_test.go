@@ -202,7 +202,7 @@ func TestEfficiencyGuidanceStatesTheDenominator(t *testing.T) {
 }
 
 func TestEfficiencyGuidanceRidesTheViewsThatEmitEfficiency(t *testing.T) {
-	// summary carries clusterEfficiency plus per-namespace efficiency, and
+	// summary carries efficiencyPercent plus per-namespace efficiency, and
 	// workloads carries per-workload efficiency. nodes and trend carry neither,
 	// so the explainer would be noise there.
 	summary := strings.Join(costGuidance(nil, ""), " ") + " " + costEfficiencyExplainer
@@ -254,14 +254,14 @@ func TestUnallocatedCostIsNullNotZeroWhenUnknown(t *testing.T) {
 		}
 		return string(blob)
 	}
-	if got := marshal(costTotals{UnallocatedCost: &nullableCost{}}); !strings.Contains(got, `"unallocatedCost":null`) {
+	if got := marshal(costTotals{UnallocatedCost: &nullableCost{}}); !strings.Contains(got, `"unallocatedHourlyCost":null`) {
 		t.Errorf("unknown unallocated cost must be an explicit null: %s", got)
 	}
 	zero := 0.0
-	if got := marshal(costTotals{UnallocatedCost: &nullableCost{value: &zero}}); !strings.Contains(got, `"unallocatedCost":0`) {
+	if got := marshal(costTotals{UnallocatedCost: &nullableCost{value: &zero}}); !strings.Contains(got, `"unallocatedHourlyCost":0`) {
 		t.Errorf("a measured zero must survive: %s", got)
 	}
-	if got := marshal(costTotals{}); strings.Contains(got, "unallocatedCost") || strings.Contains(got, "idleCost") {
+	if got := marshal(costTotals{}); strings.Contains(got, "unallocatedHourlyCost") || strings.Contains(got, "idleCost") {
 		t.Errorf("views that never report the split must not carry it: %s", got)
 	}
 }
@@ -273,7 +273,7 @@ func TestTrendBasisFollowsTheCostSource(t *testing.T) {
 	if basis := trendBasis(opencost.SourcePrometheus); basis != trendBasisCPUMemoryAllocation {
 		t.Errorf("the OpenCost trend query sums CPU and memory only, got %q", basis)
 	}
-	if !strings.Contains(trendBasisExplainer(opencost.SourcePrometheus), "allocatedHourlyCost minus totals.storageCost") {
+	if !strings.Contains(trendBasisExplainer(opencost.SourcePrometheus), "allocatedHourlyCost minus totals.storageHourlyCost") {
 		t.Error("the Prometheus trend must name the summary field it is comparable with")
 	}
 }
@@ -320,7 +320,7 @@ func TestPrometheusSplitGuidanceSaysRowsExcludeGPU(t *testing.T) {
 		t.Errorf("Kubecost rows carry every allocated component: %q", kubecost)
 	}
 	if !strings.Contains(costWasteExplainer, "CPU and memory requests only") {
-		t.Error("unusedRequestCost must say idle GPUs are not in it")
+		t.Error("unusedRequestHourlyCost must say idle GPUs are not in it")
 	}
 }
 
@@ -340,7 +340,7 @@ func TestNodeRowOmitsAmbiguousComponentCosts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"cpuCost", "memoryCost"} {
+	for _, field := range []string{"cpuHourlyCost", "memoryHourlyCost"} {
 		if strings.Contains(string(blob), field) {
 			t.Errorf("node rows must not carry %q — its meaning differs per cost source: %s", field, blob)
 		}
@@ -550,7 +550,7 @@ func TestPartialUsageEvidenceIsNamedInGuidance(t *testing.T) {
 	if !strings.Contains(partialUsageGuidance(mixed), "1 of 2 namespaces") {
 		t.Errorf("a mixed result must name the missing rows, got %q", partialUsageGuidance(mixed))
 	}
-	// All-or-nothing is covered by clusterEfficiency going null, not by prose.
+	// All-or-nothing is covered by efficiencyPercent going null, not by prose.
 	if partialUsageGuidance([]pkgopencost.NamespaceCost{{Name: "a"}}) != "" {
 		t.Error("a fully measured result needs no qualification")
 	}
@@ -579,19 +579,19 @@ func TestCostWireSeparatesMeasuredZeroFromUnmeasured(t *testing.T) {
 		}
 		return string(b)
 	}
-	if got := marshal(hourlyTotals(1)); strings.Contains(got, "clusterEfficiency") {
-		t.Errorf("views that never measure clusterEfficiency must not report it as null: %s", got)
+	if got := marshal(hourlyTotals(1)); strings.Contains(got, "efficiencyPercent") {
+		t.Errorf("views that never measure efficiencyPercent must not report it as null: %s", got)
 	}
 	unmeasured := hourlyTotals(1)
 	unmeasured.ClusterEfficiency = &nullableCost{value: measuredValue(0, true)}
-	if got := marshal(unmeasured); !strings.Contains(got, `"clusterEfficiency":null`) {
+	if got := marshal(unmeasured); !strings.Contains(got, `"efficiencyPercent":null`) {
 		t.Errorf("a summary without usage evidence reports null: %s", got)
 	}
-	if got := marshal(workloadCostRow{UnusedRequestCost: measuredValue(0, false)}); !strings.Contains(got, `"unusedRequestCost":0`) {
+	if got := marshal(workloadCostRow{UnusedRequestCost: measuredValue(0, false)}); !strings.Contains(got, `"unusedRequestHourlyCost":0`) {
 		t.Errorf("a measured zero must survive: %s", got)
 	}
-	if got := marshal(workloadCostRow{UnusedRequestCost: measuredValue(0, true)}); strings.Contains(got, "unusedRequestCost") {
-		t.Errorf("unavailable usage must not report unusedRequestCost: %s", got)
+	if got := marshal(workloadCostRow{UnusedRequestCost: measuredValue(0, true)}); strings.Contains(got, "unusedRequestHourlyCost") {
+		t.Errorf("unavailable usage must not report unusedRequestHourlyCost: %s", got)
 	}
 }
 

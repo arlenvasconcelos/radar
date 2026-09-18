@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
@@ -259,7 +260,7 @@ func TestRightsizingGuidanceWarnsOnPartialScans(t *testing.T) {
 	}
 }
 
-// A fixed paragraph naming restrictedKinds and completedBatches was wrong
+// A fixed paragraph naming restrictedKinds and successfulBatches was wrong
 // whenever those were empty and the cause was row-level or scope-level, which
 // is the common case. The guidance has to name the causes actually present.
 func TestPartialGuidanceNamesTheCausePresent(t *testing.T) {
@@ -480,9 +481,9 @@ func TestNarrowedClusterScanGuidanceRefusesClusterWideFraming(t *testing.T) {
 	// read as a cluster-wide answer.
 	narrowed := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "cluster",
-		namespaceScope: []string{"prod", "staging"},
+		effectiveNamespaces: []string{"prod", "staging"},
 	}), " ")
-	if !strings.Contains(narrowed, "namespaceScope") {
+	if !strings.Contains(narrowed, "effectiveNamespaces") {
 		t.Errorf("guidance must point at the field naming the real scope: %q", narrowed)
 	}
 	if !strings.Contains(narrowed, "2 namespace") {
@@ -492,7 +493,7 @@ func TestNarrowedClusterScanGuidanceRefusesClusterWideFraming(t *testing.T) {
 	full := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanComplete, scope: "cluster",
 	}), " ")
-	if strings.Contains(full, "namespaceScope") {
+	if strings.Contains(full, "effectiveNamespaces") {
 		t.Errorf("an unnarrowed scan should carry no scope caveat: %q", full)
 	}
 }
@@ -604,11 +605,11 @@ func TestGetRightsizingNamespaceScopeRejectsWorkloadIdentifiers(t *testing.T) {
 
 func TestWorkloadScopeGuidanceDoesNotCiteScanCoverage(t *testing.T) {
 	// A workload response carries no coverage object, so pointing the model at
-	// coverage.completedBatches sends it to a field that is not there.
+	// coverage.successfulBatches sends it to a field that is not there.
 	workload := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "workload",
 	}), " ")
-	for _, absent := range []string{"completedBatches", "restrictedKinds", "unavailableKinds"} {
+	for _, absent := range []string{"successfulBatches", "restrictedKinds", "unavailableKinds"} {
 		if strings.Contains(workload, absent) {
 			t.Errorf("workload guidance cites %q, which only exists on scan scopes: %q", absent, workload)
 		}
@@ -1110,7 +1111,7 @@ func TestSplitByKindAccessExcludesNamespacesNoKindCanList(t *testing.T) {
 
 // RBAC can allow a namespace the informer cache never held. The scan's own
 // scope is what was read, so the namespace is excluded under the cache's
-// reason instead of being reported in namespaceScope.
+// reason instead of being reported in effectiveNamespaces.
 func TestNamespacesTheCacheDoesNotHoldAreExcludedAsNotCached(t *testing.T) {
 	scan := prometheuspkg.RightsizingScanResponse{Coverage: prometheuspkg.RightsizingScanCoverage{
 		ScannedNamespacesByKind: map[string][]string{
@@ -1245,7 +1246,7 @@ func TestScopeOnlyPartialScansAreNotDescribedAsMissingEvidence(t *testing.T) {
 	for _, in := range []rightsizingGuidanceInput{
 		{
 			state: prometheuspkg.RightsizingScanPartial, scope: "cluster",
-			reason: reasonNamespaceScopeLimited, namespaceScope: []string{"dev"},
+			reason: reasonNamespaceScopeLimited, effectiveNamespaces: []string{"dev"},
 			coverage: &prometheuspkg.RightsizingScanCoverage{WorkloadsDiscovered: 13, WorkloadsEvaluated: 13, Batches: 1, CompletedBatches: 1},
 		},
 		{
@@ -1427,6 +1428,34 @@ func TestWorkloadReasonCodesHaveRemediation(t *testing.T) {
 		}
 		if remediation := rightsizingRemediation("workload", code); remediation == "" {
 			t.Errorf("no recovery guidance for %s", code)
+		}
+	}
+}
+
+func TestRightsizingCoverageWireNamesPreserveEvidence(t *testing.T) {
+	for _, coverage := range []prometheuspkg.RightsizingScanCoverage{
+		{},
+		{WorkloadsDiscovered: 7, WorkloadsEvaluated: 5, WorkloadsWithData: 3, Batches: 4, CompletedBatches: 2, RestrictedKinds: []string{"Deployment"}, UnavailableKinds: []string{"StatefulSet"}, PartiallyCachedKinds: []string{"DaemonSet"}, DaemonSetsWithoutNodes: 1},
+	} {
+		engineJSON, err := json.Marshal(coverage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mcpJSON, err := json.Marshal(newRightsizingCoverage(coverage))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var want, got map[string]any
+		if err := json.Unmarshal(engineJSON, &want); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(mcpJSON, &got); err != nil {
+			t.Fatal(err)
+		}
+		want["successfulBatches"] = want["completedBatches"]
+		delete(want, "completedBatches")
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("MCP coverage lost evidence: got %s, source %s", mcpJSON, engineJSON)
 		}
 	}
 }
