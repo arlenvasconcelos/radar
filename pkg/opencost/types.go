@@ -134,6 +134,10 @@ type CostTrendResponse struct {
 	WindowEnd   int64             `json:"windowEnd,omitempty"`
 	DataThrough string            `json:"dataThrough,omitempty"`
 	Series      []CostTrendSeries `json:"series,omitempty"`
+	// NamespaceCount is how many namespaces reported cost in the window, which
+	// is more than the series when the top-N cap folded the rest into "other".
+	// Without it a capped answer cannot be told from a whole-cluster one.
+	NamespaceCount int `json:"namespaceCount,omitempty"`
 }
 
 type WorkloadCostTrendResponse struct {

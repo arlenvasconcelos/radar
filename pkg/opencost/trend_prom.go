@@ -122,7 +122,7 @@ func ComputeCostTrendFromProm(ctx context.Context, client *prom.Client, opts Tre
 		}
 	}
 
-	return &CostTrendResponse{Available: true, Range: label, Series: series}
+	return &CostTrendResponse{Available: true, Range: label, Series: series, NamespaceCount: len(ranks)}
 }
 
 // SupportedTrendRange reports whether resolveTrendRange and kubecostTrendConfig

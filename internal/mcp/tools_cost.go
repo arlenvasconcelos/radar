@@ -58,6 +58,9 @@ const (
 	costWasteExplainer              = "unallocatedCost is node compute capacity no workload requested or used; unusedRequestCost is capacity requested but not used. The two do not overlap, and neither is money saved until nodes are actually removed. unusedRequestCost covers CPU and memory requests only, so idle GPUs are not in it."
 	costWorkloadNotFoundRemediation = "The cost source answered for this namespace but reported no allocation for the requested workload. Check the kind and name, or call view=workloads without kind/name to see what the namespace does have."
 	costTrendSeriesExplainer        = "Series values are hourly rates at each point, not cumulative spend. Each series and the top-level total carry start, end and changePercent so growth can be read without summing the points. changePercent spans the total's from..to, which is shorter than range when the source retains less history."
+	// The cost source caps the series and sums the remainder into one named
+	// "other". Undeclared, an agent reads the few it got as the whole cluster.
+	costTrendCappedFmt = "This response carries %d series for %d namespaces: the cost source keeps the highest-spending namespaces and sums the rest into a series named other. total covers every namespace, so it is a whole-scope figure even though the series are not."
 )
 
 // reasonWorkloadNotFound is Radar's own reason: the cost source was healthy and
@@ -794,6 +797,11 @@ func costTrendView(ctx context.Context, input getCostInput) (costResponse, error
 		return resp, nil
 	}
 	resp.Series, resp.TrendTotal = summarizeTrend(trend.Series)
+	resp.NamespaceCount = trend.NamespaceCount
+	if capped, disclosure := trendCapDisclosure(len(resp.Series), trend.NamespaceCount); capped {
+		resp.Truncated = true
+		resp.Guidance += " " + disclosure
+	}
 	resp.Guidance += " " + costTrendSeriesExplainer
 	if resp.TrendTotal != nil {
 		resp.TrendTotal.Basis, resp.Guidance = trendBasis(connection.Source), resp.Guidance+" "+trendBasisExplainer(connection.Source)
@@ -820,6 +828,17 @@ func trendBasisExplainer(source opencost.Source) string {
 		return "total.basis is namespace_allocation: the same components as view=summary totals.allocatedCost, idle excluded. Small differences come from window alignment — the summary covers the latest window, the trend's last point its last bucket."
 	}
 	return "total.basis is cpu_memory_allocation: CPU and memory allocation only, excluding storage and unallocated node capacity. Compare total.end with view=summary totals.allocatedCost minus totals.storageCost, not with totals.hourlyCost."
+}
+
+// trendCapDisclosure reports whether the cost source's series cap dropped
+// namespaces, and the sentence that says so. Decided by counting, never by
+// matching the aggregate's name: "other" is a legal namespace name, and a
+// cluster that has one must not read as capped when it is not.
+func trendCapDisclosure(seriesCount, namespaceCount int) (bool, string) {
+	if namespaceCount <= seriesCount {
+		return false, ""
+	}
+	return true, fmt.Sprintf(costTrendCappedFmt, seriesCount, namespaceCount)
 }
 
 // summarizeTrend answers "is spend growing" in the response. The raw points

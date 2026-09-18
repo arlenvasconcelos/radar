@@ -637,3 +637,26 @@ func TestCostDeadlineKeepsAnAnswerThatArrived(t *testing.T) {
 		t.Errorf("without a deadline the view's own reason stands, got %q", got.Reason)
 	}
 }
+
+// Both trend backends cap the series and sum the remainder into one named
+// "other". Undeclared, an agent reports the named few as the whole cluster.
+func TestTrendDeclaresItsSeriesCap(t *testing.T) {
+	capped, disclosure := trendCapDisclosure(9, 34)
+	if !capped {
+		t.Error("eight namespaces plus the folded remainder, out of 34, is a capped answer")
+	}
+	for _, want := range []string{"9 series for 34 namespaces", "total covers every namespace"} {
+		if !strings.Contains(disclosure, want) {
+			t.Errorf("capped disclosure missing %q: %q", want, disclosure)
+		}
+	}
+
+	// The regression this guards: a namespace legitimately named "other" was
+	// counted as the aggregate, so an uncapped cluster reported itself capped.
+	if capped, disclosure := trendCapDisclosure(2, 2); capped || disclosure != "" {
+		t.Errorf("two namespaces in two series is not a cap, got %v %q", capped, disclosure)
+	}
+	if capped, _ := trendCapDisclosure(0, 0); capped {
+		t.Error("an empty trend is not a cap")
+	}
+}

@@ -159,6 +159,7 @@ func ComputeKubecostTrend(ctx context.Context, client *KubecostClient, opts Kube
 		response.Series = append(response.Series, other)
 	}
 	response.Available = true
+	response.NamespaceCount = len(ranked)
 	return response, nil
 }
 
