@@ -57,7 +57,7 @@ const (
 	costPinnedViewFmt               = "Totals cover only namespace %s, which radar is pinned to with --namespace-scope — not the whole cluster, and not a limit on this identity's permissions."
 	costWasteExplainer              = "unallocatedHourlyCost is node compute capacity no workload requested or used; unusedRequestHourlyCost is capacity requested but not used. The two do not overlap, and neither is money saved until nodes are actually removed. unusedRequestHourlyCost covers CPU and memory requests only, so idle GPUs are not in it."
 	costWorkloadNotFoundRemediation = "The cost source answered for this namespace but reported no allocation for the requested workload. Check the kind and name, or call view=workloads without kind/name to see what the namespace does have."
-	costTrendSeriesExplainer        = "Series values are hourly rates at each point, not cumulative spend. Each series and the top-level trendTotal carry startHourlyCost, endHourlyCost and changePercent so growth can be read without summing the points. changePercent spans the trendTotal's from..to, which is shorter than range when the source retains less history."
+	costTrendSeriesExplainer        = "Series values are hourly rates at each point, not cumulative spend. Each series and trendTotal carry startHourlyCost, endHourlyCost and changePercent for net change, plus minHourlyCost, peakHourlyCost and peakAt for observed excursions. A small net change does not mean the interval was flat; use include_points=true to inspect its shape. These extrema describe returned samples, not spikes between samples. changePercent spans the trendTotal's from..to, which is shorter than range when the source retains less history."
 	// The cost source caps the series and sums the remainder into one named
 	// "other". Undeclared, an agent reads the few it got as the whole cluster.
 	costTrendCappedFmt = "Of %d namespaces in scope, %d have named series; the remaining %d are grouped into the type=remainder series. trendTotal covers every namespace, so it is a whole-scope figure even though the series are not."
@@ -161,6 +161,7 @@ type nodePoolRef struct {
 // costTrendSummary is the question an agent asks of a trend — did spend grow —
 // answered server-side without requiring raw points.
 type costTrendSummary struct {
+	*costTrendExtrema
 	// Basis names what the trend sums, which differs by source, so the total
 	// can be compared with the right summary field.
 	Basis string `json:"basis,omitempty"`
@@ -174,12 +175,19 @@ type costTrendSummary struct {
 	Points        int      `json:"sampleCount"`
 }
 
+type costTrendExtrema struct {
+	MinHourlyCost  float64 `json:"minHourlyCost"`
+	PeakHourlyCost float64 `json:"peakHourlyCost"`
+	PeakAt         string  `json:"peakAt"`
+}
+
 type costTrendPoint struct {
 	Timestamp string  `json:"timestamp"`
 	Value     float64 `json:"hourlyCost"`
 }
 
 type costTrendSeriesDTO struct {
+	*costTrendExtrema
 	Type          string           `json:"type"`
 	Namespace     string           `json:"namespace,omitempty"`
 	Start         float64          `json:"startHourlyCost"`
@@ -893,6 +901,7 @@ func summarizeTrend(series []pkgopencost.CostTrendSeries, includePoints bool) ([
 			}
 			byTimestamp[point.Timestamp] = point.Value
 		}
+		dto.costTrendExtrema = summarizeCostTrendExtrema(byTimestamp)
 		// Read at the range's own endpoints, absent as zero: a namespace that
 		// appeared mid-range measured from its first point reads as flat.
 		if len(stamps) > 0 {
@@ -909,12 +918,32 @@ func summarizeTrend(series []pkgopencost.CostTrendSeries, includePoints bool) ([
 	}
 	first, last := totalByTimestamp[stamps[0]], totalByTimestamp[stamps[len(stamps)-1]]
 	return out, &costTrendSummary{
-		From:          time.Unix(stamps[0], 0).UTC().Format(time.RFC3339),
-		To:            time.Unix(stamps[len(stamps)-1], 0).UTC().Format(time.RFC3339),
-		Start:         roundHourly(first),
-		End:           roundHourly(last),
-		ChangePercent: changePercent(len(stamps), first, last),
-		Points:        len(stamps),
+		costTrendExtrema: summarizeCostTrendExtrema(totalByTimestamp),
+		From:             time.Unix(stamps[0], 0).UTC().Format(time.RFC3339),
+		To:               time.Unix(stamps[len(stamps)-1], 0).UTC().Format(time.RFC3339),
+		Start:            roundHourly(first),
+		End:              roundHourly(last),
+		ChangePercent:    changePercent(len(stamps), first, last),
+		Points:           len(stamps),
+	}
+}
+
+func summarizeCostTrendExtrema(values map[int64]float64) *costTrendExtrema {
+	if len(values) == 0 {
+		return nil
+	}
+	minimum, peak := math.Inf(1), math.Inf(-1)
+	var peakAt int64
+	for stamp, value := range values {
+		minimum = min(minimum, value)
+		if value > peak || (value == peak && stamp < peakAt) {
+			peak, peakAt = value, stamp
+		}
+	}
+	return &costTrendExtrema{
+		MinHourlyCost:  roundHourly(minimum),
+		PeakHourlyCost: roundHourly(peak),
+		PeakAt:         time.Unix(peakAt, 0).UTC().Format(time.RFC3339),
 	}
 }
 

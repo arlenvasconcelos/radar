@@ -83,10 +83,17 @@ func TestCostInterfaceThroughMCP(t *testing.T) {
 		if response["available"] != true || response["seriesCapped"] != true || response["truncated"] == true || response["namespaceCount"] != float64(9) {
 			t.Fatalf("incorrect aggregation: %s", raw)
 		}
+		total := response["trendTotal"].(map[string]any)
+		if total["minHourlyCost"] != float64(45) || total["peakHourlyCost"] != float64(54) || total["peakAt"] != "2023-11-14T23:13:20Z" {
+			t.Fatalf("missing or incorrect total extrema: %s", raw)
+		}
 		rows := response["series"].([]any)
 		realOther, remainder := false, false
 		for _, item := range rows {
 			row := item.(map[string]any)
+			if row["minHourlyCost"] != row["startHourlyCost"] || row["peakHourlyCost"] != row["endHourlyCost"] || row["peakAt"] != "2023-11-14T23:13:20Z" {
+				t.Fatalf("missing or incorrect series extrema: %s", raw)
+			}
 			_, points := row["dataPoints"]
 			if points != (mode == "true") {
 				t.Fatalf("mode=%s points=%v: %s", mode, points, raw)

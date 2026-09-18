@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/skyhook-io/radar/internal/opencost"
 	pkgopencost "github.com/skyhook-io/radar/pkg/opencost"
@@ -660,5 +661,51 @@ func TestGetCostTrendLimitErrorOutranksTheMaximum(t *testing.T) {
 	_, _, err := handleGetCost(context.Background(), nil, getCostInput{View: "trend", Limit: costMaxLimit + 1})
 	if err == nil || !strings.Contains(err.Error(), "not view=trend") {
 		t.Fatalf("trend must say limit does not apply, not quote a cap, got: %v", err)
+	}
+}
+
+func TestTrendExtremaExposeExcursionsWithoutRawPoints(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		values        []float64
+		minimum, peak float64
+		peakIndex     int
+	}{
+		{name: "spike returns to baseline", values: []float64{1, 10, 1}, minimum: 1, peak: 10, peakIndex: 1},
+		{name: "dip returns to baseline", values: []float64{10, 1, 10}, minimum: 1, peak: 10, peakIndex: 0},
+		{name: "flat", values: []float64{1, 1, 1}, minimum: 1, peak: 1, peakIndex: 0},
+		{name: "zero", values: []float64{0, 0, 0}, minimum: 0, peak: 0, peakIndex: 0},
+		{name: "one sample", values: []float64{3}, minimum: 3, peak: 3, peakIndex: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			points := make([]pkgopencost.CostDataPoint, len(tc.values))
+			for i, value := range tc.values {
+				points[i] = pkgopencost.CostDataPoint{Timestamp: int64(100 + i*100), Value: value}
+			}
+			series, total := summarizeTrend([]pkgopencost.CostTrendSeries{{Namespace: "app", DataPoints: points}}, false)
+			wantAt := time.Unix(int64(100+tc.peakIndex*100), 0).UTC().Format(time.RFC3339)
+			for _, extrema := range []*costTrendExtrema{series[0].costTrendExtrema, total.costTrendExtrema} {
+				if extrema == nil || extrema.MinHourlyCost != tc.minimum || extrema.PeakHourlyCost != tc.peak || extrema.PeakAt != wantAt {
+					t.Fatalf("extrema = %+v; want min=%v peak=%v at=%s", extrema, tc.minimum, tc.peak, wantAt)
+				}
+			}
+			if len(series[0].DataPoints) != 0 {
+				t.Fatal("extrema must not require raw points")
+			}
+		})
+	}
+}
+
+func TestTrendTotalPeakUsesSimultaneousCosts(t *testing.T) {
+	series, total := summarizeTrend([]pkgopencost.CostTrendSeries{
+		{Namespace: "a", DataPoints: []pkgopencost.CostDataPoint{{Timestamp: 100, Value: 10}, {Timestamp: 200, Value: 1}}},
+		{Namespace: "b", DataPoints: []pkgopencost.CostDataPoint{{Timestamp: 100, Value: 1}, {Timestamp: 200, Value: 20}}},
+		{Namespace: "empty"},
+	}, false)
+	if total.MinHourlyCost != 11 || total.PeakHourlyCost != 21 || total.PeakAt != "1970-01-01T00:03:20Z" {
+		t.Fatalf("total must peak at 21, not the sum of separate peaks (30): %+v", total.costTrendExtrema)
+	}
+	if series[2].costTrendExtrema != nil {
+		t.Fatal("an empty series has no observed extrema")
 	}
 }
