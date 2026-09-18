@@ -105,6 +105,9 @@ func TestCostInterfaceThroughMCP(t *testing.T) {
 			}
 			delete(row, "dataPoints")
 		}
+		if !strings.Contains(raw, "Of 9 namespaces in scope, 8 have named series; the remaining 1") {
+			t.Fatalf("ambiguous aggregation counts: %s", raw)
+		}
 		if !realOther || !remainder {
 			t.Fatalf("missing namespace/remainder distinction: %s", raw)
 		}

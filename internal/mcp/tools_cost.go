@@ -60,7 +60,7 @@ const (
 	costTrendSeriesExplainer        = "Series values are hourly rates at each point, not cumulative spend. Each series and the top-level trendTotal carry startHourlyCost, endHourlyCost and changePercent so growth can be read without summing the points. changePercent spans the trendTotal's from..to, which is shorter than range when the source retains less history."
 	// The cost source caps the series and sums the remainder into one named
 	// "other". Undeclared, an agent reads the few it got as the whole cluster.
-	costTrendCappedFmt = "This response carries %d named series plus a remainder for %d namespaces: the cost source keeps the highest-spending namespaces and sums the rest into a type=remainder series. trendTotal covers every namespace, so it is a whole-scope figure even though the series are not."
+	costTrendCappedFmt = "Of %d namespaces in scope, %d have named series; the remaining %d are grouped into the type=remainder series. trendTotal covers every namespace, so it is a whole-scope figure even though the series are not."
 )
 
 // reasonWorkloadNotFound is Radar's own reason: the cost source was healthy and
@@ -823,7 +823,7 @@ func costTrendView(ctx context.Context, input getCostInput) (costResponse, error
 		resp.SeriesCapped = resp.SeriesCapped || series.Remainder
 	}
 	if resp.SeriesCapped {
-		resp.Guidance = append(resp.Guidance, fmt.Sprintf(costTrendCappedFmt, len(resp.Series)-1, trend.NamespaceCount))
+		resp.Guidance = append(resp.Guidance, fmt.Sprintf(costTrendCappedFmt, trend.NamespaceCount, len(resp.Series)-1, trend.NamespaceCount-(len(resp.Series)-1)))
 	}
 	resp.Guidance = append(resp.Guidance, costTrendSeriesExplainer)
 	if resp.TrendTotal != nil {
