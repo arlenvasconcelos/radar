@@ -1155,8 +1155,14 @@ func TestSkippedDaemonSetGuidanceKeepsTheScaledDownPoolCase(t *testing.T) {
 		state: prometheuspkg.RightsizingScanComplete, scope: "cluster", reason: reasonOnlyDaemonSetsWithoutNodes,
 		coverage: &prometheuspkg.RightsizingScanCoverage{DaemonSetsWithoutNodes: 2},
 	})
-	if !strings.Contains(got, "match no node right now") || !strings.Contains(got, "still has history") {
+	if !strings.Contains(got, "match no node right now") || !strings.Contains(got, "node pool scaled to zero") {
 		t.Errorf("a pool scaled to zero is not a DaemonSet that never runs: %q", got)
+	}
+	// The hint points at a read that can legitimately come back empty — a
+	// DaemonSet that never ran here has no history to find — so it must not
+	// promise history it cannot know is there.
+	if strings.Contains(got, "still has history") {
+		t.Errorf("the hint must not promise history a workload read may not find: %q", got)
 	}
 	if remediation := rightsizingRemediation(reasonOnlyDaemonSetsWithoutNodes); !strings.Contains(remediation, "holds workloads") {
 		t.Errorf("remediation must not say no workloads were found: %q", remediation)
@@ -1267,5 +1273,60 @@ func TestScopeOnlyPartialScansAreNotDescribedAsMissingEvidence(t *testing.T) {
 	})
 	if !strings.Contains(got, "evidence is missing") {
 		t.Errorf("an unexplained partial must still warn: %q", got)
+	}
+}
+
+func TestGetRightsizingRejectsLimitPastTheMaximum(t *testing.T) {
+	for _, scope := range []string{"namespace", "cluster"} {
+		input := getRightsizingInput{Scope: scope, Limit: rightsizingMaxLimit + 1}
+		if scope == "namespace" {
+			input.Namespace = "dev"
+		}
+		_, _, err := handleGetRightsizing(context.Background(), nil, input)
+		if err == nil || !strings.Contains(err.Error(), "exceeds the maximum") {
+			t.Errorf("scope=%s must reject a limit past the maximum rather than clamping it into something that reads as the whole ranking, got: %v", scope, err)
+		}
+	}
+}
+
+func TestWorkloadScopeStateSeparatesRowGapsFromFailedQueries(t *testing.T) {
+	throttle := []prometheuspkg.RightsizingScanWarning{{Code: "throttle_query_failed"}}
+	restart := []prometheuspkg.RightsizingScanWarning{{Code: "restart_activity_query_failed"}}
+	both := append(append([]prometheuspkg.RightsizingScanWarning{}, throttle...), restart...)
+
+	for _, tc := range []struct {
+		name               string
+		sampleAvailable    bool
+		incompleteEvidence bool
+		warnings           []prometheuspkg.RightsizingScanWarning
+		wantState          prometheuspkg.RightsizingScanState
+		wantReason         string
+	}{
+		{"everything answered", true, false, nil, prometheuspkg.RightsizingScanComplete, ""},
+		{"row lost its own evidence", true, true, restart, prometheuspkg.RightsizingScanPartial, reasonRowEvidenceIncomplete},
+		{"rows intact, supporting query failed", true, false, restart, prometheuspkg.RightsizingScanPartial, prometheuspkg.ReasonSomeEvidenceUnavailable},
+		// A lost throttle reading clears throttled_reduction and loosens the
+		// clamp, so the row reads as a clean cut. Every failed query degrades
+		// the answer; none of them is only a footnote.
+		{"only throttle failed", true, false, throttle, prometheuspkg.RightsizingScanPartial, prometheuspkg.ReasonSomeEvidenceUnavailable},
+		{"throttle alongside a load-bearing failure", true, false, both, prometheuspkg.RightsizingScanPartial, prometheuspkg.ReasonSomeEvidenceUnavailable},
+		{"row gaps outrank query failures", true, true, both, prometheuspkg.RightsizingScanPartial, reasonRowEvidenceIncomplete},
+		{"no samples at all", false, true, restart, prometheuspkg.RightsizingScanUnavailable, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, reason := workloadScopeState(tc.sampleAvailable, tc.incompleteEvidence, tc.warnings, "")
+			if state != tc.wantState || reason != tc.wantReason {
+				t.Errorf("got state=%q reason=%q, want state=%q reason=%q", state, reason, tc.wantState, tc.wantReason)
+			}
+		})
+	}
+}
+
+func TestWorkloadScopeStateKeepsTheEnginesOwnReason(t *testing.T) {
+	// The engine knows why it had nothing to say; a generic fallback would
+	// overwrite the specific answer with a vaguer one.
+	_, reason := workloadScopeState(true, true, nil, prometheuspkg.ReasonNoUsageSamples)
+	if reason != prometheuspkg.ReasonNoUsageSamples {
+		t.Errorf("an engine reason must survive, got %q", reason)
 	}
 }

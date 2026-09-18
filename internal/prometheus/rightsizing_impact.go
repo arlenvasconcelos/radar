@@ -61,14 +61,43 @@ type RightsizingImpact struct {
 // from impact — counting a reduction nobody should apply unattended as savings
 // would rank the workload by waste it cannot actually give back.
 func NeedsManualReview(row RightsizingRow) bool {
-	if row.HPAManaged || row.CurrentPodOOM || row.WindowOOMEvidence || row.LimitConflict {
-		return true
+	return len(ManualReviewReasons(row)) > 0
+}
+
+// ManualReviewReasons names why a row needs a human, so the verdict travels
+// with the recommendation instead of being re-derived by every consumer from
+// the raw signals. Excluding a row from impact is a silent, negative signal: a
+// reader would have to notice that a row recommending a cut contributed nothing
+// to the total. The verdict and its reasons come from one place so the filter,
+// the impact total and the response cannot disagree about which rows are safe.
+func ManualReviewReasons(row RightsizingRow) []string {
+	var reasons []string
+	if row.HPAManaged {
+		reasons = append(reasons, "hpa_managed")
+	}
+	if row.CurrentPodOOM {
+		reasons = append(reasons, "current_pod_oom")
+	}
+	if row.WindowOOMEvidence {
+		reasons = append(reasons, "oom_in_window")
+	}
+	if row.LimitConflict {
+		reasons = append(reasons, "limit_conflict")
 	}
 	if IsWithheldRecommendationReason(row.RecommendationReason) {
-		return true
+		reasons = append(reasons, "recommendation_withheld")
 	}
-	throttled := row.ThrottleRatio != nil && *row.ThrottleRatio >= throttleReviewRatio
-	return isReduction(row) && (row.Bursty || throttled)
+	// Burst and throttling only matter against a cut: they say the smaller
+	// request would be met by a workload that already wants more.
+	if isReduction(row) {
+		if row.Bursty {
+			reasons = append(reasons, "bursty_reduction")
+		}
+		if row.ThrottleRatio != nil && *row.ThrottleRatio >= throttleReviewRatio {
+			reasons = append(reasons, "throttled_reduction")
+		}
+	}
+	return reasons
 }
 
 // throttleReviewRatio is the share of throttled CPU periods that makes a row

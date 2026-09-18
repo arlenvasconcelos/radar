@@ -660,3 +660,19 @@ func TestTrendDeclaresItsSeriesCap(t *testing.T) {
 		t.Error("an empty trend is not a cap")
 	}
 }
+
+func TestGetCostRejectsLimitPastTheMaximum(t *testing.T) {
+	_, _, err := handleGetCost(context.Background(), nil, getCostInput{View: "nodes", Limit: costMaxLimit + 1})
+	if err == nil || !strings.Contains(err.Error(), "exceeds the maximum") {
+		t.Fatalf("a limit past the maximum must be rejected, not clamped into something that reads as every row, got: %v", err)
+	}
+}
+
+func TestGetCostTrendLimitErrorOutranksTheMaximum(t *testing.T) {
+	// Both rules fire; the caller's real mistake is that trend takes no limit
+	// at all, so raising the cap would not help them.
+	_, _, err := handleGetCost(context.Background(), nil, getCostInput{View: "trend", Limit: costMaxLimit + 1})
+	if err == nil || !strings.Contains(err.Error(), "not view=trend") {
+		t.Fatalf("trend must say limit does not apply, not quote a cap, got: %v", err)
+	}
+}

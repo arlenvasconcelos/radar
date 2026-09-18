@@ -78,7 +78,11 @@ type rightsizingRowDTO struct {
 	ThrottleAvailable    *bool                    `json:"throttleAvailable,omitempty"`
 	ThrottleRatio        *string                  `json:"throttleRatio,omitempty"`
 	LimitConflict        bool                     `json:"limitConflict,omitempty"`
-	QueryError           string                   `json:"queryError,omitempty"`
+	// The verdict travels with the recommendation. Its absence from impact is a
+	// negative signal a reader has to go looking for; this is the positive one.
+	NeedsManualReview bool     `json:"needsManualReview,omitempty"`
+	ReviewReasons     []string `json:"reviewReasons,omitempty"`
+	QueryError        string   `json:"queryError,omitempty"`
 }
 
 type rightsizingDemandTarget struct {
@@ -241,6 +245,7 @@ func rightsizingWorkloadScope(ctx context.Context, input getRightsizingInput) (*
 	filtered := filterRightsizingRows(resp.Rows, input.IncludeBalanced, true, resp.Replicas, resp.ScaledToZero)
 	sampleAvailable := resp.SampleAvailable
 	impact := filtered.impact
+	pointQueryErrorsAtWarnings(filtered.rows)
 	out := rightsizingResponse{
 		Scope:           "workload",
 		State:           prometheuspkg.RightsizingScanComplete,
@@ -249,6 +254,7 @@ func rightsizingWorkloadScope(ctx context.Context, input getRightsizingInput) (*
 		Namespace:       resp.Namespace,
 		SampleAvailable: &sampleAvailable,
 		OwnerCoverage:   resp.OwnerCoverage,
+		Warnings:        resp.Warnings,
 		Reason:          resp.Reason,
 		Workloads: []rightsizingWorkloadDTO{{
 			Kind:           resp.Kind,
@@ -262,29 +268,48 @@ func rightsizingWorkloadScope(ctx context.Context, input getRightsizingInput) (*
 			Rows:           filtered.rows,
 		}},
 	}
-	switch {
-	case !sampleAvailable:
-		out.State = prometheuspkg.RightsizingScanUnavailable
-	case filtered.incompleteEvidence:
-		out.State = prometheuspkg.RightsizingScanPartial
-		if out.Reason == "" {
-			out.Reason = reasonRowEvidenceIncomplete
-		}
-	}
+	out.State, out.Reason = workloadScopeState(sampleAvailable, filtered.incompleteEvidence, out.Warnings, out.Reason)
 	if filtered.omitted.total() > 0 {
 		out.Omitted = &filtered.omitted
 	}
 	out.Remediation = rightsizingRemediation(out.Reason)
 	out.Guidance = rightsizingGuidance(rightsizingGuidanceInput{
-		state:            out.State,
-		includeBalanced:  input.IncludeBalanced,
-		scope:            "workload",
-		reason:           out.Reason,
-		omitted:          filtered.omitted,
-		reductionLimited: rowGaps(out.Workloads).reductionLimited,
-		workloadsShown:   true,
+		state:             out.State,
+		includeBalanced:   input.IncludeBalanced,
+		scope:             "workload",
+		reason:            out.Reason,
+		omitted:           filtered.omitted,
+		reductionLimited:  rowGaps(out.Workloads).reductionLimited,
+		needsManualReview: rowGaps(out.Workloads).needsManualReview,
+		workloadsShown:    true,
 	})
 	return toJSONResult(out)
+}
+
+// workloadScopeState settles what a workload-scope answer claims about itself.
+// The order is precedence: a row that lost its own evidence outranks a query
+// that failed behind intact rows, because the two send a reader to different
+// places — the rows, or the warnings.
+func workloadScopeState(sampleAvailable, incompleteEvidence bool, warnings []prometheuspkg.RightsizingScanWarning, reason string) (prometheuspkg.RightsizingScanState, string) {
+	fallback := func(candidate string) string {
+		// A reason the engine already set is the more specific one.
+		if reason != "" {
+			return reason
+		}
+		return candidate
+	}
+	switch {
+	case !sampleAvailable:
+		return prometheuspkg.RightsizingScanUnavailable, reason
+	case incompleteEvidence:
+		return prometheuspkg.RightsizingScanPartial, fallback(reasonRowEvidenceIncomplete)
+	case len(warnings) > 0:
+		// The rows are intact, so row_evidence_incomplete would send the reader
+		// hunting for an incomplete row that does not exist. The failure sits
+		// behind them, and the warnings name it.
+		return prometheuspkg.RightsizingScanPartial, fallback(prometheuspkg.ReasonSomeEvidenceUnavailable)
+	}
+	return prometheuspkg.RightsizingScanComplete, reason
 }
 
 func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope string) (*mcp.CallToolResult, any, error) {
@@ -293,7 +318,7 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 		limit = rightsizingDefaultLimit
 	}
 	if limit > rightsizingMaxLimit {
-		limit = rightsizingMaxLimit
+		return nil, nil, fmt.Errorf("limit %d exceeds the maximum of %d — pass %d or fewer, or narrow the scope; silently returning %d would look like the whole ranking", input.Limit, rightsizingMaxLimit, rightsizingMaxLimit, rightsizingMaxLimit)
 	}
 
 	namespace := strings.TrimSpace(input.Namespace)
@@ -491,6 +516,7 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 		coverage:                   &coverage,
 		omitted:                    omitted,
 		reductionLimited:           returned.reductionLimited,
+		needsManualReview:          returned.needsManualReview,
 		returnedQueryErrors:        returned.queryErrors,
 		truncatedQueryErrors:       kept.queryErrors - returned.queryErrors,
 		returnedShortHistory:       returned.shortHistory,
@@ -507,6 +533,7 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 type rowGapCounts struct {
 	queryErrors, shortHistory int
 	reductionLimited          bool
+	needsManualReview         bool
 }
 
 // rowGaps counts the unevidenced and clamped rows a set of workloads carries.
@@ -515,6 +542,7 @@ func rowGaps(workloads []rightsizingWorkloadDTO) rowGapCounts {
 	for _, workload := range workloads {
 		for _, row := range workload.Rows {
 			counts.reductionLimited = counts.reductionLimited || row.ReductionLimited
+			counts.needsManualReview = counts.needsManualReview || row.NeedsManualReview
 			switch {
 			case row.QueryError != "":
 				counts.queryErrors++
@@ -769,6 +797,8 @@ func filterRightsizingRows(rows []prometheuspkg.RightsizingRow, includeBalanced,
 			CurrentPodOOM:        row.CurrentPodOOM,
 			WindowOOMEvidence:    row.WindowOOMEvidence,
 			LimitConflict:        row.LimitConflict,
+			NeedsManualReview:    prometheuspkg.NeedsManualReview(row),
+			ReviewReasons:        prometheuspkg.ManualReviewReasons(row),
 			QueryError:           row.QueryError,
 		}
 		// OOM evidence only ever gates a memory recommendation; on a CPU row a
@@ -866,10 +896,10 @@ func rightsizingRemediation(reason string) string {
 	case "limited_scope_no_workloads":
 		return "No workloads were found, and the scan did not cover everything asked for — coverage.restrictedKinds, unavailableKinds and partiallyCachedKinds say which kinds were narrowed. An empty result here is not evidence the cluster has no workloads."
 	case reasonOnlyDaemonSetsWithoutNodes:
-		return "The scope holds workloads, but every one is a DaemonSet whose node selector matches no node right now, so none was scanned. A node pool scaled to zero still has history for them: read one with scope=\"workload\"."
+		return "The scope holds workloads, but every one is a DaemonSet whose node selector matches no node right now, so none was scanned. A node pool scaled to zero may still have history for them: read one with scope=\"workload\", which reports state=unavailable when it does not."
 	case "no_workloads":
 		return "The scan covered the requested scope and found no Deployment, StatefulSet or DaemonSet in it."
-	case "some_evidence_unavailable":
+	case prometheuspkg.ReasonSomeEvidenceUnavailable:
 		// This reason also fires when nothing failed and the scope was merely
 		// narrowed by RBAC or informer coverage, so it must not assert that a
 		// query broke. guidance names whichever cause this response carries.
@@ -908,14 +938,15 @@ func rightsizingRemediation(reason string) string {
 // guidance can name the causes that are present instead of a fixed paragraph
 // pointing at coverage fields that may all be empty.
 type rightsizingGuidanceInput struct {
-	state            prometheuspkg.RightsizingScanState
-	includeBalanced  bool
-	scope            string
-	reason           string
-	namespaceScope   []string
-	coverage         *prometheuspkg.RightsizingScanCoverage
-	omitted          rightsizingOmissions
-	reductionLimited bool
+	state             prometheuspkg.RightsizingScanState
+	includeBalanced   bool
+	scope             string
+	reason            string
+	namespaceScope    []string
+	coverage          *prometheuspkg.RightsizingScanCoverage
+	omitted           rightsizingOmissions
+	reductionLimited  bool
+	needsManualReview bool
 	// deadlineExceeded marks a scan the budget cut, before a batch or inside
 	// one. Evaluated below discovered does not: dropped Deployments do that too.
 	deadlineExceeded bool
@@ -962,13 +993,16 @@ func rightsizingGuidance(in rightsizingGuidanceInput) string {
 		parts = append(parts, fmt.Sprintf("%s had no workload to scan — check the name before reporting it as empty.", strings.Join(in.namespacesWithoutWorkloads, ", ")))
 	}
 	if in.coverage != nil && in.coverage.DaemonSetsWithoutNodes > 0 {
-		parts = append(parts, fmt.Sprintf(`%d DaemonSet(s) match no node right now, so they run no pods and were not scanned (coverage.daemonSetsWithoutNodes, named in skippedDaemonSets). A node pool scaled to zero still has history for them: read one with scope="workload".`, in.coverage.DaemonSetsWithoutNodes))
+		parts = append(parts, fmt.Sprintf(`%d DaemonSet(s) match no node right now, so they run no pods and were not scanned (coverage.daemonSetsWithoutNodes, named in skippedDaemonSets). A node pool scaled to zero may still have history for them: read one with scope="workload", which reports state=unavailable when it does not.`, in.coverage.DaemonSetsWithoutNodes))
 	}
 	if in.returnedQueryErrors > 0 && in.scope != "workload" {
 		parts = append(parts, "A workload whose rows carry queryError can still hold a valid recommendation on its other resource: it ranks as need_data because evidence is missing, not because that recommendation is doubtful.")
 	}
 	if in.reductionLimited {
 		parts = append(parts, "Rows with reductionLimited=true were clamped: recommendedRequest is a bounded step, not the full cut: at most half for memory, for CPU of 1 core or more, and for bursty or throttled CPU; up to three quarters for smaller CPU requests. demandTarget is the demand-based end state, not a value to apply: apply recommendedRequest, observe a full 7-day window, then re-check. For memory, demandTarget comes from the 7-day max, so a monthly or batch peak outside the window is not seen and jumping straight to it risks OOM.")
+	}
+	if in.needsManualReview {
+		parts = append(parts, "Rows with needsManualReview=true are excluded from the workload's impact and must not be applied unattended: reviewReasons says why — an autoscaler owns the request, the container has OOM history, its limit conflicts with the recommendation, or the cut runs against bursty or throttled usage. The recommendedRequest on those rows is still the engine's best value, not a safe one.")
 	}
 	if in.workloadsShown {
 		parts = append(parts, "managedBy names what owns a workload's spec: change requests at that source (Git, chart values, the controller's resource, the add-on configuration), not with a direct patch. A missing managedBy does not mean unmanaged — Argo CD label tracking, Terraform and kubectl apply leave no signal Radar reads.")

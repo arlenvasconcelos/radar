@@ -246,9 +246,6 @@ func handleGetCost(ctx context.Context, _ *mcp.CallToolRequest, input getCostInp
 	if limit <= 0 {
 		limit = costDefaultLimit
 	}
-	if limit > costMaxLimit {
-		limit = costMaxLimit
-	}
 
 	// Silently dropping a parameter the caller set lets an agent believe a
 	// filter applied. Reject the combination instead.
@@ -257,6 +254,11 @@ func handleGetCost(ctx context.Context, _ *mcp.CallToolRequest, input getCostInp
 	}
 	if view == "trend" && input.Limit > 0 {
 		return nil, nil, errors.New("limit applies to the row views (summary, workloads, nodes), not view=trend")
+	}
+	// Clamping instead would return costMaxLimit rows with no sign the cap
+	// moved, which reads as the whole list.
+	if limit > costMaxLimit {
+		return nil, nil, fmt.Errorf("limit %d exceeds the maximum of %d — pass %d or fewer; silently returning %d would look like every row", input.Limit, costMaxLimit, costMaxLimit, costMaxLimit)
 	}
 	input.Kind = strings.TrimSpace(input.Kind)
 	input.Name = strings.TrimSpace(input.Name)

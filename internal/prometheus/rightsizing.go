@@ -149,6 +149,12 @@ type RightsizingResponse struct {
 	ManagedBy       *WorkloadManager `json:"managedBy,omitempty"`
 	Rows            []RightsizingRow `json:"rows"`
 	Reason          string           `json:"reason,omitempty"`
+	// Warnings name the supporting queries that failed. A withheld memory
+	// recommendation reads identically whether the OOM-evidence queries
+	// answered "no history" or never answered at all, so without these a
+	// caller cannot tell an absence of evidence from an absent query — and
+	// a scan of the same workload, whose queries did answer, contradicts it.
+	Warnings []RightsizingScanWarning `json:"warnings,omitempty"`
 }
 
 const (
@@ -509,6 +515,7 @@ func computeRightsizing(ctx context.Context, client rightsizingQuerier, kind, na
 			resp.Rows = append(resp.Rows, row)
 		}
 	}
+	resp.Warnings = evidenceQueryWarnings(results)
 	for _, row := range resp.Rows {
 		if row.Observed != nil {
 			resp.SampleAvailable = true
@@ -531,6 +538,42 @@ func computeRightsizing(ctx context.Context, client rightsizingQuerier, kind, na
 		}
 	}
 	return resp
+}
+
+// evidenceQueryWarnings names the failed queries behind a workload-scope
+// answer, using the same codes a scan reports so a caller comparing the two
+// scopes reads one vocabulary. The usage queries are included because a row's
+// queryError points at these codes.
+func evidenceQueryWarnings(results map[string]queryOutcome) []RightsizingScanWarning {
+	codes := []struct{ query, code string }{
+		{"cpu_stat", "cpu_query_failed"},
+		{"memory_stat", "memory_query_failed"},
+		// cpu_peak decides Bursty, which gates manual review and tightens the
+		// clamp. Its failure is swallowed at the row — an absent peak reads the
+		// same as a container that never had one — so only a warning shows it.
+		{"cpu_peak", "cpu_peak_query_failed"},
+		{"cpu_coverage", "cpu_coverage_query_failed"},
+		{"memory_coverage", "memory_coverage_query_failed"},
+		// A lost throttle reading silently loosens the clamp and clears the
+		// throttled_reduction review reason, so a throttled workload reads as a
+		// clean cut. That is a changed answer, not a missing footnote.
+		{"throttle", "throttle_query_failed"},
+		{"restart_activity", "restart_activity_query_failed"},
+		{"termination_history", "termination_history_query_failed"},
+	}
+	var warnings []RightsizingScanWarning
+	for _, entry := range codes {
+		outcome, ok := results[entry.query]
+		if !ok || outcome.err == nil {
+			continue
+		}
+		warnings = append(warnings, RightsizingScanWarning{
+			Code:    entry.code,
+			Message: boundWarningMessage(outcome.err.Error()),
+		})
+	}
+	sort.Slice(warnings, func(i, j int) bool { return warnings[i].Code < warnings[j].Code })
+	return warnings
 }
 
 type metricSelection struct {

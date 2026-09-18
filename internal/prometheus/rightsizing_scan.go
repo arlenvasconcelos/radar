@@ -402,7 +402,7 @@ func computeRightsizingScan(ctx context.Context, client rightsizingScanQuerier, 
 		}
 	case len(resp.Warnings) > 0 || resp.Coverage.WorkloadsEvaluated < len(workloads) || len(resp.Coverage.RestrictedKinds) > 0 || len(resp.Coverage.UnavailableKinds) > 0 || len(resp.Coverage.PartiallyCachedKinds) > 0:
 		resp.State = RightsizingScanPartial
-		resp.Reason = "some_evidence_unavailable"
+		resp.Reason = ReasonSomeEvidenceUnavailable
 	default:
 		resp.State = RightsizingScanComplete
 		if resp.Coverage.WorkloadsWithData == 0 {
@@ -753,6 +753,11 @@ func workloadHasUnavailableOOMEvidence(workload RightsizingScanWorkload) bool {
 // ReasonScanDeadlineExceeded is the warning a scan records when its context
 // ended before every batch answered.
 const ReasonScanDeadlineExceeded = "scan_deadline_exceeded"
+
+// ReasonSomeEvidenceUnavailable is the reason a response carries when its rows
+// are intact but a query behind them did not answer. A workload-scope answer
+// borrows it so both scopes name the same situation the same way.
+const ReasonSomeEvidenceUnavailable = "some_evidence_unavailable"
 
 func appendScanWarning(resp *RightsizingScanResponse, code, message string) {
 	for _, warning := range resp.Warnings {
