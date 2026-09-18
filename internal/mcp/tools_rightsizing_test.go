@@ -1379,27 +1379,36 @@ func TestClassificationSelectionKeepsAllMatchingRowsAndWholeScanGaps(t *testing.
 	broken.QueryError = prometheuspkg.RowUsageQueryFailed
 	balanced := rightsizingRow(prometheuspkg.FitBalanced, 1, 1)
 	balanced.LiveInventoryUnavailable = true
+	review := balanced
+	review.CurrentPodOOM = true
 	workloads := []prometheuspkg.RightsizingScanWorkload{
 		{Name: "large-cut", Replicas: 100, Rows: []prometheuspkg.RightsizingRow{rightsizingRow(prometheuspkg.FitOversized, 4, 1)}},
 		{Name: "grow", Replicas: 1, Rows: []prometheuspkg.RightsizingRow{rightsizingRow(prometheuspkg.FitUnderRequested, 1, 2), balanced}},
 		{Name: "unknown", Rows: []prometheuspkg.RightsizingRow{broken}},
 		{Name: "steady", Replicas: 1, Rows: []prometheuspkg.RightsizingRow{balanced}},
+		{Name: "oom", Replicas: 1, Rows: []prometheuspkg.RightsizingRow{review}},
 	}
 	for _, tc := range []struct {
 		class, name string
 		rows        int
 	}{
-		{"increase", "grow", 2}, {"in_range", "steady", 1}, {"need_data", "unknown", 1},
+		{"increase", "grow", 2}, {"in_range", "steady", 1}, {"need_data", "unknown", 1}, {"review", "oom", 1},
 	} {
-		selected, omitted, incomplete := selectRightsizingWorkloads(workloads, getRightsizingInput{Classification: tc.class, Limit: 1})
+		selected, omitted, incomplete, counts := selectRightsizingWorkloads(workloads, getRightsizingInput{Classification: tc.class, Limit: 1})
 		if len(selected) != 1 || selected[0].Name != tc.name || len(selected[0].Rows) != tc.rows || omitted.total() != 0 || !incomplete {
 			t.Fatalf("%s selection lost rows or whole-scan gap: selected=%+v omitted=%+v incomplete=%v", tc.class, selected, omitted, incomplete)
+		}
+		if len(counts) != 5 || counts[prometheuspkg.ClassReduction] != 1 || counts[prometheuspkg.ClassIncrease] != 1 || counts[prometheuspkg.ClassNeedData] != 1 || counts[prometheuspkg.ClassInRange] != 1 || counts[prometheuspkg.ClassReview] != 1 {
+			t.Fatalf("classification selection changed evaluated counts: %+v", counts)
 		}
 		if tc.class == "in_range" && !selected[0].LiveInventoryUnavailable {
 			t.Fatal("lost live inventory evidence flag")
 		}
 	}
-	all, _, _ := selectRightsizingWorkloads(workloads, getRightsizingInput{})
+	all, _, _, counts := selectRightsizingWorkloads(workloads, getRightsizingInput{})
+	if counts[prometheuspkg.ClassNeedData] != 1 || counts[prometheuspkg.ClassInRange] != 1 {
+		t.Fatalf("default row omissions changed evaluated counts: %+v", counts)
+	}
 	if len(all) == 0 || all[0].Name != "large-cut" {
 		t.Fatalf("unexpected default ranking: %+v", all)
 	}
@@ -1457,5 +1466,25 @@ func TestRightsizingCoverageWireNamesPreserveEvidence(t *testing.T) {
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("MCP coverage lost evidence: got %s, source %s", mcpJSON, engineJSON)
 		}
+	}
+}
+
+func TestEmptyRightsizingScanEmitsZeroClassificationCounts(t *testing.T) {
+	_, _, _, counts := selectRightsizingWorkloads(nil, getRightsizingInput{})
+	body, err := json.Marshal(rightsizingResponse{ClassificationCounts: counts})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]int
+	if err := json.Unmarshal(wire["classificationCounts"], &got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int{"reduction": 0, "increase": 0, "review": 0, "need_data": 0, "in_range": 0}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("empty evaluated population must explicitly report all zero counts: got %v", got)
 	}
 }

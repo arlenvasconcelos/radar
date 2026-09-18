@@ -175,13 +175,14 @@ func newRightsizingCoverage(coverage prometheuspkg.RightsizingScanCoverage) *rig
 }
 
 type rightsizingResponse struct {
-	Scope          string                             `json:"scope"`
-	State          prometheuspkg.RightsizingScanState `json:"state"`
-	Window         string                             `json:"window"`
-	Source         string                             `json:"source,omitempty"`
-	ScannedAt      string                             `json:"evaluatedAt,omitempty"`
-	Namespace      string                             `json:"namespace,omitempty"`
-	NamespaceScope []string                           `json:"effectiveNamespaces,omitempty"`
+	ClassificationCounts map[prometheuspkg.RightsizingClass]int `json:"classificationCounts,omitempty"`
+	Scope                string                                 `json:"scope"`
+	State                prometheuspkg.RightsizingScanState     `json:"state"`
+	Window               string                                 `json:"window"`
+	Source               string                                 `json:"source,omitempty"`
+	ScannedAt            string                                 `json:"evaluatedAt,omitempty"`
+	Namespace            string                                 `json:"namespace,omitempty"`
+	NamespaceScope       []string                               `json:"effectiveNamespaces,omitempty"`
 	// Excluded requested namespaces are listed by name: a namespace dropped
 	// silently reads as one that had nothing to change.
 	ExcludedNamespaces []excludedNamespace `json:"excludedNamespaces,omitempty"`
@@ -481,7 +482,8 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 		out.NamespacesWithoutWorkloads = namespacesWithoutWorkloads(scanned, scan.Workloads, scan.Coverage.SkippedDaemonSets)
 	}
 
-	ranked, omitted, incompleteEvidence := selectRightsizingWorkloads(scan.Workloads, input)
+	ranked, omitted, incompleteEvidence, counts := selectRightsizingWorkloads(scan.Workloads, input)
+	out.ClassificationCounts = counts
 	kept := rowGaps(ranked)
 	totalWorkloads := len(ranked)
 	out.TotalWorkloads = &totalWorkloads
@@ -855,12 +857,20 @@ func filterRightsizingRows(rows []prometheuspkg.RightsizingRow, includeAll, keep
 	return result
 }
 
-func selectRightsizingWorkloads(workloads []prometheuspkg.RightsizingScanWorkload, input getRightsizingInput) ([]rightsizingWorkloadDTO, rightsizingOmissions, bool) {
+func selectRightsizingWorkloads(workloads []prometheuspkg.RightsizingScanWorkload, input getRightsizingInput) ([]rightsizingWorkloadDTO, rightsizingOmissions, bool, map[prometheuspkg.RightsizingClass]int) {
+	counts := map[prometheuspkg.RightsizingClass]int{
+		prometheuspkg.ClassReduction: 0,
+		prometheuspkg.ClassIncrease:  0,
+		prometheuspkg.ClassReview:    0,
+		prometheuspkg.ClassNeedData:  0,
+		prometheuspkg.ClassInRange:   0,
+	}
 	ranked := make([]rightsizingWorkloadDTO, 0, len(workloads))
 	var omitted rightsizingOmissions
 	incompleteEvidence := false
 	for _, workload := range workloads {
 		filtered := filterRightsizingRows(workload.Rows, input.IncludeAll, input.Classification != "", workload.Replicas, workload.ScaledToZero)
+		counts[filtered.classification]++
 		incompleteEvidence = incompleteEvidence || filtered.incompleteEvidence
 		if input.Classification != "" && string(filtered.classification) != input.Classification {
 			continue
@@ -897,7 +907,7 @@ func selectRightsizingWorkloads(workloads []prometheuspkg.RightsizingScanWorkloa
 			ranked[j].Classification, *ranked[j].Impact, ranked[j].rankKey,
 		)
 	})
-	return ranked, omitted, incompleteEvidence
+	return ranked, omitted, incompleteEvidence, counts
 }
 
 func rightsizingRowActionable(fit prometheuspkg.RightsizingFit) bool {
@@ -1099,7 +1109,7 @@ func rightsizingGuidance(in rightsizingGuidanceInput) []string {
 		parts = append(parts, "managedBy names what owns a workload's spec: change requests at that source (Git, chart values, the controller's resource, the add-on configuration), not with a direct patch. A missing managedBy does not mean unmanaged — Argo CD label tracking, Terraform and kubectl apply leave no signal Radar reads.")
 	}
 	if in.scope != "workload" {
-		parts = append(parts, "totalWorkloads counts workloads matching the selection before limit; coverage.workloadsEvaluated counts the whole scan. evaluatedAt is evaluation time, not source freshness.")
+		parts = append(parts, "classificationCounts counts all evaluated workloads before classification filtering, row omissions and limit, including those with missing evidence; it excludes workloads not evaluated. Use classification=increase or classification=review to inspect those classes if absent from the returned list. totalWorkloads counts workloads matching the selection before limit. evaluatedAt is evaluation time, not source freshness.")
 	}
 	if !in.includeAll && in.scope != "workload" {
 		parts = append(parts, "Correctly-sized and unevidenced containers are omitted — see the omitted counts; pass include_all=true to see those rows. Rows carrying OOM history, a limit conflict, throttling of 10% or more, or an autoscaler are always returned regardless of fit, as is every row of a scaledToZero workload and any unevidenced row of a container that is returned.")

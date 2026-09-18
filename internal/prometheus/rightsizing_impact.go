@@ -6,7 +6,7 @@ import (
 	"slices"
 )
 
-// Classification and impact mirror web/src/components/rightsizing/model.ts.
+// Class ordering and impact mirror web/src/components/rightsizing/model.ts.
 // Ranking by relative request change instead puts a 64Mi sidecar above the
 // workload wasting two cores, so the tool and the Rightsizing screen would
 // disagree about where the waste is.
