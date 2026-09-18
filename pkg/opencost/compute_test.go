@@ -132,6 +132,9 @@ func TestComputeCostSummary_HappyPath(t *testing.T) {
 	if got.TotalUnallocatedCost == nil || *got.TotalUnallocatedCost != 1.5 {
 		t.Errorf("TotalUnallocatedCost=%v, want 1.5", got.TotalUnallocatedCost)
 	}
+	if got.TotalNodeCost == nil || *got.TotalNodeCost != 8 {
+		t.Fatalf("node capacity cost must be independently retained: %+v", got.TotalNodeCost)
+	}
 	if got.TotalAllocatedCost != 6.55 {
 		t.Errorf("allocated=%v, want 6.55", got.TotalAllocatedCost)
 	}
@@ -563,5 +566,17 @@ func TestUnusedRequestCostDoesNotNetOveruseAgainstWaste(t *testing.T) {
 	got := ComputeCostSummaryFromProm(context.Background(), client, SummaryOptions{})
 	if got.TotalUnusedRequestCost != 3 {
 		t.Errorf("TotalUnusedRequestCost=%v, want 3 from the idle namespace alone", got.TotalUnusedRequestCost)
+	}
+}
+
+func TestSummaryRetainsNodeCostBelowAllocatedCost(t *testing.T) {
+	client := scriptedProm(t, []scriptedCase{
+		{contains: "container_cpu_allocation", body: vectorBody(map[string]float64{"app": 2})},
+		{contains: "container_memory_allocation_bytes", body: vectorBody(map[string]float64{"app": 1})},
+		{contains: "node_total_hourly_cost", body: scalarBody(1.5)},
+	})
+	got := ComputeCostSummaryFromProm(context.Background(), client, SummaryOptions{})
+	if !got.Available || got.TotalAllocatedCost != 3 || got.TotalNodeCost == nil || *got.TotalNodeCost != 1.5 {
+		t.Fatalf("independent allocation/capacity totals lost: %+v", got)
 	}
 }

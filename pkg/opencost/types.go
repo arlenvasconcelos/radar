@@ -33,16 +33,17 @@ const (
 
 // CostSummary is the response for the /api/opencost/summary endpoint.
 type CostSummary struct {
-	Available        bool    `json:"available"`
-	Reason           string  `json:"reason,omitempty"` // Set when available=false; see the Reason* constants above.
-	Source           string  `json:"source,omitempty"`
-	DataThrough      string  `json:"dataThrough,omitempty"`
-	Currency         string  `json:"currency"`
-	Window           string  `json:"window,omitempty"`
-	TotalHourlyCost  float64 `json:"totalHourlyCost,omitempty"`
-	TotalStorageCost float64 `json:"totalStorageCost,omitempty"`
-	TotalNetworkCost float64 `json:"totalNetworkCost,omitempty"`
-	TotalIdleCost    float64 `json:"totalIdleCost,omitempty"`
+	TotalNodeCost    *float64 `json:"-"`
+	Available        bool     `json:"available"`
+	Reason           string   `json:"reason,omitempty"` // Set when available=false; see the Reason* constants above.
+	Source           string   `json:"source,omitempty"`
+	DataThrough      string   `json:"dataThrough,omitempty"`
+	Currency         string   `json:"currency"`
+	Window           string   `json:"window,omitempty"`
+	TotalHourlyCost  float64  `json:"totalHourlyCost,omitempty"`
+	TotalStorageCost float64  `json:"totalStorageCost,omitempty"`
+	TotalNetworkCost float64  `json:"totalNetworkCost,omitempty"`
+	TotalIdleCost    float64  `json:"totalIdleCost,omitempty"`
 	// TotalIdleCost adds two different things: node capacity no workload
 	// requested, and requested capacity no workload used. They are recovered
 	// by different actions (removing nodes vs rightsizing), so they are also
@@ -232,6 +233,7 @@ type ApplicationCostTrendResponse struct {
 
 // CostTrendSeries holds cost data points for a single namespace.
 type CostTrendSeries struct {
+	Remainder  bool            `json:"-"`
 	Namespace  string          `json:"namespace"`
 	DataPoints []CostDataPoint `json:"dataPoints"`
 }

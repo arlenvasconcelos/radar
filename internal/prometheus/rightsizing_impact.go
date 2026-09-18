@@ -221,21 +221,10 @@ func RowUnevidenced(row RightsizingRow) bool {
 	return row.QueryError != "" || row.Fit == FitInsufficientHistory
 }
 
-// ClassifyWorkload classifies and sizes a workload from the containers that
-// actually have evidence. The Rightsizing screen ranks each container as its
-// own entry, so one unevidenced sidecar never hides an oversized app container
-// there; classifying every row at once would make the whole workload need_data
-// and push real savings past the response limit. Impact comes from the same
-// containers, so an unjudged container's change never sizes that class.
-//
-// Unevidenced containers are dropped rather than letting the best container
-// win outright: ClassifyRows' precedence is a safety rule — an under-requested
-// container decides the class over an oversized one, because under-requesting
-// is the failure that takes the workload down — and classRank's reduction-first
-// order is a sort rule for the screen. Picking by classRank would let the sort
-// rule overturn the safety rule on a workload carrying both.
+// Missing evidence for one resource must not hide a known increase or review
+// signal on another resource, even when they belong to the same container.
 func ClassifyWorkload(rows []RightsizingRow, replicas int, scaledToZero bool) (RightsizingClass, RightsizingImpact) {
-	evidenced, dropped := evidencedContainerRows(rows)
+	evidenced, dropped := evidencedRows(rows)
 	impact := CalculateImpact(evidenced, replicas)
 	// No evidenced rows is no evidence. ClassifyRows would answer in_range,
 	// which reads as "correctly sized" on exactly the workloads — init-only or
@@ -252,23 +241,12 @@ func ClassifyWorkload(rows []RightsizingRow, replicas int, scaledToZero bool) (R
 	return class, impact
 }
 
-func evidencedContainerRows(rows []RightsizingRow) ([]RightsizingRow, bool) {
-	byContainer := make(map[string][]RightsizingRow, len(rows))
-	order := make([]string, 0, len(rows))
-	for _, row := range rows {
-		if _, seen := byContainer[row.Container]; !seen {
-			order = append(order, row.Container)
-		}
-		byContainer[row.Container] = append(byContainer[row.Container], row)
-	}
+func evidencedRows(rows []RightsizingRow) ([]RightsizingRow, bool) {
 	evidenced := make([]RightsizingRow, 0, len(rows))
-	dropped := false
-	for _, container := range order {
-		if slices.ContainsFunc(byContainer[container], RowUnevidenced) {
-			dropped = true
-			continue
+	for _, row := range rows {
+		if !RowUnevidenced(row) {
+			evidenced = append(evidenced, row)
 		}
-		evidenced = append(evidenced, byContainer[container]...)
 	}
-	return evidenced, dropped
+	return evidenced, len(evidenced) != len(rows)
 }

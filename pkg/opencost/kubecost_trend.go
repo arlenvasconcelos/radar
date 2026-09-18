@@ -151,7 +151,7 @@ func ComputeKubecostTrend(ctx context.Context, client *KubecostClient, opts Kube
 				otherByTimestamp[timestamp] += value
 			}
 		}
-		other := CostTrendSeries{Namespace: "other", DataPoints: make([]CostDataPoint, 0, len(otherByTimestamp))}
+		other := CostTrendSeries{Namespace: "other", Remainder: true, DataPoints: make([]CostDataPoint, 0, len(otherByTimestamp))}
 		for timestamp, value := range otherByTimestamp {
 			other.DataPoints = append(other.DataPoints, CostDataPoint{Timestamp: timestamp, Value: roundTo(value, 4)})
 		}

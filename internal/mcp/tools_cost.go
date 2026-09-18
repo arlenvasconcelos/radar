@@ -33,7 +33,7 @@ const (
 	costMaxLimit        = 100
 	costCallBudget      = 45 * time.Second
 	costHourlyExplainer = "Costs are hourly rates."
-	costRateExplainer   = costHourlyExplainer + " projectedMonthlyCost = hourlyCost x 730."
+	costRateExplainer   = costHourlyExplainer + " Monthly projections = the corresponding hourly rate x 730."
 	// The denominator is allocation — max(requested, observed) — not the
 	// request, so the ratio caps at 100 and a low value is not by itself a
 	// defect. Neither fact is derivable from the numbers in the response.
@@ -57,10 +57,10 @@ const (
 	costPinnedViewFmt               = "Totals cover only namespace %s, which radar is pinned to with --namespace-scope — not the whole cluster, and not a limit on this identity's permissions."
 	costWasteExplainer              = "unallocatedCost is node compute capacity no workload requested or used; unusedRequestCost is capacity requested but not used. The two do not overlap, and neither is money saved until nodes are actually removed. unusedRequestCost covers CPU and memory requests only, so idle GPUs are not in it."
 	costWorkloadNotFoundRemediation = "The cost source answered for this namespace but reported no allocation for the requested workload. Check the kind and name, or call view=workloads without kind/name to see what the namespace does have."
-	costTrendSeriesExplainer        = "Series values are hourly rates at each point, not cumulative spend. Each series and the top-level total carry start, end and changePercent so growth can be read without summing the points. changePercent spans the total's from..to, which is shorter than range when the source retains less history."
+	costTrendSeriesExplainer        = "Series values are hourly rates at each point, not cumulative spend. Each series and the top-level trendTotal carry startHourlyCost, endHourlyCost and changePercent so growth can be read without summing the points. changePercent spans the trendTotal's from..to, which is shorter than range when the source retains less history."
 	// The cost source caps the series and sums the remainder into one named
 	// "other". Undeclared, an agent reads the few it got as the whole cluster.
-	costTrendCappedFmt = "This response carries %d series for %d namespaces: the cost source keeps the highest-spending namespaces and sums the rest into a series named other. total covers every namespace, so it is a whole-scope figure even though the series are not."
+	costTrendCappedFmt = "This response carries %d named series plus a remainder for %d namespaces: the cost source keeps the highest-spending namespaces and sums the rest into a type=remainder series. trendTotal covers every namespace, so it is a whole-scope figure even though the series are not."
 )
 
 // reasonWorkloadNotFound is Radar's own reason: the cost source was healthy and
@@ -77,30 +77,25 @@ func roundHourly(v float64) float64  { return math.Round(v*1e4) / 1e4 }
 func roundMonthly(v float64) float64 { return math.Round(v*100) / 100 }
 
 type getCostInput struct {
-	View      string `json:"view,omitempty" jsonschema:"summary (default) for cluster totals plus per-namespace spend, workloads for one namespace broken down by workload (requires namespace), nodes for per-node spend, trend for spend over time"`
-	Namespace string `json:"namespace,omitempty" jsonschema:"required for view=workloads; filters summary and trend to one namespace"`
-	Range     string `json:"range,omitempty" jsonschema:"trend only: 6h, 24h (default), or 7d"`
-	Limit     int    `json:"limit,omitempty" jsonschema:"max rows for summary/workloads/nodes (default 20, max 100)"`
-	Kind      string `json:"kind,omitempty" jsonschema:"with view=workloads only: return just this workload (Deployment, StatefulSet, DaemonSet, ...) instead of the namespace's top spenders; requires name"`
-	Name      string `json:"name,omitempty" jsonschema:"with view=workloads only: the workload name; requires kind"`
+	IncludePoints *bool  `json:"include_points,omitempty" jsonschema:"trend only: include raw time-series points (default false); summaries are always returned"`
+	View          string `json:"view,omitempty" jsonschema:"summary (default) for cluster totals plus per-namespace spend, workloads for one namespace broken down by workload (requires namespace), nodes for per-node spend, trend for spend over time"`
+	Namespace     string `json:"namespace,omitempty" jsonschema:"required for view=workloads; filters summary and trend to one namespace"`
+	Range         string `json:"range,omitempty" jsonschema:"trend only: 6h, 24h (default), or 7d"`
+	Limit         int    `json:"limit,omitempty" jsonschema:"max rows for summary/workloads/nodes (default 20, max 100)"`
+	Kind          string `json:"kind,omitempty" jsonschema:"with view=workloads only: return just this workload (Deployment, StatefulSet, DaemonSet, ...) instead of the namespace's top spenders; requires name"`
+	Name          string `json:"name,omitempty" jsonschema:"workloads: exact workload name, requires kind; nodes: exact node name"`
 }
 
 type costTotals struct {
-	HourlyCost float64 `json:"hourlyCost"`
-	// HourlyCostBasis, AllocatedCost, UnallocatedCost and UnusedRequestCost
-	// are set by view=summary only. The basis matters because the Prometheus
-	// path can report node cost as hourlyCost, which already contains the
-	// unallocated capacity an agent would otherwise add on top.
-	HourlyCostBasis      string        `json:"hourlyCostBasis,omitempty"`
-	ProjectedMonthlyCost float64       `json:"projectedMonthlyCost"`
-	AllocatedCost        *float64      `json:"allocatedCost,omitempty"`
-	UnallocatedCost      *nullableCost `json:"unallocatedCost,omitempty"`
-	UnusedRequestCost    *float64      `json:"unusedRequestCost,omitempty"`
-	StorageCost          float64       `json:"storageCost,omitempty"`
-	NetworkCost          float64       `json:"networkCost,omitempty"`
-	// Only summary measures it: absent elsewhere, null on a summary without
-	// usage evidence, and a fully idle cluster's 0% still survives the wire.
-	ClusterEfficiency *nullableCost `json:"clusterEfficiency,omitempty"`
+	AllocatedHourlyCost        *float64      `json:"allocatedHourlyCost,omitempty"`
+	AllocatedMonthlyProjection *float64      `json:"allocatedMonthlyProjection,omitempty"`
+	NodeHourlyCost             *nullableCost `json:"nodeHourlyCost,omitempty"`
+	NodeMonthlyProjection      *nullableCost `json:"nodeMonthlyProjection,omitempty"`
+	UnallocatedCost            *nullableCost `json:"unallocatedCost,omitempty"`
+	UnusedRequestCost          *float64      `json:"unusedRequestCost,omitempty"`
+	StorageCost                float64       `json:"storageCost,omitempty"`
+	NetworkCost                float64       `json:"networkCost,omitempty"`
+	ClusterEfficiency          *nullableCost `json:"clusterEfficiency,omitempty"`
 }
 
 // nullableCost marshals as a number or an explicit null. A summary that could
@@ -118,8 +113,6 @@ func (c nullableCost) MarshalJSON() ([]byte, error) {
 
 type namespaceCostRow struct {
 	Name        string  `json:"name"`
-	Kind        string  `json:"kind,omitempty"`
-	Namespace   string  `json:"namespace,omitempty"`
 	HourlyCost  float64 `json:"hourlyCost"`
 	CPUCost     float64 `json:"cpuCost"`
 	MemoryCost  float64 `json:"memoryCost"`
@@ -166,34 +159,33 @@ type nodePoolRef struct {
 }
 
 // costTrendSummary is the question an agent asks of a trend — did spend grow —
-// answered server-side. The raw points remain, but summing 9 series across 25
-// timestamps to get there is work the response can do once.
+// answered server-side without requiring raw points.
 type costTrendSummary struct {
 	// Basis names what the trend sums, which differs by source, so the total
 	// can be compared with the right summary field.
-	Basis     string `json:"basis,omitempty"`
-	Namespace string `json:"namespace,omitempty"`
+	Basis string `json:"basis,omitempty"`
 	// From and To are the first and last points, which span less than the
 	// requested range when the source retains less history.
 	From          string   `json:"from"`
 	To            string   `json:"to"`
-	Start         float64  `json:"start"`
-	End           float64  `json:"end"`
-	ChangePercent *float64 `json:"changePercent,omitempty"`
-	Points        int      `json:"points"`
+	Start         float64  `json:"startHourlyCost"`
+	End           float64  `json:"endHourlyCost"`
+	ChangePercent *float64 `json:"changePercent"`
+	Points        int      `json:"sampleCount"`
 }
 
 type costTrendPoint struct {
 	Timestamp string  `json:"timestamp"`
-	Value     float64 `json:"value"`
+	Value     float64 `json:"hourlyCost"`
 }
 
 type costTrendSeriesDTO struct {
-	Namespace     string           `json:"namespace"`
-	Start         float64          `json:"start"`
-	End           float64          `json:"end"`
-	ChangePercent *float64         `json:"changePercent,omitempty"`
-	DataPoints    []costTrendPoint `json:"dataPoints"`
+	Type          string           `json:"type"`
+	Namespace     string           `json:"namespace,omitempty"`
+	Start         float64          `json:"startHourlyCost"`
+	End           float64          `json:"endHourlyCost"`
+	ChangePercent *float64         `json:"changePercent"`
+	DataPoints    []costTrendPoint `json:"dataPoints,omitempty"`
 }
 
 type costResponse struct {
@@ -213,7 +205,8 @@ type costResponse struct {
 	Workloads      []workloadCostRow    `json:"workloads,omitempty"`
 	Nodes          []nodeCostRow        `json:"nodes,omitempty"`
 	Series         []costTrendSeriesDTO `json:"series,omitempty"`
-	TrendTotal     *costTrendSummary    `json:"total,omitempty"`
+	TrendTotal     *costTrendSummary    `json:"trendTotal,omitempty"`
+	SeriesCapped   bool                 `json:"seriesCapped,omitempty"`
 	Truncated      bool                 `json:"truncated,omitempty"`
 	// Row counts accompany truncated: without them the rows cannot be
 	// reconciled against the totals, and "top 20 of N" is unsayable.
@@ -222,8 +215,8 @@ type costResponse struct {
 	NodeCount      int `json:"nodeCount,omitempty"`
 	// NodesNotInCluster counts nodes the cost source still reports that the
 	// cluster no longer has, which is why their rows carry no pool.
-	NodesNotInCluster int    `json:"nodesNotInCluster,omitempty"`
-	Guidance          string `json:"guidance,omitempty"`
+	NodesNotInCluster int      `json:"nodesNotInCluster,omitempty"`
+	Guidance          []string `json:"guidance,omitempty"`
 }
 
 func handleGetCost(ctx context.Context, _ *mcp.CallToolRequest, input getCostInput) (*mcp.CallToolResult, any, error) {
@@ -243,12 +236,18 @@ func handleGetCost(ctx context.Context, _ *mcp.CallToolRequest, input getCostInp
 	input.Range = strings.TrimSpace(input.Range)
 
 	limit := input.Limit
-	if limit <= 0 {
+	if limit < 0 {
+		return nil, nil, errors.New("limit must be between 1 and 100")
+	}
+	if limit == 0 {
 		limit = costDefaultLimit
 	}
 
 	// Silently dropping a parameter the caller set lets an agent believe a
 	// filter applied. Reject the combination instead.
+	if view != "trend" && input.IncludePoints != nil {
+		return nil, nil, fmt.Errorf("include_points applies only to view=trend, not view=%s", view)
+	}
 	if view != "trend" && input.Range != "" {
 		return nil, nil, fmt.Errorf("range applies only to view=trend, not view=%s", view)
 	}
@@ -262,10 +261,10 @@ func handleGetCost(ctx context.Context, _ *mcp.CallToolRequest, input getCostInp
 	}
 	input.Kind = strings.TrimSpace(input.Kind)
 	input.Name = strings.TrimSpace(input.Name)
-	if view != "workloads" && (input.Kind != "" || input.Name != "") {
-		return nil, nil, fmt.Errorf("kind and name apply only to view=workloads, not view=%s", view)
+	if view != "workloads" && (input.Kind != "" || (input.Name != "" && view != "nodes")) {
+		return nil, nil, fmt.Errorf("kind applies only to view=workloads; name applies to workloads or nodes, not view=%s", view)
 	}
-	if (input.Kind == "") != (input.Name == "") {
+	if view == "workloads" && (input.Kind == "") != (input.Name == "") {
 		return nil, nil, errors.New("kind and name go together — pass both to target one workload, or neither to rank the namespace's top spenders")
 	}
 
@@ -306,7 +305,7 @@ func costView(ctx context.Context, input getCostInput, view string, limit int) (
 		if strings.TrimSpace(input.Namespace) != "" {
 			return costResponse{}, fmt.Errorf("view=nodes is cluster-wide and takes no namespace — use view=summary with a namespace, or view=workloads, for namespace-scoped spend")
 		}
-		return costNodesView(ctx, limit)
+		return costNodesView(ctx, input.Name, limit)
 	case "trend":
 		if !pkgopencost.SupportedTrendRange(input.Range) {
 			return costResponse{}, fmt.Errorf("unsupported range %q — use 6h, 24h (default), or 7d; anything else would silently return 24h", input.Range)
@@ -382,9 +381,13 @@ func costSummaryView(ctx context.Context, input getCostInput, limit int) (costRe
 		return resp, nil
 	}
 
-	resp.Totals = hourlyTotals(summary.TotalHourlyCost)
-	resp.Totals.HourlyCostBasis = summary.HourlyCostBasis
-	resp.Totals.AllocatedCost = measuredValue(summary.TotalAllocatedCost, false)
+	resp.Totals = hourlyTotals(summary.TotalAllocatedCost)
+	resp.Totals.NodeHourlyCost = &nullableCost{value: summary.TotalNodeCost}
+	resp.Totals.NodeMonthlyProjection = &nullableCost{}
+	if summary.TotalNodeCost != nil {
+		monthly := roundMonthly(*summary.TotalNodeCost * monthlyProjectionHours)
+		resp.Totals.NodeMonthlyProjection.value = &monthly
+	}
 	resp.Totals.UnallocatedCost = &nullableCost{value: summary.TotalUnallocatedCost}
 	resp.Totals.UnusedRequestCost = measuredUnusedRequestCost(summary)
 	resp.Totals.StorageCost = roundHourly(summary.TotalStorageCost)
@@ -399,8 +402,6 @@ func costSummaryView(ctx context.Context, input getCostInput, limit int) (costRe
 	for _, row := range rows {
 		resp.Namespaces = append(resp.Namespaces, namespaceCostRow{
 			Name:              row.Name,
-			Kind:              row.Kind,
-			Namespace:         row.Namespace,
 			HourlyCost:        roundHourly(row.HourlyCost),
 			CPUCost:           roundHourly(row.CPUCost),
 			MemoryCost:        roundHourly(row.MemoryCost),
@@ -411,8 +412,11 @@ func costSummaryView(ctx context.Context, input getCostInput, limit int) (costRe
 			UsageUnavailable:  row.UsageUnavailable,
 		})
 	}
-	resp.Guidance = costGuidance(summary.NamespaceScope, strings.TrimSpace(input.Namespace)) + " " + costEfficiencyExplainer +
-		partialUsageGuidance(summary.Namespaces) + " " + costSplitGuidance(summary, len(summary.NamespaceScope) > 0)
+	resp.Guidance = append(costGuidance(summary.NamespaceScope, strings.TrimSpace(input.Namespace)), costEfficiencyExplainer)
+	if partial := partialUsageGuidance(summary.Namespaces); partial != "" {
+		resp.Guidance = append(resp.Guidance, strings.TrimSpace(partial))
+	}
+	resp.Guidance = append(resp.Guidance, costSplitGuidance(summary, len(summary.NamespaceScope) > 0)...)
 	return resp, nil
 }
 
@@ -423,17 +427,13 @@ func measuredUnusedRequestCost(summary *pkgopencost.CostSummary) *float64 {
 	return measuredValue(summary.TotalUnusedRequestCost, allUsageUnavailable(summary.Namespaces))
 }
 
-// costSplitGuidance says what hourlyCost contains, because the Prometheus path
-// can report node cost there, and why unallocatedCost may be null.
-func costSplitGuidance(summary *pkgopencost.CostSummary, scoped bool) string {
-	var parts []string
-	if summary.HourlyCostBasis == pkgopencost.HourlyCostBasisNodeCapacity {
-		parts = append(parts, "hourlyCost is total node compute cost here (hourlyCostBasis=node_capacity): it already contains unallocatedCost and does not include storageCost, so do not add unallocatedCost to it. projectedMonthlyCost has the same basis.")
-	} else {
-		parts = append(parts, "hourlyCost is allocated spend (hourlyCostBasis=allocated) and does not include unallocatedCost; neither does projectedMonthlyCost, so it is not whole-cluster node spend.")
+func costSplitGuidance(summary *pkgopencost.CostSummary, scoped bool) []string {
+	parts := []string{"allocatedHourlyCost covers workload allocation; nodeHourlyCost independently measures node capacity and already includes unallocatedCost. Do not add them together. Storage and GPU coverage can differ, so allocation can exceed node cost."}
+	if summary.TotalNodeCost == nil {
+		parts = append(parts, "nodeHourlyCost and nodeMonthlyProjection are null: node capacity cost was not measured for this scope/source.")
 	}
 	if summary.Source == "prometheus" {
-		parts = append(parts, "On this source namespace rows and allocatedCost count CPU, memory and storage allocation only; GPU and network cost are not in them.")
+		parts = append(parts, "On this source namespace rows and allocatedHourlyCost count CPU, memory and storage allocation only; GPU and network cost are not in them.")
 	}
 	parts = append(parts, costWasteExplainer)
 	if summary.TotalUnallocatedCost == nil {
@@ -443,7 +443,7 @@ func costSplitGuidance(summary *pkgopencost.CostSummary, scoped bool) string {
 			parts = append(parts, "unallocatedCost is null: the cost source did not report unallocated node capacity, or GPU spend on the nodes keeps it from being separated — not the same as none.")
 		}
 	}
-	return strings.Join(parts, " ")
+	return parts
 }
 
 // partialUsageGuidance fires when only SOME rows carry usage evidence. The
@@ -559,7 +559,7 @@ func costWorkloadsView(ctx context.Context, input getCostInput, limit int) (cost
 			resp.Reason = reasonWorkloadNotFound
 			resp.Remediation = costWorkloadNotFoundRemediation
 			resp.Totals = nil
-			resp.Guidance = costRateExplainer
+			resp.Guidance = []string{costRateExplainer}
 			return resp, nil
 		}
 	}
@@ -586,7 +586,7 @@ func costWorkloadsView(ctx context.Context, input getCostInput, limit int) (cost
 		// Narrowing the rows does not widen what the total sums.
 		totalsExplainer = costSelectedWorkloadTotalExplainer + " " + costWorkloadTotalExplainer
 	}
-	resp.Guidance = costRateExplainer + " " + totalsExplainer + " " + costEfficiencyExplainer
+	resp.Guidance = []string{costRateExplainer, totalsExplainer, costEfficiencyExplainer}
 	return resp, nil
 }
 
@@ -619,7 +619,7 @@ func scopedEmptyResult(reason string, scope []string) bool {
 	return reason == pkgopencost.ReasonNoMetrics && len(scope) > 0
 }
 
-func costNodesView(ctx context.Context, limit int) (costResponse, error) {
+func costNodesView(ctx context.Context, name string, limit int) (costResponse, error) {
 	base := costResponse{View: "nodes"}
 
 	if !canReadClusterScopedKind(ctx, "Node", "", "list") {
@@ -663,14 +663,27 @@ func costNodesView(ctx context.Context, limit int) (costResponse, error) {
 		return resp, nil
 	}
 
+	selected := nodes.Nodes
+	if name != "" {
+		selected = nil
+		for _, row := range nodes.Nodes {
+			if row.Name == name {
+				selected = append(selected, row)
+			}
+		}
+		if len(selected) == 0 {
+			return base.unavailable("node_not_found", currency, nodes.Source), nil
+		}
+	}
 	var total float64
-	for _, row := range nodes.Nodes {
+	for _, row := range selected {
 		total += row.HourlyCost
 	}
-	resp.Totals = hourlyTotals(total)
-	resp.NodeCount = len(nodes.Nodes)
+	monthly := roundMonthly(total * monthlyProjectionHours)
+	resp.Totals = &costTotals{NodeHourlyCost: &nullableCost{value: &total}, NodeMonthlyProjection: &nullableCost{value: &monthly}}
+	resp.NodeCount = len(selected)
 
-	rows, truncated := truncateRows(nodes.Nodes, limit)
+	rows, truncated := truncateRows(selected, limit)
 	resp.Truncated = truncated
 	resp.Nodes = make([]nodeCostRow, 0, len(rows))
 	for _, row := range rows {
@@ -681,17 +694,20 @@ func costNodesView(ctx context.Context, limit int) (costResponse, error) {
 			HourlyCost:   roundHourly(row.HourlyCost),
 		})
 	}
-	resp.NodesNotInCluster = labelNodeRows(resp.Nodes, nodes.Nodes, cachedNode)
+	resp.NodesNotInCluster = labelNodeRows(resp.Nodes, selected, cachedNode)
 	resp.Guidance = nodeCostGuidance(resp.NodesNotInCluster)
+	if name != "" {
+		resp.Guidance = append(resp.Guidance, "Totals cover only the selected node; omit name to get the whole fleet.")
+	}
 	return resp, nil
 }
 
-func nodeCostGuidance(nodesNotInCluster int) string {
-	guidance := costRateExplainer + " Per-node CPU and memory components are deliberately not reported: the two cost sources define them differently, so use hourlyCost with instanceType to compare nodes. " + costNodeLabelsExplainer
+func nodeCostGuidance(nodesNotInCluster int) []string {
+	guidance := []string{costRateExplainer, "Per-node CPU and memory components are deliberately not reported: the two cost sources define them differently, so use hourlyCost with instanceType to compare nodes.", costNodeLabelsExplainer}
 	if nodesNotInCluster > 0 {
 		// Each row is a node's rate while it ran, so a node replaced inside the
 		// window and its replacement are both in the sum.
-		guidance += " totals sum every node the source reported over the window, including the nodesNotInCluster, so they overstate the current run rate after node churn."
+		guidance = append(guidance, "Totals sum every selected node the source reported over the window, including the nodesNotInCluster, so they overstate the current run rate after node churn.")
 	}
 	return guidance
 }
@@ -798,15 +814,21 @@ func costTrendView(ctx context.Context, input getCostInput) (costResponse, error
 		}
 		return resp, nil
 	}
-	resp.Series, resp.TrendTotal = summarizeTrend(trend.Series)
-	resp.NamespaceCount = trend.NamespaceCount
-	if capped, disclosure := trendCapDisclosure(len(resp.Series), trend.NamespaceCount); capped {
-		resp.Truncated = true
-		resp.Guidance += " " + disclosure
+	resp.Series, resp.TrendTotal = summarizeTrend(trend.Series, input.IncludePoints != nil && *input.IncludePoints)
+	if input.IncludePoints == nil || !*input.IncludePoints {
+		resp.Guidance = append(resp.Guidance, "Raw time-series points are omitted. Call get_cost again with view=trend, the same namespace/range, and include_points=true to include raw points.")
 	}
-	resp.Guidance += " " + costTrendSeriesExplainer
+	resp.NamespaceCount = trend.NamespaceCount
+	for _, series := range trend.Series {
+		resp.SeriesCapped = resp.SeriesCapped || series.Remainder
+	}
+	if resp.SeriesCapped {
+		resp.Guidance = append(resp.Guidance, fmt.Sprintf(costTrendCappedFmt, len(resp.Series)-1, trend.NamespaceCount))
+	}
+	resp.Guidance = append(resp.Guidance, costTrendSeriesExplainer)
 	if resp.TrendTotal != nil {
-		resp.TrendTotal.Basis, resp.Guidance = trendBasis(connection.Source), resp.Guidance+" "+trendBasisExplainer(connection.Source)
+		resp.TrendTotal.Basis = trendBasis(connection.Source)
+		resp.Guidance = append(resp.Guidance, trendBasisExplainer(connection.Source))
 	}
 	return resp, nil
 }
@@ -827,26 +849,14 @@ func trendBasis(source opencost.Source) string {
 
 func trendBasisExplainer(source opencost.Source) string {
 	if trendBasis(source) == trendBasisNamespaceAllocation {
-		return "total.basis is namespace_allocation: the same components as view=summary totals.allocatedCost, idle excluded. Small differences come from window alignment — the summary covers the latest window, the trend's last point its last bucket."
+		return "trendTotal.basis is namespace_allocation: the same components as view=summary totals.allocatedHourlyCost, idle excluded. Small differences come from window alignment — the summary covers the latest window, the trend's last point its last bucket."
 	}
-	return "total.basis is cpu_memory_allocation: CPU and memory allocation only, excluding storage and unallocated node capacity. Compare total.end with view=summary totals.allocatedCost minus totals.storageCost, not with totals.hourlyCost."
-}
-
-// trendCapDisclosure reports whether the cost source's series cap dropped
-// namespaces, and the sentence that says so. Decided by counting, never by
-// matching the aggregate's name: "other" is a legal namespace name, and a
-// cluster that has one must not read as capped when it is not.
-func trendCapDisclosure(seriesCount, namespaceCount int) (bool, string) {
-	if namespaceCount <= seriesCount {
-		return false, ""
-	}
-	return true, fmt.Sprintf(costTrendCappedFmt, seriesCount, namespaceCount)
+	return "trendTotal.basis is cpu_memory_allocation: CPU and memory allocation only, excluding storage and unallocated node capacity. Compare trendTotal.endHourlyCost with view=summary totals.allocatedHourlyCost minus totals.storageCost, not with totals.nodeHourlyCost."
 }
 
 // summarizeTrend answers "is spend growing" in the response. The raw points
-// stay, but an agent should not have to sum nine series across 25 timestamps
-// to read a direction, and it cannot do that arithmetic reliably.
-func summarizeTrend(series []pkgopencost.CostTrendSeries) ([]costTrendSeriesDTO, *costTrendSummary) {
+// are opt-in; the summaries always use all timestamps.
+func summarizeTrend(series []pkgopencost.CostTrendSeries, includePoints bool) ([]costTrendSeriesDTO, *costTrendSummary) {
 	if len(series) == 0 {
 		return nil, nil
 	}
@@ -866,13 +876,21 @@ func summarizeTrend(series []pkgopencost.CostTrendSeries) ([]costTrendSeriesDTO,
 
 	out := make([]costTrendSeriesDTO, 0, len(series))
 	for _, s := range series {
-		dto := costTrendSeriesDTO{Namespace: s.Namespace, DataPoints: make([]costTrendPoint, 0, len(s.DataPoints))}
+		dto := costTrendSeriesDTO{Type: "namespace", Namespace: s.Namespace}
+		if s.Remainder {
+			dto.Type, dto.Namespace = "remainder", ""
+		}
+		if includePoints {
+			dto.DataPoints = make([]costTrendPoint, 0, len(s.DataPoints))
+		}
 		byTimestamp := make(map[int64]float64, len(s.DataPoints))
 		for _, point := range s.DataPoints {
-			dto.DataPoints = append(dto.DataPoints, costTrendPoint{
-				Timestamp: time.Unix(point.Timestamp, 0).UTC().Format(time.RFC3339),
-				Value:     roundHourly(point.Value),
-			})
+			if includePoints {
+				dto.DataPoints = append(dto.DataPoints, costTrendPoint{
+					Timestamp: time.Unix(point.Timestamp, 0).UTC().Format(time.RFC3339),
+					Value:     roundHourly(point.Value),
+				})
+			}
 			byTimestamp[point.Timestamp] = point.Value
 		}
 		// Read at the range's own endpoints, absent as zero: a namespace that
@@ -960,10 +978,8 @@ func (r costResponse) unavailable(reason, currency, source string) costResponse 
 // hourlyTotals keeps the monthly projection on one multiply: the constant must
 // not disagree with the Costs UI, and four independent call sites drift.
 func hourlyTotals(hourly float64) *costTotals {
-	return &costTotals{
-		HourlyCost:           roundHourly(hourly),
-		ProjectedMonthlyCost: roundMonthly(hourly * monthlyProjectionHours),
-	}
+	monthly := roundMonthly(hourly * monthlyProjectionHours)
+	return &costTotals{AllocatedHourlyCost: measuredValue(hourly, false), AllocatedMonthlyProjection: &monthly}
 }
 
 // measuredValue separates "used nothing" from "we could not measure".
@@ -989,6 +1005,8 @@ func costRemediation(reason string) string {
 		// The pinned namespace is not named: this caller was denied, and may have
 		// no access to it either.
 		return "radar is pinned to a single namespace with --namespace-scope, so it cannot report on the requested scope. This is a startup flag, not a permissions problem — restart radar without --namespace-scope for cluster-wide cost."
+	case "node_not_found":
+		return "Check the node name, or call view=nodes without name to list nodes reported by the cost source."
 	case reasonWorkloadNotFound:
 		return costWorkloadNotFoundRemediation
 	case reasonCostDeadlineExceeded:
@@ -1025,26 +1043,26 @@ func costRemediation(reason string) string {
 // — reporting an explicit namespace filter as a permission limit would have an
 // agent tell the user their access is restricted when they simply asked for one
 // namespace.
-func costGuidance(scope []string, requestedNamespace string) string {
+func costGuidance(scope []string, requestedNamespace string) []string {
 	return withScopeGuidance(costRateExplainer, scope, requestedNamespace)
 }
 
 // costTrendGuidance leaves out the monthly projection: trend carries no totals.
-func costTrendGuidance(scope []string, requestedNamespace string) string {
+func costTrendGuidance(scope []string, requestedNamespace string) []string {
 	return withScopeGuidance(costHourlyExplainer, scope, requestedNamespace)
 }
 
-func withScopeGuidance(rate string, scope []string, requestedNamespace string) string {
+func withScopeGuidance(rate string, scope []string, requestedNamespace string) []string {
 	if len(scope) == 0 {
-		return rate
+		return []string{rate}
 	}
 	if requestedNamespace != "" {
-		return rate + " " + fmt.Sprintf(costRequestedViewFmt, requestedNamespace)
+		return []string{rate, fmt.Sprintf(costRequestedViewFmt, requestedNamespace)}
 	}
 	// The pin is checked before RBAC: both narrow the scope identically, and
 	// only the pin is knowable from configuration rather than from the answer.
 	if pinned, ok := NamespacePinned(); ok {
-		return rate + " " + fmt.Sprintf(costPinnedViewFmt, pinned)
+		return []string{rate, fmt.Sprintf(costPinnedViewFmt, pinned)}
 	}
-	return rate + " " + fmt.Sprintf(costPartialViewFmt, len(scope))
+	return []string{rate, fmt.Sprintf(costPartialViewFmt, len(scope))}
 }

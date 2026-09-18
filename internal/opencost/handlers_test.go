@@ -184,12 +184,16 @@ func TestFilterCostSummaryDropsClusterLevelUnallocatedCost(t *testing.T) {
 		TotalHourlyCost:      20,
 		HourlyCostBasis:      pkgopencost.HourlyCostBasisNodeCapacity,
 		TotalUnallocatedCost: &unallocated,
+		TotalNodeCost:        &unallocated,
 		Namespaces: []pkgopencost.NamespaceCost{
 			{Name: "allowed", HourlyCost: 3, CPUCost: 2, MemoryCost: 1, CPUUsageCost: 1, MemoryUsageCost: 0.5, IdleCost: 1.5},
 			{Name: "private", HourlyCost: 8, CPUCost: 4, MemoryCost: 4, IdleCost: 2},
 		},
 	}
 	FilterCostSummary(resp, []string{"allowed"})
+	if resp.TotalNodeCost != nil {
+		t.Error("scoped summary leaked cluster node cost")
+	}
 	if resp.TotalUnallocatedCost != nil {
 		t.Errorf("TotalUnallocatedCost=%v, want nil on a scoped summary", *resp.TotalUnallocatedCost)
 	}

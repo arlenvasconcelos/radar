@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"sort"
 	"strings"
@@ -40,13 +41,14 @@ const (
 )
 
 type getRightsizingInput struct {
-	Scope           string   `json:"scope" jsonschema:"required. workload for one workload (needs kind, name, namespace) - cheap and precise. namespace scans one namespace (needs namespace). cluster scans every Deployment/StatefulSet/DaemonSet and runs 7-day range queries, taking up to 45s - call it once to find candidates, then drill in with scope=workload"`
-	Kind            string   `json:"kind,omitempty" jsonschema:"for scope=workload: Deployment, StatefulSet, or DaemonSet"`
-	Name            string   `json:"name,omitempty" jsonschema:"for scope=workload: the workload name"`
-	Namespace       string   `json:"namespace,omitempty" jsonschema:"one namespace: required for scope=workload, and for scope=namespace unless namespaces is set; rejected for scope=cluster"`
-	Namespaces      []string `json:"namespaces,omitempty" jsonschema:"for scope=namespace only, instead of namespace: scan several namespaces in one call. The 45s budget is shared, so this saves calls, not scan time"`
-	IncludeBalanced bool     `json:"include_balanced,omitempty" jsonschema:"also return correctly-sized and unevidenced containers (default false, which returns only oversized, under_requested, and missing_request rows and reports the rest as omitted counts). Ignored for scope=workload, which returns every row of the named workload"`
-	Limit           int      `json:"limit,omitempty" jsonschema:"max workloads returned, ranked by classification then replica-weighted impact (default 20, max 100). Rejected for scope=workload"`
+	Classification string   `json:"classification,omitempty" jsonschema:"scan only: reduction, increase, review, need_data, or in_range; filters before limit and returns all rows of matching workloads; does not reduce scan effort"`
+	Scope          string   `json:"scope" jsonschema:"required. workload for one workload (needs kind, name, namespace) - cheap and precise. namespace scans one namespace (needs namespace). cluster scans every Deployment/StatefulSet/DaemonSet and runs 7-day range queries, taking up to 45s - call it once to find candidates, then drill in with scope=workload"`
+	Kind           string   `json:"kind,omitempty" jsonschema:"for scope=workload: Deployment, StatefulSet, or DaemonSet"`
+	Name           string   `json:"name,omitempty" jsonschema:"for scope=workload: the workload name"`
+	Namespace      string   `json:"namespace,omitempty" jsonschema:"one namespace: required for scope=workload, and for scope=namespace unless namespaces is set; rejected for scope=cluster"`
+	Namespaces     []string `json:"namespaces,omitempty" jsonschema:"for scope=namespace only, instead of namespace: scan several namespaces in one call. The 45s budget is shared, so this saves calls, not scan time"`
+	IncludeAll     bool     `json:"include_all,omitempty" jsonschema:"also return correctly-sized and unevidenced containers (default false, which returns only oversized, under_requested, and missing_request rows and reports the rest as omitted counts). Ignored for scope=workload, which returns every row of the named workload"`
+	Limit          int      `json:"limit,omitempty" jsonschema:"max workloads returned, ranked by classification then replica-weighted impact (default 20, max 100). Rejected for scope=workload"`
 }
 
 type rightsizingRowDTO struct {
@@ -62,8 +64,8 @@ type rightsizingRowDTO struct {
 	RecommendedRequest   *string `json:"recommendedRequest"`
 	Observed             string  `json:"observed,omitempty"`
 	ObservedStatistic    string  `json:"observedStatistic,omitempty"`
-	Peak                 string  `json:"peak,omitempty"`
-	Coverage             float64 `json:"coverage"`
+	Peak                 string  `json:"p99Usage,omitempty"`
+	Coverage             float64 `json:"sampleCoverage"`
 	RecommendationReason string  `json:"recommendationReason,omitempty"`
 	ReductionLimited     bool    `json:"reductionLimited,omitempty"`
 	// Nested and named apart from recommendedRequest so it reads as the end
@@ -76,7 +78,7 @@ type rightsizingRowDTO struct {
 	WindowOOMEvidence    bool                     `json:"windowOomEvidence,omitempty"`
 	OOMEvidenceAvailable *bool                    `json:"oomEvidenceAvailable,omitempty"`
 	ThrottleAvailable    *bool                    `json:"throttleAvailable,omitempty"`
-	ThrottleRatio        *string                  `json:"throttleRatio,omitempty"`
+	ThrottleRatio        *float64                 `json:"throttlePercent,omitempty"`
 	LimitConflict        bool                     `json:"limitConflict,omitempty"`
 	// The verdict travels with the recommendation. Its absence from impact is a
 	// negative signal a reader has to go looking for; this is the positive one.
@@ -95,17 +97,24 @@ type excludedNamespace struct {
 	Reason string `json:"reason"`
 }
 
+type rightsizingRequestDelta struct {
+	CPU    string `json:"cpu,omitempty"`
+	Memory string `json:"memory,omitempty"`
+}
+
 type rightsizingWorkloadDTO struct {
-	Kind      string `json:"kind"`
-	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
+	LiveInventoryUnavailable bool                     `json:"liveInventoryUnavailable,omitempty"`
+	RequestDelta             *rightsizingRequestDelta `json:"requestDelta,omitempty"`
+	Kind                     string                   `json:"kind"`
+	Namespace                string                   `json:"namespace"`
+	Name                     string                   `json:"name"`
 	// Replicas is what turns a per-container recommendation into cluster
 	// impact, so it is emitted even when zero rather than omitted.
 	Replicas       int                              `json:"replicas"`
 	ScaledToZero   bool                             `json:"scaledToZero,omitempty"`
 	ManagedBy      *prometheuspkg.WorkloadManager   `json:"managedBy,omitempty"`
 	Classification prometheuspkg.RightsizingClass   `json:"classification,omitempty"`
-	Impact         *prometheuspkg.RightsizingImpact `json:"impact,omitempty"`
+	Impact         *prometheuspkg.RightsizingImpact `json:"-"`
 	Rows           []rightsizingRowDTO              `json:"rows"`
 	// rankKey breaks impact ties on identity so repeated scans return the same
 	// order; an agent comparing two runs would otherwise read reshuffling as
@@ -144,7 +153,7 @@ type rightsizingResponse struct {
 	State          prometheuspkg.RightsizingScanState `json:"state"`
 	Window         string                             `json:"window"`
 	Source         string                             `json:"source,omitempty"`
-	ScannedAt      string                             `json:"scannedAt,omitempty"`
+	ScannedAt      string                             `json:"evaluatedAt,omitempty"`
 	Namespace      string                             `json:"namespace,omitempty"`
 	NamespaceScope []string                           `json:"namespaceScope,omitempty"`
 	// Excluded requested namespaces are listed by name: a namespace dropped
@@ -164,12 +173,25 @@ type rightsizingResponse struct {
 	Reason                     string                                 `json:"reason,omitempty"`
 	Remediation                string                                 `json:"remediation,omitempty"`
 	Truncated                  bool                                   `json:"truncated,omitempty"`
-	TotalWorkloads             int                                    `json:"totalWorkloads,omitempty"`
-	Guidance                   string                                 `json:"guidance,omitempty"`
+	TotalWorkloads             *int                                   `json:"totalWorkloads,omitempty"`
+	Guidance                   []string                               `json:"guidance,omitempty"`
 }
 
 func handleGetRightsizing(ctx context.Context, _ *mcp.CallToolRequest, input getRightsizingInput) (*mcp.CallToolResult, any, error) {
 	scope := strings.ToLower(strings.TrimSpace(input.Scope))
+	if input.Classification != "" {
+		if scope == "workload" {
+			return nil, nil, errors.New("classification applies only to namespace and cluster scans")
+		}
+		switch prometheuspkg.RightsizingClass(input.Classification) {
+		case prometheuspkg.ClassReduction, prometheuspkg.ClassIncrease, prometheuspkg.ClassReview, prometheuspkg.ClassNeedData, prometheuspkg.ClassInRange:
+		default:
+			return nil, nil, errors.New("classification must be reduction, increase, review, need_data, or in_range")
+		}
+	}
+	if input.Limit < 0 {
+		return nil, nil, errors.New("limit must be between 1 and 100")
+	}
 
 	switch scope {
 	case "workload":
@@ -242,7 +264,7 @@ func rightsizingWorkloadScope(ctx context.Context, input getRightsizingInput) (*
 	// keepAll: the caller named one workload, so every row is the answer it
 	// asked for — a handful of rows, and omitting any of them invites the agent
 	// to report the remainder as the whole container set.
-	filtered := filterRightsizingRows(resp.Rows, input.IncludeBalanced, true, resp.Replicas, resp.ScaledToZero)
+	filtered := filterRightsizingRows(resp.Rows, input.IncludeAll, true, resp.Replicas, resp.ScaledToZero)
 	sampleAvailable := resp.SampleAvailable
 	impact := filtered.impact
 	pointQueryErrorsAtWarnings(filtered.rows)
@@ -255,17 +277,20 @@ func rightsizingWorkloadScope(ctx context.Context, input getRightsizingInput) (*
 		SampleAvailable: &sampleAvailable,
 		OwnerCoverage:   resp.OwnerCoverage,
 		Warnings:        resp.Warnings,
-		Reason:          resp.Reason,
+		Reason:          rightsizingReasonCode(resp.Reason),
+		ScannedAt:       time.Now().UTC().Format(time.RFC3339),
 		Workloads: []rightsizingWorkloadDTO{{
-			Kind:           resp.Kind,
-			Namespace:      resp.Namespace,
-			Name:           resp.Name,
-			Replicas:       resp.Replicas,
-			ScaledToZero:   resp.ScaledToZero,
-			ManagedBy:      resp.ManagedBy,
-			Classification: filtered.classification,
-			Impact:         &impact,
-			Rows:           filtered.rows,
+			Kind:                     resp.Kind,
+			Namespace:                resp.Namespace,
+			Name:                     resp.Name,
+			Replicas:                 resp.Replicas,
+			ScaledToZero:             resp.ScaledToZero,
+			ManagedBy:                resp.ManagedBy,
+			Classification:           filtered.classification,
+			Impact:                   &impact,
+			RequestDelta:             &rightsizingRequestDelta{CPU: impact.CPU, Memory: impact.Memory},
+			LiveInventoryUnavailable: filtered.liveInventoryUnavailable,
+			Rows:                     filtered.rows,
 		}},
 	}
 	out.State, out.Reason = workloadScopeState(sampleAvailable, filtered.incompleteEvidence, out.Warnings, out.Reason)
@@ -275,7 +300,7 @@ func rightsizingWorkloadScope(ctx context.Context, input getRightsizingInput) (*
 	out.Remediation = rightsizingRemediation("workload", out.Reason)
 	out.Guidance = rightsizingGuidance(rightsizingGuidanceInput{
 		state:             out.State,
-		includeBalanced:   input.IncludeBalanced,
+		includeAll:        input.IncludeAll,
 		scope:             "workload",
 		reason:            out.Reason,
 		omitted:           filtered.omitted,
@@ -411,7 +436,7 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 		out.ExcludedNamespaces = excluded
 	}
 	if !scan.ScannedAt.IsZero() {
-		out.ScannedAt = scan.ScannedAt.Format(time.RFC3339)
+		out.ScannedAt = scan.ScannedAt.UTC().Format(time.RFC3339)
 	}
 	out.SkippedDaemonSets, out.SkippedDaemonSetsTruncated = truncateRows(scan.Coverage.SkippedDaemonSets, skippedDaemonSetsMax)
 	out.Warnings = scan.Warnings
@@ -430,45 +455,11 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 		out.NamespacesWithoutWorkloads = namespacesWithoutWorkloads(scanned, scan.Workloads, scan.Coverage.SkippedDaemonSets)
 	}
 
-	ranked := make([]rightsizingWorkloadDTO, 0, len(scan.Workloads))
-	var omitted rightsizingOmissions
-	incompleteEvidence := false
-	for _, workload := range scan.Workloads {
-		filtered := filterRightsizingRows(workload.Rows, input.IncludeBalanced, false, workload.Replicas, workload.ScaledToZero)
-		omitted.add(filtered.omitted)
-		incompleteEvidence = incompleteEvidence || filtered.incompleteEvidence
-		if len(filtered.rows) == 0 {
-			continue
-		}
-		pointQueryErrorsAtWarnings(filtered.rows)
-		impact := filtered.impact
-		ranked = append(ranked, rightsizingWorkloadDTO{
-			Kind:           workload.Kind,
-			Namespace:      workload.Namespace,
-			Name:           workload.Name,
-			Replicas:       workload.Replicas,
-			ScaledToZero:   workload.ScaledToZero,
-			ManagedBy:      workload.ManagedBy,
-			Classification: filtered.classification,
-			Impact:         &impact,
-			Rows:           filtered.rows,
-			rankKey:        workload.Namespace + "/" + workload.Kind + "/" + workload.Name,
-		})
-	}
-	// Class first, then replica-weighted absolute change — the Rightsizing
-	// screen's ordering rule, applied to a different unit: the screen ranks
-	// each CONTAINER as its own entry while this tool returns workloads, so
-	// two containers' reductions add up here and the top-N can legitimately
-	// differ from the screen's. Same rule, coarser grain — not a parity bug.
-	sort.SliceStable(ranked, func(i, j int) bool {
-		return prometheuspkg.RightsizingRankLess(
-			ranked[i].Classification, *ranked[i].Impact, ranked[i].rankKey,
-			ranked[j].Classification, *ranked[j].Impact, ranked[j].rankKey,
-		)
-	})
+	ranked, omitted, incompleteEvidence := selectRightsizingWorkloads(scan.Workloads, input)
 	kept := rowGaps(ranked)
+	totalWorkloads := len(ranked)
+	out.TotalWorkloads = &totalWorkloads
 	if len(ranked) > limit {
-		out.TotalWorkloads = len(ranked)
 		ranked = ranked[:limit]
 		out.Truncated = true
 	}
@@ -509,7 +500,7 @@ func rightsizingScanScope(ctx context.Context, input getRightsizingInput, scope 
 	out.Remediation = rightsizingRemediation(scope, out.Reason)
 	out.Guidance = rightsizingGuidance(rightsizingGuidanceInput{
 		state:                      out.State,
-		includeBalanced:            input.IncludeBalanced,
+		includeAll:                 input.IncludeAll || input.Classification != "",
 		scope:                      scope,
 		reason:                     out.Reason,
 		namespaceScope:             clusterNamespaceScope(scope, out.NamespaceScope),
@@ -736,8 +727,9 @@ type filteredRows struct {
 	classification prometheuspkg.RightsizingClass
 	impact         prometheuspkg.RightsizingImpact
 	// incompleteEvidence reads the RAW rows, not what survived filtering, so
-	// include_balanced=true still reports partial when evidence was missing.
-	incompleteEvidence bool
+	// include_all=true still reports partial when evidence was missing.
+	incompleteEvidence       bool
+	liveInventoryUnavailable bool
 }
 
 // filterRightsizingRows drops correctly-sized rows unless the caller asked for
@@ -752,17 +744,18 @@ type filteredRows struct {
 // correctly sized, which is the row an agent is looking for. And a returned
 // container keeps its unevidenced rows: one failed query makes the container
 // need_data, and without that row the workload's class has no visible cause.
-func filterRightsizingRows(rows []prometheuspkg.RightsizingRow, includeBalanced, keepAll bool, replicas int, scaledToZero bool) filteredRows {
+func filterRightsizingRows(rows []prometheuspkg.RightsizingRow, includeAll, keepAll bool, replicas int, scaledToZero bool) filteredRows {
 	var result filteredRows
 	result.rows = make([]rightsizingRowDTO, 0, len(rows))
 	result.classification, result.impact = prometheuspkg.ClassifyWorkload(rows, replicas, scaledToZero)
 	keep := make([]bool, len(rows))
 	containerKept := map[string]bool{}
 	for i, row := range rows {
+		result.liveInventoryUnavailable = result.liveInventoryUnavailable || row.LiveInventoryUnavailable
 		if rowHasIncompleteEvidence(row) {
 			result.incompleteEvidence = true
 		}
-		keep[i] = keepAll || includeBalanced || scaledToZero || rightsizingRowActionable(row.Fit) ||
+		keep[i] = keepAll || includeAll || scaledToZero || rightsizingRowActionable(row.Fit) ||
 			prometheuspkg.NeedsManualReview(row) || prometheuspkg.SignificantlyThrottled(row)
 		if keep[i] {
 			containerKept[row.Container] = true
@@ -822,18 +815,63 @@ func filterRightsizingRows(rows []prometheuspkg.RightsizingRow, includeBalanced,
 			dto.Peak = row.Peak.Formatted
 		}
 		// Throttling only ever gates a CPU reduction. Without the flag, an absent
-		// throttleRatio reads as "not throttled" rather than "not measured".
+		// throttlePercent reads as "not throttled" rather than "not measured".
 		if row.Resource == "cpu" {
 			available := row.ThrottleAvailable
 			dto.ThrottleAvailable = &available
 		}
 		if row.ThrottleAvailable && row.ThrottleRatio != nil {
-			formatted := fmt.Sprintf("%.1f%%", *row.ThrottleRatio*100)
+			formatted := math.Round(*row.ThrottleRatio*1000) / 10
 			dto.ThrottleRatio = &formatted
 		}
 		result.rows = append(result.rows, dto)
 	}
 	return result
+}
+
+func selectRightsizingWorkloads(workloads []prometheuspkg.RightsizingScanWorkload, input getRightsizingInput) ([]rightsizingWorkloadDTO, rightsizingOmissions, bool) {
+	ranked := make([]rightsizingWorkloadDTO, 0, len(workloads))
+	var omitted rightsizingOmissions
+	incompleteEvidence := false
+	for _, workload := range workloads {
+		filtered := filterRightsizingRows(workload.Rows, input.IncludeAll, input.Classification != "", workload.Replicas, workload.ScaledToZero)
+		incompleteEvidence = incompleteEvidence || filtered.incompleteEvidence
+		if input.Classification != "" && string(filtered.classification) != input.Classification {
+			continue
+		}
+		omitted.add(filtered.omitted)
+		if len(filtered.rows) == 0 {
+			continue
+		}
+		pointQueryErrorsAtWarnings(filtered.rows)
+		impact := filtered.impact
+		ranked = append(ranked, rightsizingWorkloadDTO{
+			Kind:                     workload.Kind,
+			Namespace:                workload.Namespace,
+			Name:                     workload.Name,
+			Replicas:                 workload.Replicas,
+			ScaledToZero:             workload.ScaledToZero,
+			ManagedBy:                workload.ManagedBy,
+			Classification:           filtered.classification,
+			Impact:                   &impact,
+			RequestDelta:             &rightsizingRequestDelta{CPU: impact.CPU, Memory: impact.Memory},
+			LiveInventoryUnavailable: filtered.liveInventoryUnavailable,
+			Rows:                     filtered.rows,
+			rankKey:                  workload.Namespace + "/" + workload.Kind + "/" + workload.Name,
+		})
+	}
+	// Class first, then replica-weighted absolute change — the Rightsizing
+	// screen's ordering rule, applied to a different unit: the screen ranks
+	// each CONTAINER as its own entry while this tool returns workloads, so
+	// two containers' reductions add up here and the top-N can legitimately
+	// differ from the screen's. Same rule, coarser grain — not a parity bug.
+	sort.SliceStable(ranked, func(i, j int) bool {
+		return prometheuspkg.RightsizingRankLess(
+			ranked[i].Classification, *ranked[i].Impact, ranked[i].rankKey,
+			ranked[j].Classification, *ranked[j].Impact, ranked[j].rankKey,
+		)
+	})
+	return ranked, omitted, incompleteEvidence
 }
 
 func rightsizingRowActionable(fit prometheuspkg.RightsizingFit) bool {
@@ -866,6 +904,7 @@ func rightsizingScanUnavailable(scope, namespace, reason string) rightsizingResp
 func rightsizingUnavailable(scope, reason string) rightsizingResponse {
 	return rightsizingResponse{
 		Scope:       scope,
+		ScannedAt:   time.Now().UTC().Format(time.RFC3339),
 		State:       prometheuspkg.RightsizingScanUnavailable,
 		Window:      "7d",
 		Reason:      reason,
@@ -877,6 +916,23 @@ func rightsizingUnavailable(scope, reason string) rightsizingResponse {
 	}
 }
 
+func rightsizingReasonCode(reason string) string {
+	switch reason {
+	case prometheuspkg.ReasonWorkloadNoContainers:
+		return "no_containers"
+	case prometheuspkg.ReasonRightsizingQueriesFailed:
+		return "queries_failed"
+	case prometheuspkg.ReasonNoOwnerSamples:
+		return "no_owner_samples"
+	case prometheuspkg.ReasonNoUsageSamples:
+		return "no_usage_samples"
+	case prometheuspkg.ReasonPodInventoryUnreadable:
+		return "pod_inventory_unreadable"
+	default:
+		return reason
+	}
+}
+
 func rightsizingRemediation(scope, reason string) string {
 	// A workload answer is not a scan and carries no coverage block, so the
 	// scan's wording would point at fields this response does not have.
@@ -884,7 +940,9 @@ func rightsizingRemediation(scope, reason string) string {
 		return "A query behind this workload's rows did not answer — warnings names which one. The rows themselves are complete: read them, but treat whatever that query decides as unknown rather than settled, and re-read the workload once Prometheus answers again."
 	}
 
-	switch reason {
+	switch rightsizingReasonCode(reason) {
+	case "pod_inventory_unreadable":
+		return "Restore Radar access to list pods for this workload, then retry; current pod OOM status is unknown."
 	case "prometheus_unavailable":
 		return "No Prometheus found. Radar auto-discovers it, or start radar with --prometheus-url. Recommendations also need kube-state-metrics for 7 days of workload history."
 	case "owner_metrics_query_failed", "deployment_owner_metrics_query_failed":
@@ -911,14 +969,14 @@ func rightsizingRemediation(scope, reason string) string {
 		// query broke. guidance names whichever cause this response carries.
 		return "The scan ran but did not cover everything: either some usage, restart or throttle evidence was missing or its query did not answer (the warnings name which), or coverage.restrictedKinds, unavailableKinds or partiallyCachedKinds narrowed what it could read. Treat the affected containers as unjudged rather than correctly sized."
 	case "scan_incomplete":
-		return "The scan did not finish every batch within its budget — coverage.completedBatches of coverage.batches says how far it got. The returned rows are a subset; narrow with scope=\"namespace\" or target one workload with scope=\"workload\" for a complete answer."
-	case prometheuspkg.ReasonWorkloadNoContainers:
+		return "The scan did not finish every batch within its budget — coverage.workloadsEvaluated reports evaluated workloads; coverage.completedBatches counts batches whose queries all succeeded, not batches attempted. The returned rows are a subset; narrow with scope=\"namespace\" or target one workload with scope=\"workload\" for a complete answer."
+	case "no_containers":
 		return "The workload's pod template declares no runtime containers (init-only or an empty spec), so there is nothing to size. This is the workload's own shape, not missing evidence."
-	case prometheuspkg.ReasonRightsizingQueriesFailed:
+	case "queries_failed":
 		return "The rightsizing queries failed. Prometheus may be unreachable, unhealthy, or not scraping cAdvisor/kubelet and kube-state-metrics — each row's queryError names which query failed."
-	case prometheuspkg.ReasonNoOwnerSamples:
+	case "no_owner_samples":
 		return "Prometheus holds no current or retained kube_pod_owner samples for this workload, so its pods cannot be mapped to it. Install or repair kube-state-metrics and let it scrape."
-	case prometheuspkg.ReasonNoUsageSamples, "no_usage_samples":
+	case "no_usage_samples":
 		return "Prometheus answered but held no workload usage samples for the 7-day window. Check that it is scraping cAdvisor/kubelet metrics and has 7 days of retention."
 	case reasonNamespacesExcluded:
 		return "Some requested namespaces were not scanned. excludedNamespaces names each one: access_denied means this identity cannot list workloads there; outside_namespace_scope means radar is pinned with --namespace-scope; not_cached means radar's informer cache does not hold workloads for that namespace (see coverage.partiallyCachedKinds), which is a limit of radar's own access, not this identity's. The rows cover namespaceScope only."
@@ -945,7 +1003,7 @@ func rightsizingRemediation(scope, reason string) string {
 // pointing at coverage fields that may all be empty.
 type rightsizingGuidanceInput struct {
 	state             prometheuspkg.RightsizingScanState
-	includeBalanced   bool
+	includeAll        bool
 	scope             string
 	reason            string
 	namespaceScope    []string
@@ -969,9 +1027,9 @@ type rightsizingGuidanceInput struct {
 	workloadsShown             bool
 }
 
-func rightsizingGuidance(in rightsizingGuidanceInput) string {
+func rightsizingGuidance(in rightsizingGuidanceInput) []string {
 	parts := []string{
-		"Recommendations come from 7 days of observed usage, not live metrics. Check confidence and coverage before acting: low confidence means short or sparse history, not correctly sized.",
+		"Recommendations come from 7 days of observed usage, not live metrics. Check confidence and sampleCoverage before acting: low confidence means short or sparse history, not correctly sized.",
 	}
 
 	// An unavailable response has no rows, no omitted counts and no coverage to
@@ -979,7 +1037,7 @@ func rightsizingGuidance(in rightsizingGuidanceInput) string {
 	// did not receive.
 	if in.state == prometheuspkg.RightsizingScanUnavailable {
 		parts = append(parts, "State is unavailable — no recommendation was produced. Read reason and remediation; do not report this as a finding that the workloads are correctly sized.")
-		return strings.Join(parts, " ")
+		return parts
 	}
 
 	if in.state == prometheuspkg.RightsizingScanPartial {
@@ -1002,21 +1060,25 @@ func rightsizingGuidance(in rightsizingGuidanceInput) string {
 		parts = append(parts, fmt.Sprintf(`%d DaemonSet(s) match no node right now, so they run no pods and were not scanned (coverage.daemonSetsWithoutNodes, named in skippedDaemonSets). A node pool scaled to zero may still have history for them: read one with scope="workload", which reports state=unavailable when it does not.`, in.coverage.DaemonSetsWithoutNodes))
 	}
 	if in.returnedQueryErrors > 0 && in.scope != "workload" {
-		parts = append(parts, "A workload whose rows carry queryError can still hold a valid recommendation on its other resource: it ranks as need_data because evidence is missing, not because that recommendation is doubtful.")
+		parts = append(parts, "A workload whose rows carry queryError can still hold a valid recommendation on its other resource: its classification retains known increase or review signals while state=partial reports the missing evidence.")
 	}
 	if in.reductionLimited {
 		parts = append(parts, "Rows with reductionLimited=true were clamped: recommendedRequest is a bounded step, not the full cut: at most half for memory, for CPU of 1 core or more, and for bursty or throttled CPU; up to three quarters for smaller CPU requests. demandTarget is the demand-based end state, not a value to apply: apply recommendedRequest, observe a full 7-day window, then re-check. For memory, demandTarget comes from the 7-day max, so a monthly or batch peak outside the window is not seen and jumping straight to it risks OOM.")
 	}
 	if in.needsManualReview {
-		parts = append(parts, "Rows with needsManualReview=true are excluded from the workload's impact, and reviewReasons says why — an autoscaler owns the request, the container has OOM history, its limit conflicts with the recommendation, or the cut runs against bursty or throttled usage. Most of those rows carry no recommendedRequest at all, because the same signal withheld it; where one is present, weigh it against the reason instead of applying it unattended. The flag marks a row that needs judgement, not one that must never change: raising a request on a container with OOM history is often exactly what the evidence asks for.")
+		parts = append(parts, "Rows with needsManualReview=true are excluded from the workload's requestDelta, and reviewReasons says why — an autoscaler owns the request, the container has OOM history, its limit conflicts with the recommendation, or the cut runs against bursty or throttled usage. Most of those rows carry no recommendedRequest at all, because the same signal withheld it; where one is present, weigh it against the reason instead of applying it unattended. The flag marks a row that needs judgement, not one that must never change: raising a request on a container with OOM history is often exactly what the evidence asks for.")
 	}
 	if in.workloadsShown {
+		parts = append(parts, "requestDelta is replica-weighted request capacity, not bill savings. An absent cpu or memory delta means zero net change or no eligible evidence; read rows to distinguish them. Rows lacking evidence or needing manual review are excluded. If liveInventoryUnavailable=true, currentPodOOM being absent does not establish that no pod has OOMed.")
 		parts = append(parts, "managedBy names what owns a workload's spec: change requests at that source (Git, chart values, the controller's resource, the add-on configuration), not with a direct patch. A missing managedBy does not mean unmanaged — Argo CD label tracking, Terraform and kubectl apply leave no signal Radar reads.")
 	}
-	if !in.includeBalanced && in.scope != "workload" {
-		parts = append(parts, "Correctly-sized and unevidenced containers are omitted — see the omitted counts; pass include_balanced=true to see those rows. Rows carrying OOM history, a limit conflict, throttling of 10% or more, or an autoscaler are always returned regardless of fit, as is every row of a scaledToZero workload and any unevidenced row of a container that is returned.")
+	if in.scope != "workload" {
+		parts = append(parts, "totalWorkloads counts workloads matching the selection before limit; coverage.workloadsEvaluated counts the whole scan. evaluatedAt is evaluation time, not source freshness.")
 	}
-	return strings.Join(parts, " ")
+	if !in.includeAll && in.scope != "workload" {
+		parts = append(parts, "Correctly-sized and unevidenced containers are omitted — see the omitted counts; pass include_all=true to see those rows. Rows carrying OOM history, a limit conflict, throttling of 10% or more, or an autoscaler are always returned regardless of fit, as is every row of a scaledToZero workload and any unevidenced row of a container that is returned.")
+	}
+	return parts
 }
 
 // partialGuidance names only the causes this response carries: the common

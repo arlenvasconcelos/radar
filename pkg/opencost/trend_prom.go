@@ -118,7 +118,7 @@ func ComputeCostTrendFromProm(ctx context.Context, client *prom.Client, opts Tre
 				dps = append(dps, CostDataPoint{Timestamp: ts, Value: roundTo(val, 4)})
 			}
 			sort.Slice(dps, func(i, j int) bool { return dps[i].Timestamp < dps[j].Timestamp })
-			series = append(series, CostTrendSeries{Namespace: "other", DataPoints: dps})
+			series = append(series, CostTrendSeries{Namespace: "other", Remainder: true, DataPoints: dps})
 		}
 	}
 

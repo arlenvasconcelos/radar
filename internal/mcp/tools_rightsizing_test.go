@@ -117,10 +117,10 @@ func TestFilterRightsizingRowsDropsBalancedByDefault(t *testing.T) {
 	includeAll := filterRightsizingRows(rows, true, false, 1, false)
 	all, allOmitted := includeAll.rows, includeAll.omitted
 	if len(all) != len(rows) {
-		t.Errorf("include_balanced should return every row, got %d of %d", len(all), len(rows))
+		t.Errorf("include_all should return every row, got %d of %d", len(all), len(rows))
 	}
 	if allOmitted.total() != 0 {
-		t.Errorf("nothing is withheld when include_balanced is set, got %+v", allOmitted)
+		t.Errorf("nothing is withheld when include_all is set, got %+v", allOmitted)
 	}
 }
 
@@ -134,7 +134,7 @@ func TestFilterRightsizingRowsFormatsThrottleOnlyWhenMeasured(t *testing.T) {
 	unmeasured.ThrottleRatio = &ratio
 
 	out := filterRightsizingRows([]prometheuspkg.RightsizingRow{measured, unmeasured}, false, false, 1, false).rows
-	if out[0].ThrottleRatio == nil || *out[0].ThrottleRatio != "12.5%" {
+	if out[0].ThrottleRatio == nil || *out[0].ThrottleRatio != 12.5 {
 		t.Errorf("measured throttling should be formatted as a percentage, got %v", out[0].ThrottleRatio)
 	}
 	if out[1].ThrottleRatio != nil {
@@ -234,28 +234,28 @@ func TestOOMAvailabilityOnlyEmittedForMemoryRows(t *testing.T) {
 }
 
 func TestRightsizingGuidanceWarnsOnPartialScans(t *testing.T) {
-	complete := rightsizingGuidance(rightsizingGuidanceInput{
+	complete := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanComplete, scope: "cluster",
-	})
+	}), " ")
 	if strings.Contains(complete, "partial") {
 		t.Errorf("a complete scan should not be described as partial: %q", complete)
 	}
 	if !strings.Contains(complete, "confidence") || !strings.Contains(complete, "7 days") {
 		t.Errorf("guidance must state the 7-day window and the confidence caveat: %q", complete)
 	}
-	if !strings.Contains(complete, "include_balanced") {
+	if !strings.Contains(complete, "include_all") {
 		t.Errorf("guidance should say correctly-sized rows were omitted: %q", complete)
 	}
 
-	partial := rightsizingGuidance(rightsizingGuidanceInput{
-		state: prometheuspkg.RightsizingScanPartial, includeBalanced: true, scope: "cluster",
+	partial := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
+		state: prometheuspkg.RightsizingScanPartial, includeAll: true, scope: "cluster",
 		coverage: &prometheuspkg.RightsizingScanCoverage{RestrictedKinds: []string{"DaemonSet"}},
-	})
+	}), " ")
 	if !strings.Contains(partial, "cluster-wide") {
 		t.Errorf("a partial scan must warn against cluster-wide conclusions: %q", partial)
 	}
-	if strings.Contains(partial, "include_balanced") {
-		t.Errorf("include_balanced=true should not carry the omission note: %q", partial)
+	if strings.Contains(partial, "include_all") {
+		t.Errorf("include_all=true should not carry the omission note: %q", partial)
 	}
 }
 
@@ -263,12 +263,12 @@ func TestRightsizingGuidanceWarnsOnPartialScans(t *testing.T) {
 // whenever those were empty and the cause was row-level or scope-level, which
 // is the common case. The guidance has to name the causes actually present.
 func TestPartialGuidanceNamesTheCausePresent(t *testing.T) {
-	rowLevel := rightsizingGuidance(rightsizingGuidanceInput{
+	rowLevel := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "cluster",
 		reason:   reasonRowEvidenceIncomplete,
 		coverage: &prometheuspkg.RightsizingScanCoverage{Batches: 1, CompletedBatches: 1},
 		omitted:  rightsizingOmissions{InsufficientHistory: 3},
-	})
+	}), " ")
 	if !strings.Contains(rowLevel, "insufficientHistory") {
 		t.Errorf("the real cause (3 rows short of history) must be named: %q", rowLevel)
 	}
@@ -276,58 +276,58 @@ func TestPartialGuidanceNamesTheCausePresent(t *testing.T) {
 		t.Errorf("guidance must not point at causes this response does not carry: %q", rowLevel)
 	}
 
-	cached := rightsizingGuidance(rightsizingGuidanceInput{
+	cached := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "cluster",
 		coverage: &prometheuspkg.RightsizingScanCoverage{PartiallyCachedKinds: []string{"Deployment"}},
-	})
+	}), " ")
 	if !strings.Contains(cached, "partiallyCachedKinds") {
 		t.Errorf("partial caching can be the only reason for partial, so it must be named: %q", cached)
 	}
 
 	// Only the deadline warning makes a short batch count an early stop.
-	truncatedScan := rightsizingGuidance(rightsizingGuidanceInput{
+	truncatedScan := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "cluster",
 		coverage: &prometheuspkg.RightsizingScanCoverage{
 			Batches: 3, CompletedBatches: 1,
 			WorkloadsDiscovered: 10, WorkloadsEvaluated: 4,
 		},
 		deadlineExceeded: true,
-	})
+	}), " ")
 	if !strings.Contains(truncatedScan, "ran out of its budget before its queries finished (4 of 10 workloads evaluated") {
 		t.Errorf("an early stop must say how many workloads went unevaluated: %q", truncatedScan)
 	}
 	if strings.Contains(truncatedScan, "had a failure") || strings.Contains(truncatedScan, "failed query") {
 		t.Errorf("batches the deadline left unrun are not failed batches: %q", truncatedScan)
 	}
-	stoppedAfterFailure := rightsizingGuidance(rightsizingGuidanceInput{
+	stoppedAfterFailure := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "cluster",
 		coverage:         &prometheuspkg.RightsizingScanCoverage{Batches: 3, CompletedBatches: 0, WorkloadsDiscovered: 10, WorkloadsEvaluated: 4},
 		deadlineExceeded: true, batchQueryFailed: true,
-	})
+	}), " ")
 	if !strings.Contains(stoppedAfterFailure, "ran out of its budget") || !strings.Contains(stoppedAfterFailure, "failed query") {
 		t.Errorf("a deadline must not hide a failure in a batch that ran: %q", stoppedAfterFailure)
 	}
 
 	// A deadline inside the last batch reaches every workload but leaves that
 	// batch's rows without evidence; "stopped early, 12 of 12" contradicts itself.
-	cutLastBatch := rightsizingGuidance(rightsizingGuidanceInput{
+	cutLastBatch := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "namespace",
 		coverage:         &prometheuspkg.RightsizingScanCoverage{Batches: 1, CompletedBatches: 0, WorkloadsDiscovered: 12, WorkloadsEvaluated: 12},
 		deadlineExceeded: true, batchQueryFailed: true,
-	})
+	}), " ")
 	if strings.Contains(cutLastBatch, "stopped early") || !strings.Contains(cutLastBatch, "12 of 12 workloads evaluated; rows in a batch the deadline cut lack evidence") {
 		t.Errorf("a deadline that cut the last batch must not read as an early stop: %q", cutLastBatch)
 	}
 
 	// Dropped Deployments leave evaluated below discovered with every batch run.
-	droppedDeployments := rightsizingGuidance(rightsizingGuidanceInput{
+	droppedDeployments := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "cluster",
 		coverage: &prometheuspkg.RightsizingScanCoverage{
 			Batches: 3, CompletedBatches: 2,
 			WorkloadsDiscovered: 10, WorkloadsEvaluated: 6,
 			UnavailableKinds: []string{"Deployment"},
 		},
-	})
+	}), " ")
 	if strings.Contains(droppedDeployments, "stopped") {
 		t.Errorf("a scan that ran every batch did not stop: %q", droppedDeployments)
 	}
@@ -335,13 +335,13 @@ func TestPartialGuidanceNamesTheCausePresent(t *testing.T) {
 	// CompletedBatches counts batches whose queries all answered, not batches
 	// that ran. With every workload evaluated the scan did not stop, and
 	// saying so would send the agent to narrow a scope that was never cut.
-	failedQueries := rightsizingGuidance(rightsizingGuidanceInput{
+	failedQueries := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "cluster",
 		coverage: &prometheuspkg.RightsizingScanCoverage{
 			Batches: 3, CompletedBatches: 1,
 			WorkloadsDiscovered: 10, WorkloadsEvaluated: 10,
 		},
-	})
+	}), " ")
 	if strings.Contains(failedQueries, "stopped after") {
 		t.Errorf("a fully-evaluated scan did not stop early: %q", failedQueries)
 	}
@@ -353,11 +353,11 @@ func TestPartialGuidanceNamesTheCausePresent(t *testing.T) {
 // An unavailable response has no rows and no omitted counts, so guidance about
 // what was omitted describes a response the caller did not receive.
 func TestUnavailableGuidanceDropsInapplicableText(t *testing.T) {
-	got := rightsizingGuidance(rightsizingGuidanceInput{
+	got := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanUnavailable, scope: "cluster",
 		reason: "owner_metrics_missing",
-	})
-	if strings.Contains(got, "omitted counts") || strings.Contains(got, "include_balanced") {
+	}), " ")
+	if strings.Contains(got, "omitted counts") || strings.Contains(got, "include_all") {
 		t.Errorf("unavailable responses must not describe omissions: %q", got)
 	}
 	if !strings.Contains(got, "remediation") {
@@ -368,9 +368,9 @@ func TestUnavailableGuidanceDropsInapplicableText(t *testing.T) {
 // reductionLimited means the recommendation is a clamped step, not the fitted
 // value — without that said, a 5m observation recommending 750m looks wrong.
 func TestGuidanceExplainsClampedReductions(t *testing.T) {
-	got := rightsizingGuidance(rightsizingGuidanceInput{
+	got := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanComplete, scope: "cluster", reductionLimited: true,
-	})
+	}), " ")
 	if !strings.Contains(got, "bounded step") || !strings.Contains(got, "three quarters") {
 		t.Errorf("a clamped reduction needs explaining in the response: %q", got)
 	}
@@ -454,7 +454,7 @@ func TestRightsizingPartialGuidanceNamesEveryCoverageCause(t *testing.T) {
 	// Every coverage cause must be reachable from the guidance when it is the
 	// one present; naming a cause that is absent is the opposite failure and is
 	// covered by TestPartialGuidanceNamesTheCausePresent.
-	all := rightsizingGuidance(rightsizingGuidanceInput{
+	all := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "cluster",
 		coverage: &prometheuspkg.RightsizingScanCoverage{
 			RestrictedKinds:      []string{"DaemonSet"},
@@ -466,7 +466,7 @@ func TestRightsizingPartialGuidanceNamesEveryCoverageCause(t *testing.T) {
 			WorkloadsEvaluated:   4,
 		},
 		deadlineExceeded: true,
-	})
+	}), " ")
 	for _, cause := range []string{"restrictedKinds", "unavailableKinds", "partiallyCachedKinds", "4 of 10 workloads"} {
 		if !strings.Contains(all, cause) {
 			t.Errorf("partial guidance omits %q, so that cause reads as complete coverage: %q", cause, all)
@@ -478,10 +478,10 @@ func TestNarrowedClusterScanGuidanceRefusesClusterWideFraming(t *testing.T) {
 	// scope="cluster" resolves to what the identity can list, or to the
 	// --namespace pin. A complete-looking scan over two namespaces must not
 	// read as a cluster-wide answer.
-	narrowed := rightsizingGuidance(rightsizingGuidanceInput{
+	narrowed := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "cluster",
 		namespaceScope: []string{"prod", "staging"},
-	})
+	}), " ")
 	if !strings.Contains(narrowed, "namespaceScope") {
 		t.Errorf("guidance must point at the field naming the real scope: %q", narrowed)
 	}
@@ -489,9 +489,9 @@ func TestNarrowedClusterScanGuidanceRefusesClusterWideFraming(t *testing.T) {
 		t.Errorf("guidance must state how many namespaces were reached: %q", narrowed)
 	}
 
-	full := rightsizingGuidance(rightsizingGuidanceInput{
+	full := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanComplete, scope: "cluster",
-	})
+	}), " ")
 	if strings.Contains(full, "namespaceScope") {
 		t.Errorf("an unnarrowed scan should carry no scope caveat: %q", full)
 	}
@@ -536,7 +536,7 @@ func TestOmissionCountersAreExclusive(t *testing.T) {
 }
 
 func TestIncompleteEvidenceReadsRawRowsNotSurvivors(t *testing.T) {
-	// Derived from the raw rows so include_balanced=true, which withholds
+	// Derived from the raw rows so include_all=true, which withholds
 	// nothing, still reports partial when a query failed.
 	queryErr := rightsizingRow(prometheuspkg.FitInsufficientHistory, 1, 1)
 	queryErr.QueryError = "upstream 500"
@@ -605,9 +605,9 @@ func TestGetRightsizingNamespaceScopeRejectsWorkloadIdentifiers(t *testing.T) {
 func TestWorkloadScopeGuidanceDoesNotCiteScanCoverage(t *testing.T) {
 	// A workload response carries no coverage object, so pointing the model at
 	// coverage.completedBatches sends it to a field that is not there.
-	workload := rightsizingGuidance(rightsizingGuidanceInput{
+	workload := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "workload",
-	})
+	}), " ")
 	for _, absent := range []string{"completedBatches", "restrictedKinds", "unavailableKinds"} {
 		if strings.Contains(workload, absent) {
 			t.Errorf("workload guidance cites %q, which only exists on scan scopes: %q", absent, workload)
@@ -827,7 +827,7 @@ func TestFilterRightsizingRowsKeepsThrottledBalancedRows(t *testing.T) {
 	if len(filtered.rows) != 1 {
 		t.Fatalf("the throttled row must survive the default filter, got %d rows", len(filtered.rows))
 	}
-	if filtered.rows[0].ThrottleRatio == nil || *filtered.rows[0].ThrottleRatio != "25.0%" {
+	if filtered.rows[0].ThrottleRatio == nil || *filtered.rows[0].ThrottleRatio != 25 {
 		t.Errorf("the surviving row should carry its throttle ratio, got %v", filtered.rows[0].ThrottleRatio)
 	}
 	if filtered.omitted.Balanced != 1 {
@@ -951,7 +951,7 @@ func TestDemandTargetOnlyAccompaniesAClampedRecommendation(t *testing.T) {
 }
 
 func TestGuidanceWarnsAgainstApplyingTheDemandTarget(t *testing.T) {
-	got := rightsizingGuidance(rightsizingGuidanceInput{state: prometheuspkg.RightsizingScanComplete, scope: "cluster", reductionLimited: true})
+	got := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{state: prometheuspkg.RightsizingScanComplete, scope: "cluster", reductionLimited: true}), " ")
 	for _, want := range []string{"demandTarget is the demand-based end state, not a value to apply", "risks OOM"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("clamped guidance missing %q: %q", want, got)
@@ -987,11 +987,11 @@ func TestReturnedContainerKeepsItsFailedRow(t *testing.T) {
 		t.Errorf("queryError = %q", got)
 	}
 
-	guidance := rightsizingGuidance(rightsizingGuidanceInput{
+	guidance := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "cluster", reason: "some_evidence_unavailable",
 		coverage: &prometheuspkg.RightsizingScanCoverage{}, omitted: filtered.omitted, returnedQueryErrors: returned.queryErrors,
-	})
-	for _, want := range []string{"2 row(s) failed their usage query (1 in omitted.queryError, 1 returned with queryError)", "not because that recommendation is doubtful"} {
+	}), " ")
+	for _, want := range []string{"2 row(s) failed their usage query (1 in omitted.queryError, 1 returned with queryError)", "retains known increase or review signals"} {
 		if !strings.Contains(guidance, want) {
 			t.Errorf("guidance missing %q: %q", want, guidance)
 		}
@@ -1064,13 +1064,13 @@ func TestNamespacesWithoutWorkloadsNeedsAFullyCoveredScan(t *testing.T) {
 }
 
 func TestScanGuidanceNamesNamespaceGapsDaemonSetsAndOwnership(t *testing.T) {
-	got := rightsizingGuidance(rightsizingGuidanceInput{
+	got := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "namespace", reason: reasonNamespacesExcluded,
 		coverage:                   &prometheuspkg.RightsizingScanCoverage{DaemonSetsWithoutNodes: 25},
 		excludedNamespaces:         []excludedNamespace{{Name: "autopush", Reason: "access_denied"}},
 		namespacesWithoutWorkloads: []string{"stagin"},
 		workloadsShown:             true,
-	})
+	}), " ")
 	for _, want := range []string{
 		"autopush (access_denied)",
 		"stagin had no workload to scan",
@@ -1140,21 +1140,21 @@ func TestEmptyScanReasonsAreOverriddenByANarrowedScope(t *testing.T) {
 }
 
 func TestQueryErrorGuidanceSeparatesRowsPastTheLimit(t *testing.T) {
-	got := rightsizingGuidance(rightsizingGuidanceInput{
+	got := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "cluster", reason: "some_evidence_unavailable",
 		coverage: &prometheuspkg.RightsizingScanCoverage{}, omitted: rightsizingOmissions{QueryError: 94},
 		returnedQueryErrors: 20, truncatedQueryErrors: 28,
-	})
+	}), " ")
 	if !strings.Contains(got, "142 row(s) failed their usage query (94 in omitted.queryError, 20 returned with queryError, 28 on workloads past the limit)") {
 		t.Errorf("guidance must not call truncated rows returned: %q", got)
 	}
 }
 
 func TestSkippedDaemonSetGuidanceKeepsTheScaledDownPoolCase(t *testing.T) {
-	got := rightsizingGuidance(rightsizingGuidanceInput{
+	got := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanComplete, scope: "cluster", reason: reasonOnlyDaemonSetsWithoutNodes,
 		coverage: &prometheuspkg.RightsizingScanCoverage{DaemonSetsWithoutNodes: 2},
-	})
+	}), " ")
 	if !strings.Contains(got, "match no node right now") || !strings.Contains(got, "node pool scaled to zero") {
 		t.Errorf("a pool scaled to zero is not a DaemonSet that never runs: %q", got)
 	}
@@ -1185,39 +1185,36 @@ func TestUnjudgedContainerKeepsTheWorkloadOutOfInRange(t *testing.T) {
 	}
 }
 
-// Impact must come from the containers the class was judged on: an unjudged
-// sidecar's increase would otherwise size a workload ranked as a reduction.
-func TestImpactExcludesContainersLeftOutOfClassification(t *testing.T) {
+func TestHalfEvidencedContainerRetainsKnownIncrease(t *testing.T) {
 	app := rightsizingRow(prometheuspkg.FitOversized, 4, 1)
-	sidecarMemory := rightsizingRow(prometheuspkg.FitUnderRequested, 64*1024*1024, 8*1024*1024*1024)
+	sidecarMemory := rightsizingRow(prometheuspkg.FitUnderRequested, 64*1024*1024, 128*1024*1024)
 	sidecarMemory.Container, sidecarMemory.Resource = "sidecar", "memory"
 	sidecarCPU := rightsizingRow(prometheuspkg.FitInsufficientHistory, 0.1, 0)
 	sidecarCPU.Container, sidecarCPU.RecommendedReq = "sidecar", nil
-
 	got := filterRightsizingRows([]prometheuspkg.RightsizingRow{app, sidecarMemory, sidecarCPU}, false, false, 2, false)
-	if got.classification != prometheuspkg.ClassReduction {
-		t.Fatalf("classification = %q, want reduction from the evidenced app container", got.classification)
+	if got.classification != prometheuspkg.ClassIncrease || !got.incompleteEvidence {
+		t.Fatalf("known increase must survive missing CPU evidence: %+v", got)
 	}
-	if got.impact.MemoryChange != 0 || got.impact.CPUChange != -6 {
-		t.Errorf("impact = %+v, want only the app's CPU reduction (-3 x 2 replicas)", got.impact)
+	if got.impact.MemoryChange != 128*1024*1024 || got.impact.CPUChange != -6 {
+		t.Errorf("delta = %+v, want +128Mi and -6000m from the evidenced rows", got.impact)
 	}
 }
 
 func TestReturnedShortHistoryRowsAreNamedAsACause(t *testing.T) {
-	got := rightsizingGuidance(rightsizingGuidanceInput{
+	got := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "cluster", reason: reasonRowEvidenceIncomplete,
 		coverage: &prometheuspkg.RightsizingScanCoverage{}, returnedShortHistory: 2,
-	})
+	}), " ")
 	if !strings.Contains(got, "2 returned row(s) had too little history to judge") {
 		t.Errorf("a short-history row kept beside its container's recommendation is a cause: %q", got)
 	}
 }
 
 func TestShortHistoryPastTheLimitIsNamedAsACause(t *testing.T) {
-	got := rightsizingGuidance(rightsizingGuidanceInput{
+	got := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "cluster", reason: reasonRowEvidenceIncomplete,
 		coverage: &prometheuspkg.RightsizingScanCoverage{}, truncatedShortHistory: 3,
-	})
+	}), " ")
 	if !strings.Contains(got, "3 row(s) with too little history sit on workloads past the limit") {
 		t.Errorf("truncated short-history rows are still a cause: %q", got)
 	}
@@ -1225,7 +1222,7 @@ func TestShortHistoryPastTheLimitIsNamedAsACause(t *testing.T) {
 
 func TestEarlyUnavailableResponsesCarryGuidance(t *testing.T) {
 	out := rightsizingUnavailable("workload", "prometheus_unavailable")
-	if !strings.Contains(out.Guidance, "State is unavailable") {
+	if !strings.Contains(strings.Join(out.Guidance, " "), "State is unavailable") {
 		t.Errorf("every response explains its state in guidance, got %q", out.Guidance)
 	}
 }
@@ -1258,7 +1255,7 @@ func TestScopeOnlyPartialScansAreNotDescribedAsMissingEvidence(t *testing.T) {
 			coverage:           &prometheuspkg.RightsizingScanCoverage{WorkloadsDiscovered: 4, WorkloadsEvaluated: 4, Batches: 1, CompletedBatches: 1},
 		},
 	} {
-		got := rightsizingGuidance(in)
+		got := strings.Join(rightsizingGuidance(in), " ")
 		if strings.Contains(got, "evidence is missing") {
 			t.Errorf("reason %q: a scope-only narrowing is not missing evidence: %q", in.reason, got)
 		}
@@ -1268,9 +1265,9 @@ func TestScopeOnlyPartialScansAreNotDescribedAsMissingEvidence(t *testing.T) {
 	}
 
 	// A genuine gap with no named cause keeps the generic sentence.
-	got := rightsizingGuidance(rightsizingGuidanceInput{
+	got := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "cluster", reason: "some_evidence_unavailable",
-	})
+	}), " ")
 	if !strings.Contains(got, "evidence is missing") {
 		t.Errorf("an unexplained partial must still warn: %q", got)
 	}
@@ -1335,10 +1332,10 @@ func TestWorkloadQueryFailureIsNotDescribedAsAMissingRow(t *testing.T) {
 	// A workload answer partial only because a supporting query failed has
 	// intact rows and no coverage block, so neither text may send the reader
 	// hunting for a withheld row or for scan-only fields.
-	guidance := rightsizingGuidance(rightsizingGuidanceInput{
+	guidance := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanPartial, scope: "workload",
 		reason: prometheuspkg.ReasonSomeEvidenceUnavailable,
-	})
+	}), " ")
 	if strings.Contains(guidance, "had no usable evidence") {
 		t.Errorf("the rows are intact; this describes a different partial: %q", guidance)
 	}
@@ -1362,9 +1359,9 @@ func TestReviewGuidanceDoesNotPromiseARecommendation(t *testing.T) {
 	// hpa_managed, limit_conflict and a withheld reason all return before a
 	// recommendation is set, so asserting the row carries the engine's best
 	// value is wrong for most flagged rows.
-	got := rightsizingGuidance(rightsizingGuidanceInput{
+	got := strings.Join(rightsizingGuidance(rightsizingGuidanceInput{
 		state: prometheuspkg.RightsizingScanComplete, scope: "workload", needsManualReview: true,
-	})
+	}), " ")
 	if strings.Contains(got, "is still the engine's best value") {
 		t.Errorf("most flagged rows carry no recommendedRequest at all: %q", got)
 	}
@@ -1373,5 +1370,63 @@ func TestReviewGuidanceDoesNotPromiseARecommendation(t *testing.T) {
 	}
 	if !strings.Contains(got, "needs judgement") {
 		t.Errorf("the flag must not read as a blanket prohibition: %q", got)
+	}
+}
+
+func TestClassificationSelectionKeepsAllMatchingRowsAndWholeScanGaps(t *testing.T) {
+	broken := rightsizingRow(prometheuspkg.FitInsufficientHistory, 1, 0)
+	broken.QueryError = prometheuspkg.RowUsageQueryFailed
+	balanced := rightsizingRow(prometheuspkg.FitBalanced, 1, 1)
+	balanced.LiveInventoryUnavailable = true
+	workloads := []prometheuspkg.RightsizingScanWorkload{
+		{Name: "large-cut", Replicas: 100, Rows: []prometheuspkg.RightsizingRow{rightsizingRow(prometheuspkg.FitOversized, 4, 1)}},
+		{Name: "grow", Replicas: 1, Rows: []prometheuspkg.RightsizingRow{rightsizingRow(prometheuspkg.FitUnderRequested, 1, 2), balanced}},
+		{Name: "unknown", Rows: []prometheuspkg.RightsizingRow{broken}},
+		{Name: "steady", Replicas: 1, Rows: []prometheuspkg.RightsizingRow{balanced}},
+	}
+	for _, tc := range []struct {
+		class, name string
+		rows        int
+	}{
+		{"increase", "grow", 2}, {"in_range", "steady", 1}, {"need_data", "unknown", 1},
+	} {
+		selected, omitted, incomplete := selectRightsizingWorkloads(workloads, getRightsizingInput{Classification: tc.class, Limit: 1})
+		if len(selected) != 1 || selected[0].Name != tc.name || len(selected[0].Rows) != tc.rows || omitted.total() != 0 || !incomplete {
+			t.Fatalf("%s selection lost rows or whole-scan gap: selected=%+v omitted=%+v incomplete=%v", tc.class, selected, omitted, incomplete)
+		}
+		if tc.class == "in_range" && !selected[0].LiveInventoryUnavailable {
+			t.Fatal("lost live inventory evidence flag")
+		}
+	}
+	all, _, _ := selectRightsizingWorkloads(workloads, getRightsizingInput{})
+	if len(all) == 0 || all[0].Name != "large-cut" {
+		t.Fatalf("unexpected default ranking: %+v", all)
+	}
+}
+
+func TestHalfEvidencedContainerRetainsKnownReduction(t *testing.T) {
+	cpu := rightsizingRow(prometheuspkg.FitOversized, 4, 1)
+	memory := rightsizingRow(prometheuspkg.FitInsufficientHistory, 1, 0)
+	memory.Resource, memory.QueryError = "memory", prometheuspkg.RowUsageQueryFailed
+	got := filterRightsizingRows([]prometheuspkg.RightsizingRow{cpu, memory}, false, false, 2, false)
+	if got.classification != prometheuspkg.ClassReduction || got.impact.CPUChange != -6 || got.impact.MemoryChange != 0 || !got.incompleteEvidence || len(got.rows) != 2 {
+		t.Fatalf("known CPU reduction lost to missing memory evidence: %+v", got)
+	}
+}
+
+func TestWorkloadReasonCodesHaveRemediation(t *testing.T) {
+	for prose, code := range map[string]string{
+		prometheuspkg.ReasonWorkloadNoContainers:     "no_containers",
+		prometheuspkg.ReasonRightsizingQueriesFailed: "queries_failed",
+		prometheuspkg.ReasonNoOwnerSamples:           "no_owner_samples",
+		prometheuspkg.ReasonNoUsageSamples:           "no_usage_samples",
+		prometheuspkg.ReasonPodInventoryUnreadable:   "pod_inventory_unreadable",
+	} {
+		if got := rightsizingReasonCode(prose); got != code {
+			t.Errorf("reason=%q want %q", got, code)
+		}
+		if remediation := rightsizingRemediation("workload", code); remediation == "" {
+			t.Errorf("no recovery guidance for %s", code)
+		}
 	}
 }

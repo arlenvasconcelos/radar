@@ -290,6 +290,7 @@ func FilterCostSummary(resp *pkgopencost.CostSummary, allowed []string) {
 	// Unrequested node capacity cannot be attributed to a namespace, so a
 	// scoped summary has no unallocated figure, and its total is the rows'.
 	resp.TotalUnallocatedCost = nil
+	resp.TotalNodeCost = nil
 	resp.TotalUnusedRequestCost = 0
 	resp.HourlyCostBasis = pkgopencost.HourlyCostBasisAllocated
 	var allocated, usage float64

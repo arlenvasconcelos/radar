@@ -504,36 +504,16 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 	}, logToolCall("get_prometheus_rules", handleGetPrometheusRules))
 
 	addToolWithRegistry(paramRegistry, server, &mcp.Tool{
-		Name: "get_cost",
-		Description: "Use for cluster spend questions: what a cluster, namespace, workload, or " +
-			"node costs, where the money goes, and whether spend is growing. Reads OpenCost through " +
-			"Prometheus or Kubecost directly, so it handles currency, idle attribution, and source " +
-			"differences you would get wrong hand-writing PromQL. This is SPEND, not usage — for " +
-			"whether a request should change, use get_rightsizing. view=summary (default) returns " +
-			"cluster totals plus per-namespace rows and usually answers the question in one call; " +
-			"view=workloads breaks one namespace down (namespace required; add kind+name for " +
-			"one workload); view=nodes ranks node spend; view=trend returns spend over time. " +
-			"When available=false, reason and remediation say what is missing — report that " +
-			"rather than concluding the cluster has no cost data. Every response explains its " +
-			"own fields in guidance; read it before interpreting the numbers.",
+		Name:        "get_cost",
+		InputSchema: costInputSchema(),
+		Description: "Read estimated Kubernetes costs from OpenCost or Kubecost. Choose summary, workloads (needs namespace; add kind+name for one workload), nodes, or trend. Use get_rightsizing for request recommendations and top_resources for live usage. Check availability, scope, and cost basis before reporting totals.",
 		Annotations: readOnly,
 	}, logToolCall("get_cost", handleGetCost))
 
 	addToolWithRegistry(paramRegistry, server, &mcp.Tool{
-		Name: "get_rightsizing",
-		Description: "Use when asked whether CPU/memory requests are sized correctly, " +
-			"which workloads are over-provisioned or starved, or where resource waste is. Returns " +
-			"per-container recommendations derived from 7 DAYS of observed usage, not live " +
-			"metrics — ALWAYS check each row's confidence before recommending a change, because " +
-			"low confidence means short or sparse history, not correctly sized. scope is REQUIRED: " +
-			"scope=workload with kind+name+namespace is cheap, precise, and returns every row of " +
-			"that workload; scope=namespace scans one namespace; scope=cluster scans every " +
-			"Deployment/StatefulSet/DaemonSet with 7-day range queries and can take 45s — call it " +
-			"ONCE to find candidates, then drill in with scope=workload; do not re-run it to " +
-			"refine rows you already have. Scan scopes rank workloads by classification and then " +
-			"by replica-weighted impact, so the first rows are the largest request changes, not the " +
-			"biggest percentages — request capacity, not billed cost. Every response explains its own state, coverage and omissions " +
-			"in guidance; read it before drawing a conclusion.",
+		Name:        "get_rightsizing",
+		InputSchema: rightsizingInputSchema(),
+		Description: "Recommend CPU/memory requests for Deployments, StatefulSets, and DaemonSets using 7 days of usage. scope=workload is cheap and precise; namespace/cluster scans can take 45s. Scan once, then inspect individual workloads. Check confidence, missing evidence, and manual-review reasons. Request reductions do not directly imply bill savings.",
 		Annotations: readOnly,
 	}, logToolCall("get_rightsizing", handleGetRightsizing))
 

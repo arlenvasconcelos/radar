@@ -467,7 +467,9 @@ func ComputeCostSummaryFromProm(ctx context.Context, client *prom.Client, opts S
 	allocatedCost := totalHourlyCost
 	basis := HourlyCostBasisAllocated
 	var unallocatedCost *float64
+	var totalNodeCost *float64
 	if nodeCost, ok := queryNodeTotalCost(ctx, client, opts); ok {
+		totalNodeCost = &nodeCost
 		// Node cost includes GPU spend the CPU and memory allocation does not,
 		// so on GPU nodes the difference would report allocated GPUs as
 		// unallocated. Price rounding can put the allocation slightly above
@@ -508,6 +510,7 @@ func ComputeCostSummaryFromProm(ctx context.Context, client *prom.Client, opts S
 		Currency:             opts.Currency,
 		Window:               opts.Window,
 		TotalHourlyCost:      totalHourlyCost,
+		TotalNodeCost:        totalNodeCost,
 		TotalStorageCost:     totalStorageCost,
 		TotalIdleCost:        totalIdleCost,
 		TotalUnallocatedCost: unallocatedCost,

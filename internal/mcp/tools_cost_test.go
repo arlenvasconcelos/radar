@@ -36,7 +36,7 @@ func TestGetCostWorkloadsViewRequiresNamespace(t *testing.T) {
 }
 
 func TestCostGuidanceFlagsPartialNamespaceScope(t *testing.T) {
-	full := costGuidance(nil, "")
+	full := strings.Join(costGuidance(nil, ""), " ")
 	if !strings.Contains(full, "730") {
 		t.Errorf("guidance should state the monthly projection convention, got: %q", full)
 	}
@@ -44,13 +44,13 @@ func TestCostGuidanceFlagsPartialNamespaceScope(t *testing.T) {
 		t.Errorf("unscoped guidance should not claim a partial view, got: %q", full)
 	}
 
-	partial := costGuidance([]string{"a", "b"}, "")
+	partial := strings.Join(costGuidance([]string{"a", "b"}, ""), " ")
 	if !strings.Contains(partial, "2 namespace(s)") || !strings.Contains(partial, "not the whole cluster") {
 		t.Errorf("scoped guidance should say totals cover only the readable namespaces, got: %q", partial)
 	}
 
 	// An explicit filter is the caller's own choice, not a permission limit.
-	requested := costGuidance([]string{"prod"}, "prod")
+	requested := strings.Join(costGuidance([]string{"prod"}, "prod"), " ")
 	if !strings.Contains(requested, "only namespace prod") {
 		t.Errorf("an explicitly requested namespace should be named, got: %q", requested)
 	}
@@ -205,7 +205,7 @@ func TestEfficiencyGuidanceRidesTheViewsThatEmitEfficiency(t *testing.T) {
 	// summary carries clusterEfficiency plus per-namespace efficiency, and
 	// workloads carries per-workload efficiency. nodes and trend carry neither,
 	// so the explainer would be noise there.
-	summary := costGuidance(nil, "") + " " + costEfficiencyExplainer
+	summary := strings.Join(costGuidance(nil, ""), " ") + " " + costEfficiencyExplainer
 	if !strings.Contains(summary, costRateExplainer) || !strings.Contains(summary, costEfficiencyExplainer) {
 		t.Error("summary guidance must carry both the rate and the efficiency explainer")
 	}
@@ -215,11 +215,11 @@ func TestHourlyTotalsAreRounded(t *testing.T) {
 	// Float accumulation across rows yields 0.14640000000000006, which agents
 	// echo verbatim into user-facing answers.
 	totals := hourlyTotals(0.0488 * 3)
-	if totals.HourlyCost != 0.1464 {
-		t.Errorf("hourly cost should be rounded to 4dp, got %v", totals.HourlyCost)
+	if *totals.AllocatedHourlyCost != 0.1464 {
+		t.Errorf("hourly cost should be rounded to 4dp, got %v", *totals.AllocatedHourlyCost)
 	}
-	if totals.ProjectedMonthlyCost != 106.87 {
-		t.Errorf("monthly projection should be rounded to 2dp, got %v", totals.ProjectedMonthlyCost)
+	if *totals.AllocatedMonthlyProjection != 106.87 {
+		t.Errorf("monthly projection should be rounded to 2dp, got %v", *totals.AllocatedMonthlyProjection)
 	}
 }
 
@@ -228,19 +228,19 @@ func TestHourlyTotalsAreRounded(t *testing.T) {
 // otherwise add on top.
 func TestCostSplitGuidanceNamesTheHourlyBasis(t *testing.T) {
 	unallocated := 0.2
-	node := costSplitGuidance(&pkgopencost.CostSummary{HourlyCostBasis: pkgopencost.HourlyCostBasisNodeCapacity, TotalUnallocatedCost: &unallocated}, false)
-	if !strings.Contains(node, "do not add unallocatedCost") || !strings.Contains(node, "storageCost") {
+	node := strings.Join(costSplitGuidance(&pkgopencost.CostSummary{HourlyCostBasis: pkgopencost.HourlyCostBasisNodeCapacity, TotalUnallocatedCost: &unallocated}, false), " ")
+	if !strings.Contains(node, "Do not add them together") || !strings.Contains(node, "Storage") {
 		t.Errorf("node-capacity basis must warn against double counting and name the missing storage: %q", node)
 	}
-	allocated := costSplitGuidance(&pkgopencost.CostSummary{HourlyCostBasis: pkgopencost.HourlyCostBasisAllocated, TotalUnallocatedCost: &unallocated}, false)
-	if !strings.Contains(allocated, "does not include unallocatedCost") || strings.Contains(allocated, "null") {
+	allocated := strings.Join(costSplitGuidance(&pkgopencost.CostSummary{HourlyCostBasis: pkgopencost.HourlyCostBasisAllocated, TotalUnallocatedCost: &unallocated}, false), " ")
+	if !strings.Contains(allocated, "allocatedHourlyCost covers workload allocation") {
 		t.Errorf("allocated basis with a measured figure: %q", allocated)
 	}
-	scoped := costSplitGuidance(&pkgopencost.CostSummary{HourlyCostBasis: pkgopencost.HourlyCostBasisAllocated}, true)
+	scoped := strings.Join(costSplitGuidance(&pkgopencost.CostSummary{HourlyCostBasis: pkgopencost.HourlyCostBasisAllocated}, true), " ")
 	if !strings.Contains(scoped, "belongs to the cluster") {
 		t.Errorf("a scoped null must say why it is null: %q", scoped)
 	}
-	unmeasured := costSplitGuidance(&pkgopencost.CostSummary{HourlyCostBasis: pkgopencost.HourlyCostBasisAllocated}, false)
+	unmeasured := strings.Join(costSplitGuidance(&pkgopencost.CostSummary{HourlyCostBasis: pkgopencost.HourlyCostBasisAllocated}, false), " ")
 	if !strings.Contains(unmeasured, "not the same as none") {
 		t.Errorf("an unmeasured null must not read as zero: %q", unmeasured)
 	}
@@ -273,7 +273,7 @@ func TestTrendBasisFollowsTheCostSource(t *testing.T) {
 	if basis := trendBasis(opencost.SourcePrometheus); basis != trendBasisCPUMemoryAllocation {
 		t.Errorf("the OpenCost trend query sums CPU and memory only, got %q", basis)
 	}
-	if !strings.Contains(trendBasisExplainer(opencost.SourcePrometheus), "allocatedCost minus totals.storageCost") {
+	if !strings.Contains(trendBasisExplainer(opencost.SourcePrometheus), "allocatedHourlyCost minus totals.storageCost") {
 		t.Error("the Prometheus trend must name the summary field it is comparable with")
 	}
 }
@@ -306,17 +306,17 @@ func TestLabelNodeRowsAddsPoolAndCountsNodesThatAreGone(t *testing.T) {
 }
 
 func TestTrendGuidanceDoesNotNameTheMonthlyProjection(t *testing.T) {
-	if strings.Contains(costTrendGuidance(nil, ""), "projectedMonthlyCost") {
+	if strings.Contains(strings.Join(costTrendGuidance(nil, ""), " "), "projectedMonthlyCost") {
 		t.Error("trend responses carry no totals, so guidance must not explain projectedMonthlyCost")
 	}
 }
 
 func TestPrometheusSplitGuidanceSaysRowsExcludeGPU(t *testing.T) {
-	prom := costSplitGuidance(&pkgopencost.CostSummary{Source: "prometheus", HourlyCostBasis: pkgopencost.HourlyCostBasisAllocated}, false)
+	prom := strings.Join(costSplitGuidance(&pkgopencost.CostSummary{Source: "prometheus", HourlyCostBasis: pkgopencost.HourlyCostBasisAllocated}, false), " ")
 	if !strings.Contains(prom, "GPU and network cost are not in them") {
 		t.Errorf("OpenCost namespace rows are CPU, memory and storage only: %q", prom)
 	}
-	if kubecost := costSplitGuidance(&pkgopencost.CostSummary{Source: "kubecost", HourlyCostBasis: pkgopencost.HourlyCostBasisAllocated}, false); strings.Contains(kubecost, "GPU and network cost are not in them") {
+	if kubecost := strings.Join(costSplitGuidance(&pkgopencost.CostSummary{Source: "kubecost", HourlyCostBasis: pkgopencost.HourlyCostBasisAllocated}, false), " "); strings.Contains(kubecost, "GPU and network cost are not in them") {
 		t.Errorf("Kubecost rows carry every allocated component: %q", kubecost)
 	}
 	if !strings.Contains(costWasteExplainer, "CPU and memory requests only") {
@@ -325,10 +325,10 @@ func TestPrometheusSplitGuidanceSaysRowsExcludeGPU(t *testing.T) {
 }
 
 func TestNodeGuidanceFlagsChurnInflatedTotalsOnlyWhenNodesAreGone(t *testing.T) {
-	if strings.Contains(nodeCostGuidance(0), "overstate") {
+	if strings.Contains(strings.Join(nodeCostGuidance(0), " "), "overstate") {
 		t.Error("without departed nodes the total is the current run rate")
 	}
-	if !strings.Contains(nodeCostGuidance(2), "overstate the current run rate") {
+	if !strings.Contains(strings.Join(nodeCostGuidance(2), " "), "overstate the current run rate") {
 		t.Error("a total that sums replaced nodes with their replacements must say so")
 	}
 }
@@ -401,7 +401,7 @@ func TestSummarizeTrendPreComputesDirection(t *testing.T) {
 		{Namespace: "a", DataPoints: []pkgopencost.CostDataPoint{{Timestamp: 100, Value: 1}, {Timestamp: 200, Value: 2}}},
 		{Namespace: "b", DataPoints: []pkgopencost.CostDataPoint{{Timestamp: 100, Value: 3}, {Timestamp: 200, Value: 3}}},
 	}
-	out, total := summarizeTrend(series)
+	out, total := summarizeTrend(series, true)
 
 	if len(out) != 2 {
 		t.Fatalf("every series should survive, got %d", len(out))
@@ -501,7 +501,7 @@ func TestSinglePointTrendReportsNoChangePercent(t *testing.T) {
 	series, total := summarizeTrend([]pkgopencost.CostTrendSeries{{
 		Namespace:  "shop",
 		DataPoints: []pkgopencost.CostDataPoint{{Timestamp: 1700000000, Value: 0.5}},
-	}})
+	}}, false)
 	if len(series) != 1 || series[0].ChangePercent != nil {
 		t.Errorf("one point cannot state a change, got %+v", series)
 	}
@@ -518,7 +518,7 @@ func TestTwoPointTrendStillReportsChangePercent(t *testing.T) {
 			{Timestamp: 1700000000, Value: 1},
 			{Timestamp: 1700003600, Value: 2},
 		},
-	}})
+	}}, false)
 	if total == nil || total.ChangePercent == nil || *total.ChangePercent != 100 {
 		t.Fatalf("expected +100%%, got %+v", total)
 	}
@@ -602,7 +602,7 @@ func TestTrendSeriesAreMeasuredAtTheRangeEndpoints(t *testing.T) {
 		{Namespace: "old", DataPoints: []pkgopencost.CostDataPoint{{Timestamp: 100, Value: 1}, {Timestamp: 200, Value: 1}, {Timestamp: 300, Value: 1}}},
 		{Namespace: "new", DataPoints: []pkgopencost.CostDataPoint{{Timestamp: 200, Value: 2}, {Timestamp: 300, Value: 2}}},
 	}
-	out, _ := summarizeTrend(series)
+	out, _ := summarizeTrend(series, true)
 	if out[1].Start != 0 || out[1].End != 2 || out[1].ChangePercent != nil {
 		t.Errorf("new namespace = start %v end %v change %v, want 0, 2 and absent", out[1].Start, out[1].End, out[1].ChangePercent)
 	}
@@ -638,26 +638,12 @@ func TestCostDeadlineKeepsAnAnswerThatArrived(t *testing.T) {
 	}
 }
 
-// Both trend backends cap the series and sum the remainder into one named
-// "other". Undeclared, an agent reports the named few as the whole cluster.
-func TestTrendDeclaresItsSeriesCap(t *testing.T) {
-	capped, disclosure := trendCapDisclosure(9, 34)
-	if !capped {
-		t.Error("eight namespaces plus the folded remainder, out of 34, is a capped answer")
-	}
-	for _, want := range []string{"9 series for 34 namespaces", "total covers every namespace"} {
-		if !strings.Contains(disclosure, want) {
-			t.Errorf("capped disclosure missing %q: %q", want, disclosure)
-		}
-	}
-
-	// The regression this guards: a namespace legitimately named "other" was
-	// counted as the aggregate, so an uncapped cluster reported itself capped.
-	if capped, disclosure := trendCapDisclosure(2, 2); capped || disclosure != "" {
-		t.Errorf("two namespaces in two series is not a cap, got %v %q", capped, disclosure)
-	}
-	if capped, _ := trendCapDisclosure(0, 0); capped {
-		t.Error("an empty trend is not a cap")
+func TestTrendRemainderDiffersFromNamespaceOther(t *testing.T) {
+	series, _ := summarizeTrend([]pkgopencost.CostTrendSeries{
+		{Namespace: "other"}, {Namespace: "other", Remainder: true},
+	}, false)
+	if series[0].Type != "namespace" || series[0].Namespace != "other" || series[1].Type != "remainder" || series[1].Namespace != "" {
+		t.Fatalf("real namespace and remainder must be distinct: %+v", series)
 	}
 }
 
