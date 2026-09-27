@@ -65,7 +65,7 @@ tests:
               resources: ["secrets"]
               verbs: ["get", "list", "watch"]
 
-  - it: names both radar:system and the legacy cloud:system group
+  - it: binds only radar:system
     set:
       cloud:
         enabled: true
@@ -85,9 +85,6 @@ tests:
           value:
             - kind: Group
               name: radar:system
-              apiGroup: rbac.authorization.k8s.io
-            - kind: Group
-              name: cloud:system
               apiGroup: rbac.authorization.k8s.io
 
   - it: stays on when systemRbac is absent from reused values

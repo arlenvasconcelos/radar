@@ -190,8 +190,5 @@ subjects:
   - kind: Group
     name: radar:system
     apiGroup: rbac.authorization.k8s.io
-  - kind: Group
-    name: cloud:system
-    apiGroup: rbac.authorization.k8s.io
 {{- end }}
 {{- end -}}
