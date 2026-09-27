@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { ShieldAlert } from 'lucide-react'
 import { AlertBanner, Collapse, CollapseChevron, useDisclosure } from '@skyhook-io/k8s-ui'
 import { useAuthMe } from '../api/client'
-import { bindableGroups } from './noClusterAccess'
 
 // Every read is filtered to the user's namespaces, so someone bound to none
 // sees empty lists in every view and reads it as an empty cluster. Stated in
@@ -21,7 +20,7 @@ export function NoClusterAccessBanner() {
 
   if (!me?.noNamespaceAccess) return null
 
-  const groups = bindableGroups(me.groups ?? [])
+  const groups = me.groups ?? []
   return (
     <div className="px-4 pt-3">
       <AlertBanner
