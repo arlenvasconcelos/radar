@@ -55,7 +55,10 @@ export function NoClusterAccessBanner() {
         }
       >
         {groups.length > 0 && (
-          <div className="mt-2">
+          // ph-no-capture: group IDs name the customer's directory structure.
+          // Radar Cloud embeds this view with session replay on, and its text
+          // mask only catches credential-shaped values. A no-op without PostHog.
+          <div className="ph-no-capture mt-2">
             <button
               {...groupsDisclosure.buttonProps}
               onClick={() => setGroupsOpen((v) => !v)}
