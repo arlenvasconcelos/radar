@@ -5154,12 +5154,10 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		// Read from the cache only, never discovered here: app startup waits on
 		// this endpoint, and discovery costs a SAR or two per namespace. The
 		// banner asks again once content has loaded, by which point the first
-		// resource request has filled the cache. Absent means not known yet, so
-		// the client keeps asking; false means known and some namespace is
-		// readable.
+		// resource request has filled the cache.
 		if k8s.IsConnected() {
-			if perms := s.permCache.Get(user.Username, user.Groups); perms != nil {
-				resp["noNamespaceAccess"] = noNamespaceAccess(auth.FilterNamespacesForUser(nil, user, perms))
+			if perms := s.permCache.Get(user.Username, user.Groups); perms != nil && noNamespaceAccess(auth.FilterNamespacesForUser(nil, user, perms)) {
+				resp["noNamespaceAccess"] = true
 			}
 		}
 	}
