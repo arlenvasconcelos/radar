@@ -1,7 +1,17 @@
 import { useEffect, useState } from 'react'
 import { ShieldAlert } from 'lucide-react'
 import { AlertBanner, Collapse, CollapseChevron, useDisclosure } from '@skyhook-io/k8s-ui'
-import { useAuthMe } from '../api/client'
+import { useAuthMe, type AuthMe } from '../api/client'
+
+// Unknown (field absent) means the server hadn't finished its first namespace
+// discovery when it answered: the banner's own refetch can beat the first
+// resource load. Ask again shortly, a bounded number of times, since a server
+// that predates the field never answers.
+export const ACCESS_CHECK_RETRY_MS = 5000
+export const ACCESS_CHECK_RETRIES = 12
+export function shouldRetryAccessCheck(me: AuthMe | undefined, attempts: number): boolean {
+  return !!me?.authEnabled && me.noNamespaceAccess === undefined && attempts < ACCESS_CHECK_RETRIES
+}
 
 // Every read is filtered to the user's namespaces, so someone bound to none
 // sees empty lists in every view and reads it as an empty cluster. Stated in
@@ -15,6 +25,16 @@ export function NoClusterAccessBanner() {
   useEffect(() => {
     void refetch()
   }, [refetch])
+  const [attempts, setAttempts] = useState(0)
+  const retry = shouldRetryAccessCheck(me, attempts)
+  useEffect(() => {
+    if (!retry) return
+    const id = setTimeout(() => {
+      setAttempts((n) => n + 1)
+      void refetch()
+    }, ACCESS_CHECK_RETRY_MS)
+    return () => clearTimeout(id)
+  }, [retry, attempts, refetch])
   const [groupsOpen, setGroupsOpen] = useState(false)
   const groupsDisclosure = useDisclosure(groupsOpen)
 

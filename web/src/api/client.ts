@@ -2150,9 +2150,12 @@ export interface AuthMe {
    *  When false, logout clears Radar's cookie but the proxy may re-auth
    *  the same user on the next request. */
   proxyLogoutConfigured?: boolean;
-  /** Connected, and the user's RBAC allows reading no namespace at all. */
+  /** Connected, and the user's RBAC allows reading no namespace at all.
+   *  Absent until the server knows (its first namespace discovery hasn't
+   *  finished yet), and always absent from servers that predate it. */
   noNamespaceAccess?: boolean;
 }
+
 
 export function useAuthMe() {
   return useQuery<AuthMe>({

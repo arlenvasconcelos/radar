@@ -887,21 +887,22 @@ func TestHandleAuthMe_NoNamespaceAccess(t *testing.T) {
 		}
 	})
 
-	t.Run("absent when some namespace is readable", func(t *testing.T) {
+	// false, not absent: absent means "not known yet" and keeps the client polling.
+	t.Run("false when some namespace is readable", func(t *testing.T) {
 		k8s.SetConnectionStatus(k8s.ConnectionStatus{State: k8s.StateConnected})
 		s := newAuthServer(auth.Config{Mode: "proxy"})
 		s.permCache.Set(user.Username, user.Groups, &auth.UserPermissions{AllowedNamespaces: []string{"team-a"}})
-		if _, has := authMeBody(t, s, user)["noNamespaceAccess"]; has {
-			t.Error("noNamespaceAccess present for a user who can read team-a")
+		if got, has := authMeBody(t, s, user)["noNamespaceAccess"]; !has || got != false {
+			t.Errorf("noNamespaceAccess = %v (present %v), want false for a user who can read team-a", got, has)
 		}
 	})
 
-	t.Run("absent for cluster-wide access", func(t *testing.T) {
+	t.Run("false for cluster-wide access", func(t *testing.T) {
 		k8s.SetConnectionStatus(k8s.ConnectionStatus{State: k8s.StateConnected})
 		s := newAuthServer(auth.Config{Mode: "proxy"})
 		s.permCache.Set(user.Username, user.Groups, &auth.UserPermissions{AllowedNamespaces: nil})
-		if _, has := authMeBody(t, s, user)["noNamespaceAccess"]; has {
-			t.Error("noNamespaceAccess present for a user with cluster-wide access")
+		if got, has := authMeBody(t, s, user)["noNamespaceAccess"]; !has || got != false {
+			t.Errorf("noNamespaceAccess = %v (present %v), want false for a user with cluster-wide access", got, has)
 		}
 	})
 
