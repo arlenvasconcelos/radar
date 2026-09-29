@@ -1961,11 +1961,11 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
         </PaneLoader>
       )}
 
+      {contentReady && <NoClusterAccessBanner />}
       {/* Main content - only show when connected and authenticated */}
       {/* inert while a fullscreen detail overlay covers the views — keeps the
           retained background list out of the focus order + a11y tree (the visual
           cover already blocks pointer events). */}
-      {contentReady && <NoClusterAccessBanner />}
       {(contentReady || shellDuringSync) && <div className="flex-1 flex overflow-hidden" inert={expandedView}>
         {/* Search included, not just the path: selection inside a view rides in
             the query (?resource=, ?release=), so a path-only key would still

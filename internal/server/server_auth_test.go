@@ -905,6 +905,17 @@ func TestHandleAuthMe_NoNamespaceAccess(t *testing.T) {
 		}
 	})
 
+	// /auth/me never discovers: with nothing cached (before the first resource
+	// request, or after a failed discovery, which caches nothing) the field is
+	// left out and the banner asks again once content has loaded.
+	t.Run("absent when nothing is cached", func(t *testing.T) {
+		k8s.SetConnectionStatus(k8s.ConnectionStatus{State: k8s.StateConnected})
+		s := newAuthServer(auth.Config{Mode: "proxy"})
+		if _, has := authMeBody(t, s, user)["noNamespaceAccess"]; has {
+			t.Error("noNamespaceAccess present with no cached permissions")
+		}
+	})
+
 	// Before the cluster connects, namespace discovery fails closed; reporting
 	// that as "no access" would flash the banner for every user.
 	t.Run("absent while not connected", func(t *testing.T) {
