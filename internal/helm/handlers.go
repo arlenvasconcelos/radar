@@ -814,8 +814,14 @@ func (h *Handlers) handleUpgradeStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handlePreviewValues previews the effect of new values on a release.
+// handlePreviewValues previews the effect of new values on a release. It is
+// the first step of applying them and can fetch a chart version from a
+// repository, so it needs the same permission as the write.
 func (h *Handlers) handlePreviewValues(w http.ResponseWriter, r *http.Request) {
+	if !requireHelmWrite(w, r, chi.URLParam(r, "namespace")) {
+		return
+	}
+
 	client := GetClient()
 	if client == nil {
 		writeError(w, http.StatusServiceUnavailable, "Helm client not initialized")

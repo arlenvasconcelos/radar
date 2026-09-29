@@ -1,6 +1,7 @@
 package helm
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	authv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -82,4 +84,20 @@ func TestRequireHelmWrite_ChecksCallerInNamespace(t *testing.T) {
 	if reviews.Load() == 0 {
 		t.Fatal("no SubjectAccessReview was made for the caller")
 	}
+
+	// Preview can fetch a chart version from a repository, so it is gated like
+	// the write it previews.
+	t.Run("preview values in a namespace the caller can't write", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/helm/releases/billing/web/preview-values", strings.NewReader(`{"values":{},"version":"1.2.3","repository":"https://charts.example"}`))
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("namespace", "billing")
+		rctx.URLParams.Add("name", "web")
+		ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
+		req = req.WithContext(auth.ContextWithUser(ctx, &auth.User{Username: "helm-gate-dana", Groups: []string{"radar:viewer", "radar:idp:platform-eng"}}))
+		rec := httptest.NewRecorder()
+		NewHandlers(nil).handlePreviewValues(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403 before any chart fetch (body %s)", rec.Code, rec.Body.String())
+		}
+	})
 }
