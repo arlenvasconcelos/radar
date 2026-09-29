@@ -163,7 +163,7 @@ before upgrading if the added visibility is unwanted.
 
 ### Radar Cloud background identities (`radar:system`)
 
-The hub's alerts worker, timeline puller and AI diagnose agent call Radar
+The hub's alerts worker and timeline puller call Radar
 as the `radar:system` group, not as a user. `cloud.systemRbac` (default `true`)
 binds that group to a read-only set: `view`, the cluster-read and
 integration-read add-ons above, and `get/list/watch` on Secrets. Secret read is
@@ -173,8 +173,8 @@ Helm stores each release as a Secret.
 It is independent of `cloud.defaultRbac`, so turning the role bindings off
 (`cloud.defaultRbac.create=false`, for example when IdP groups decide cluster
 access) leaves alerts and the hub timeline working. It is all or nothing:
-`cloud.systemRbac=false` removes the whole grant, and alerts, the hub timeline
-and AI diagnose then see nothing on clusters without the role bindings unless
+`cloud.systemRbac=false` removes the whole grant, and alerts and the hub
+timeline then see nothing on clusters without the role bindings unless
 you bind `radar:system` yourself. Change it through this value: a binding
 edited or deleted with `kubectl` comes back on the next upgrade.
 
