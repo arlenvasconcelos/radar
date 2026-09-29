@@ -128,8 +128,8 @@ export function HelmReleaseDrawer({ release, onClose, onNavigateToResource, isOp
   const resizeStartWidth = useRef(DEFAULT_WIDTH)
   const targetVersionRef = useRef('')
   const editedUpgradeYamlRef = useRef('')
-  const { allowed: canHelmWrite, reason: helmActReason } = useCanHelmAct()
   const helmNamespace = release.storageNamespace || release.namespace
+  const { allowed: canHelmWrite, reason: helmActReason } = useCanHelmAct(helmNamespace)
 
   const { data: releaseDetail, isLoading, error: releaseError, refetch: refetchRelease } = useHelmRelease(
     helmNamespace,
@@ -706,7 +706,6 @@ export function HelmReleaseDrawer({ release, onClose, onNavigateToResource, isOp
               releaseNamespace={releaseDetail.namespace}
               managedByFluxHelmRelease={releaseDetail.managedByFluxHelmRelease}
               hookDiagnostics={releaseDetail.hookDiagnostics}
-              canCompare
               onCompare={handleCompareRevisions}
               onNavigateToResource={onNavigateToResource}
             />
@@ -1055,7 +1054,6 @@ function HelmOperationBanner({
   releaseNamespace,
   managedByFluxHelmRelease,
   hookDiagnostics,
-  canCompare,
   onCompare,
   onNavigateToResource,
 }: {
@@ -1064,7 +1062,6 @@ function HelmOperationBanner({
   releaseNamespace: string
   managedByFluxHelmRelease?: string
   hookDiagnostics?: HookDiagnostic[]
-  canCompare?: boolean
   onCompare?: (rev1: number, rev2: number) => void
   onNavigateToResource?: NavigateToResource
 }) {
@@ -1135,7 +1132,6 @@ function HelmOperationBanner({
           <OperationInsightSignals
             insight={operationInsight}
             releaseNamespace={releaseNamespace}
-            canCompare={Boolean(canCompare)}
             onCompare={onCompare}
             onNavigateToResource={onNavigateToResource}
           />
@@ -1154,13 +1150,11 @@ function HelmOperationBanner({
 function OperationInsightSignals({
   insight,
   releaseNamespace,
-  canCompare,
   onCompare,
   onNavigateToResource,
 }: {
   insight?: HelmOperationInsight
   releaseNamespace: string
-  canCompare: boolean
   onCompare?: (rev1: number, rev2: number) => void
   onNavigateToResource?: NavigateToResource
 }) {
@@ -1169,7 +1163,7 @@ function OperationInsightSignals({
   const relatedCount = primaryResource
     ? Math.max(0, (insight?.signalCount ?? 0) - 1)
     : insight?.relatedResources?.length ?? 0
-  const showCompare = Boolean(compare && canCompare && onCompare)
+  const showCompare = Boolean(compare && onCompare)
   if (!primaryResource && !showCompare) {
     return null
   }

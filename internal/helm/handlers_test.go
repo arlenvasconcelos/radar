@@ -1,6 +1,7 @@
 package helm
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -149,5 +150,24 @@ func TestHelmHandlers_NotGatedOnCloudRole(t *testing.T) {
 				t.Fatalf("status = %d body = %s; a Cloud viewer must reach Kubernetes RBAC, not a role gate", rec.Code, body)
 			}
 		})
+	}
+}
+
+// A release read runs as the caller, so a Kubernetes denial is a 403 the UI
+// can explain, not a 500 recorded as a server fault.
+func TestWriteReleaseReadError(t *testing.T) {
+	cases := []struct {
+		err  error
+		want int
+	}{
+		{errors.New(`secrets is forbidden: User "alice" cannot list resource "secrets" in API group "" in the namespace "team-a"`), http.StatusForbidden},
+		{errors.New("release: not found"), http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		rec := httptest.NewRecorder()
+		writeReleaseReadError(rec, tc.err)
+		if rec.Code != tc.want {
+			t.Errorf("%q: status = %d, want %d", tc.err, rec.Code, tc.want)
+		}
 	}
 }

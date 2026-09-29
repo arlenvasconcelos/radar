@@ -22,7 +22,7 @@ import type {
 } from '@skyhook-io/k8s-ui'
 import { useQuery, useMutation, useQueryClient, skipToken } from '@tanstack/react-query'
 import { showApiError, showApiSuccess } from '../components/ui/Toast'
-import { useCanHelmWrite } from '../contexts/CapabilitiesContext'
+import { useIsAuthEnabled, useNamespacedCapabilities } from '../contexts/CapabilitiesContext'
 import type {
   Topology,
   ClusterInfo,
@@ -2207,21 +2207,29 @@ export function useCloudRole() {
 }
 
 /**
- * useCanHelmAct answers whether Helm write and sensitive-read buttons are
- * usable. Only the chart's rbac.helm capability is checked here: the calls run
- * as the impersonated user, so Kubernetes RBAC decides the rest. The Cloud role
- * says nothing about cluster access when IdP groups grant it.
+ * useCanHelmAct answers whether Helm write buttons are usable for a release in
+ * `namespace`. With auth on, Helm runs as the signed-in user, so the check is
+ * the user's own Kubernetes RBAC in that namespace (Helm writes each release as
+ * a Secret there); the Cloud role says nothing about cluster access when IdP
+ * groups grant it. Without auth, Helm runs as Radar's ServiceAccount, which
+ * needs the chart's rbac.helm=true.
  */
-export function useCanHelmAct(): { allowed: boolean; reason?: string } {
-  const helmWrite = useCanHelmWrite();
-  if (!helmWrite) {
+export function useCanHelmAct(namespace?: string): { allowed: boolean; reason?: string } {
+  const { canHelmWrite } = useNamespacedCapabilities(namespace);
+  const authEnabled = useIsAuthEnabled();
+  if (canHelmWrite) return { allowed: true };
+  if (authEnabled) {
     return {
       allowed: false,
-      reason:
-        "Helm write permissions required. Set rbac.helm=true in the Radar Helm chart values.",
+      reason: namespace
+        ? `Your Kubernetes permissions don't allow managing Helm releases in ${namespace} (creating Secrets there).`
+        : "Your Kubernetes permissions don't allow managing Helm releases.",
     };
   }
-  return { allowed: true };
+  return {
+    allowed: false,
+    reason: "Helm write permissions required. Set rbac.helm=true in the Radar Helm chart values.",
+  };
 }
 
 // Namespaces

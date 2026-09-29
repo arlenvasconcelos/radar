@@ -66,7 +66,6 @@ export function InstallWizard({ repo, chartName, version, source, repoUrl, defau
   const progressEndRef = useRef<HTMLDivElement>(null)
 
   const queryClient = useQueryClient()
-  const { allowed: canHelmWrite, reason: helmActReason } = useCanHelmAct()
 
   // Choose the right data based on source
   const isLocal = source === 'local'
@@ -209,6 +208,10 @@ export function InstallWizard({ repo, chartName, version, source, repoUrl, defau
   )
   const releaseNameError = releaseNameValidation.valid ? null : releaseNameValidation.error
   const namespaceError = namespaceValidation.valid ? null : namespaceValidation.error
+  // Checked in the namespace being installed into, once it's a valid name.
+  const { allowed: canHelmWrite, reason: helmActReason } = useCanHelmAct(
+    namespaceValidation.valid ? namespace.trim() : undefined,
+  )
   const canProceedFromInfo = releaseNameValidation.valid && namespaceValidation.valid
   const canInstall = canProceedFromInfo && !yamlError
 
