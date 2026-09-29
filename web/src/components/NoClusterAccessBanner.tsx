@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ShieldAlert } from 'lucide-react'
-import { AlertBanner, Collapse, CollapseChevron, useDisclosure } from '@skyhook-io/k8s-ui'
+import { AlertBanner, Badge, Collapse, CollapseChevron, useDisclosure } from '@skyhook-io/k8s-ui'
 import { useAuthMe } from '../api/client'
 
 // Every read is filtered to the user's namespaces, so someone bound to none
@@ -50,12 +50,9 @@ export function NoClusterAccessBanner() {
             <Collapse open={groupsOpen} id={groupsDisclosure.panelId}>
               <div className="mt-2 flex max-h-32 max-w-4xl flex-wrap gap-1.5 overflow-y-auto">
                 {groups.map((g) => (
-                  <span
-                    key={g}
-                    className="inline-flex items-center rounded-md bg-theme-elevated px-1.5 py-0.5 font-mono text-[11px] text-theme-text-secondary ring-1 ring-theme-border"
-                  >
+                  <Badge key={g} tone="structural" size="sm" className="font-mono">
                     {g}
-                  </span>
+                  </Badge>
                 ))}
               </div>
             </Collapse>
