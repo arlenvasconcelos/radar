@@ -1,18 +1,20 @@
 {{- /*
 Read-only access for Radar Cloud's own background identities.
 
-The hub's alerts worker and timeline puller have no user or IdP groups; they
-assert the radar:system group. Without a binding of their own they would ride
+The hub's background identities have no user or IdP groups; they assert the
+radar:system group. That is the alerts worker, the timeline puller and the
+AI diagnose agent. Without a binding of their own they would ride
 on radar:owner, which disappears when an org turns the role bindings off
 (cloud.defaultRbac.create=false) to let IdP groups decide cluster access —
 silently stopping alerts and the hub timeline.
 
 The grant is the viewer set (view here, plus the cluster-read and
 integration-read add-ons, which bind radar:system in their own templates) and
-Secret read. Secret read is what Helm release alerts need: Radar lists Helm
-releases as the caller, and Helm stores each release as a Secret. Kubernetes
-RBAC cannot narrow that to Helm's Secrets, so it is all Secrets, read-only.
-No writes.
+Secret read. Secret read is what Helm release alerts and Secret changes in the
+hub timeline need: Radar lists Helm releases as the caller, and Helm stores
+each release as a Secret. Kubernetes RBAC cannot narrow that to Helm's
+Secrets, so it is all Secrets, read-only. No writes. All or nothing:
+cloud.systemRbac=false removes the whole grant.
 */}}
 {{- if and (include "radar.cloudSystemRbac" . | eq "true") .Values.rbac.create -}}
 apiVersion: rbac.authorization.k8s.io/v1

@@ -65,6 +65,25 @@ tests:
               resources: ["secrets"]
               verbs: ["get", "list", "watch"]
 
+  - it: binds Secret read to radar:system
+    set:
+      cloud:
+        enabled: true
+        token: dummy
+        url: "wss://cloud.example"
+        clusterName: test-cluster
+    template: cloud-rbac-system.yaml
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-radar-cloud-system-secrets-read
+    asserts:
+      - equal:
+          path: subjects
+          value:
+            - kind: Group
+              name: radar:system
+              apiGroup: rbac.authorization.k8s.io
+
   - it: binds only radar:system
     set:
       cloud:
@@ -87,7 +106,10 @@ tests:
               name: radar:system
               apiGroup: rbac.authorization.k8s.io
 
-  - it: stays on when systemRbac is absent from reused values
+  # --reuse-values from a release predating systemRbac renders with the key
+  # absent: nothing renders, so an existing install never gains Secret read
+  # without choosing it.
+  - it: renders nothing when systemRbac is absent from reused values
     set:
       cloud:
         enabled: true
@@ -95,6 +117,18 @@ tests:
         url: "wss://cloud.example"
         clusterName: test-cluster
         systemRbac: null
+    template: cloud-rbac-system.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders the view binding and Secret read by default
+    set:
+      cloud:
+        enabled: true
+        token: dummy
+        url: "wss://cloud.example"
+        clusterName: test-cluster
     template: cloud-rbac-system.yaml
     asserts:
       - hasDocuments:
@@ -148,5 +182,8 @@ tests:
       value: RELEASE-NAME-radar-cloud-system-integration-read-namespaced
     asserts:
       - equal:
-          path: subjects[0].name
-          value: radar:system
+          path: subjects
+          value:
+            - kind: Group
+              name: radar:system
+              apiGroup: rbac.authorization.k8s.io

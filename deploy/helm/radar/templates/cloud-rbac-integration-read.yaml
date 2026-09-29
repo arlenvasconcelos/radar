@@ -49,9 +49,11 @@ subjects:
   - kind: Group
     name: radar:{{ $tier }}
     apiGroup: rbac.authorization.k8s.io
+{{- if ne $tier "system" }}
   - kind: Group
     name: cloud:{{ $tier }}
     apiGroup: rbac.authorization.k8s.io
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

@@ -227,10 +227,12 @@ func TestIntegrationReadBindings(t *testing.T) {
 							continue
 						}
 						found = true
-						if doc.RoleRef != (rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: roleName}) || !reflect.DeepEqual(doc.Subjects, []rbacv1.Subject{
-							{Kind: "Group", Name: "radar:" + tier, APIGroup: rbacv1.GroupName},
-							{Kind: "Group", Name: "cloud:" + tier, APIGroup: rbacv1.GroupName},
-						}) {
+						wantSubjects := []rbacv1.Subject{{Kind: "Group", Name: "radar:" + tier, APIGroup: rbacv1.GroupName}}
+						// radar:system has no legacy cloud:* twin.
+						if tier != "system" {
+							wantSubjects = append(wantSubjects, rbacv1.Subject{Kind: "Group", Name: "cloud:" + tier, APIGroup: rbacv1.GroupName})
+						}
+						if doc.RoleRef != (rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: roleName}) || !reflect.DeepEqual(doc.Subjects, wantSubjects) {
 							t.Errorf("incorrect binding: %+v", doc)
 						}
 					}
