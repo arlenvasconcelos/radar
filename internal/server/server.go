@@ -5064,8 +5064,9 @@ func (s *Server) writeErrorCode(w http.ResponseWriter, status int, code, message
 	}
 }
 
-// requireCloudRole gates a mutating handler on the caller's Cloud role tier,
-// mirroring internal/helm's gate. Returns true if the request should proceed.
+// requireCloudRole gates a handler for one of Radar's own features (config,
+// settings, integrations) on the caller's Cloud role tier. Returns true if the
+// request should proceed.
 //
 // Callers with no Cloud role (OSS, OIDC, or running outside Cloud's tunnel)
 // bypass the gate — radar OSS keeps using only K8s RBAC for authz, so the

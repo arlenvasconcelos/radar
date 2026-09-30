@@ -724,27 +724,27 @@ export function HelmReleaseDrawer({ release, onClose, onNavigateToResource, isOp
             )}
             {activeTab === 'manifest' && (
               <ManifestViewer
-                  manifest={manifest || ''}
-                  isLoading={manifestLoading}
-                  revision={selectedRevision}
-                  onCopy={(text) => copyToClipboard(text, 'manifest')}
-                  copied={copied === 'manifest'}
-                />
+                manifest={manifest || ''}
+                isLoading={manifestLoading}
+                revision={selectedRevision}
+                onCopy={(text) => copyToClipboard(text, 'manifest')}
+                copied={copied === 'manifest'}
+              />
             )}
             {activeTab === 'values' && (
               <ValuesViewer
-                  values={values}
-                  isLoading={valuesLoading}
-                  showAllValues={showAllValues}
-                  onToggleAllValues={setShowAllValues}
-                  onCopy={(text) => copyToClipboard(text, 'values')}
-                  copied={copied === 'values'}
-                  namespace={helmNamespace}
-                  name={release.name}
-                  revision={selectedRevision}
-                  currentRevision={releaseDetail.revision}
-                  onApplySuccess={() => refetch()}
-                />
+                values={values}
+                isLoading={valuesLoading}
+                showAllValues={showAllValues}
+                onToggleAllValues={setShowAllValues}
+                onCopy={(text) => copyToClipboard(text, 'values')}
+                copied={copied === 'values'}
+                namespace={helmNamespace}
+                name={release.name}
+                revision={selectedRevision}
+                currentRevision={releaseDetail.revision}
+                onApplySuccess={() => refetch()}
+              />
             )}
             {activeTab === 'resources' && (
               <OwnedResources

@@ -2181,16 +2181,12 @@ const CLOUD_ROLE_RANK: Record<string, number> = {
  * present (OSS, OIDC, no role group, OR auth/me is still loading),
  * `canAtLeast` returns true — the gate is strictly additive for
  * Cloud-attributed users, mirroring the backend's `requireCloudRole`
- * semantics. Use for passive content gating (panels, sections); use
- * `useCanHelmAct` (or similar) for *click-prone* surfaces where you
- * need fail-closed behavior during the auth/me round-trip to prevent
- * a viewer from clicking through during the loading window.
+ * semantics. It gates Radar's own features (settings, integrations), never
+ * operations that run as the user, which Kubernetes RBAC decides.
  *
- * Why optimistic during load: the gated empty state ("Your role can't
- * view…") rendered briefly to OSS / kubectl-plugin users before
- * auth/me resolves is a worse regression than a Cloud viewer seeing
- * a content tab populate for a tick before being gated out. Click-
- * prevention belongs in the action-button hook, not here.
+ * Why optimistic during load: a gated empty state rendered briefly to
+ * OSS / kubectl-plugin users before auth/me resolves is a worse regression
+ * than a Cloud viewer seeing content for a tick before being gated out.
  */
 export function useCloudRole() {
   const { data, isLoading } = useAuthMe();
@@ -5338,14 +5334,10 @@ export function useHelmRelease(
 }
 
 // Get manifest for a Helm release (optionally at a specific revision).
-// `enabled` lets callers skip the query when the user's Cloud role
-// would 403 the read — saves a round-trip and avoids a transient
-// "error" state that the role-gated empty panel doesn't need.
 export function useHelmManifest(
   namespace: string,
   name: string,
   revision?: number,
-  enabled = true,
 ) {
   const params = revision ? `?revision=${revision}` : "";
   return useQuery<string>({
@@ -5362,12 +5354,12 @@ export function useHelmManifest(
       }
       return response.text();
     },
-    enabled: Boolean(namespace && name && enabled),
+    enabled: Boolean(namespace && name),
     staleTime: 60000, // 1 minute
   });
 }
 
-// Get values for a Helm release. `enabled` see useHelmManifest.
+// Get values for a Helm release.
 export function useHelmValues(
   namespace: string,
   name: string,
@@ -5388,7 +5380,7 @@ export function useHelmValues(
   });
 }
 
-// Get diff between two revisions. `enabled` see useHelmManifest.
+// Get diff between two revisions.
 export function useHelmManifestDiff(
   namespace: string,
   name: string,

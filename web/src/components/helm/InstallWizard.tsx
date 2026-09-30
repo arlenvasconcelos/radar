@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { X, Package, ChevronRight, ChevronLeft, Play, Loader2, AlertTriangle, CheckCircle, User, BookOpen, Link as LinkIcon, Star, BadgeCheck, Shield, Globe, Building2, Plus, Minus, Terminal } from 'lucide-react'
-import { PaneLoader, Input } from '@skyhook-io/k8s-ui'
+import { PaneLoader, Input, useDebouncedValue } from '@skyhook-io/k8s-ui'
 import { clsx } from 'clsx'
 import yaml from 'yaml'
 import { createPatch } from 'diff'
@@ -209,9 +209,9 @@ export function InstallWizard({ repo, chartName, version, source, repoUrl, defau
   const releaseNameError = releaseNameValidation.valid ? null : releaseNameValidation.error
   const namespaceError = namespaceValidation.valid ? null : namespaceValidation.error
   // Checked in the namespace being installed into, once it's a valid name.
-  const { allowed: canHelmWrite, reason: helmActReason } = useCanHelmAct(
-    namespaceValidation.valid ? namespace.trim() : undefined,
-  )
+  // Debounced: each new namespace is a capabilities round-trip of several SARs.
+  const helmActNamespace = useDebouncedValue(namespaceValidation.valid ? namespace.trim() : undefined, 300)
+  const { allowed: canHelmWrite, reason: helmActReason } = useCanHelmAct(helmActNamespace)
   const canProceedFromInfo = releaseNameValidation.valid && namespaceValidation.valid
   const canInstall = canProceedFromInfo && !yamlError
 
