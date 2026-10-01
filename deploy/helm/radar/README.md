@@ -182,6 +182,23 @@ An upgrade with `--reuse-values` from a release that predates the key leaves it
 off, so an existing install never gains Secret read without choosing it. Set
 `cloud.systemRbac=true` on those installs.
 
+### Radar Cloud AI identity (`radar:ai`)
+
+Every Radar Cloud AI Diagnose run, manual or background, reads the cluster as
+the `radar:ai` group, whoever started it. `cloud.aiRbac` (default `true`) binds
+that group to `view` plus the cluster-read and integration-read add-ons above.
+No Secrets, no writes. MCP clients (Claude Desktop, Cursor) are not affected:
+they read with the user's own permissions.
+
+It is independent of `cloud.defaultRbac`, so Diagnose works when the role
+bindings are off. To narrow what the AI reads, set `cloud.aiRbac=false` and bind
+your own ClusterRole to `radar:ai`. With `cloud.aiRbac=false` and no binding of
+your own, Diagnose sees what `radar:viewer` sees, which is nothing on clusters
+without the role bindings.
+
+An upgrade with `--reuse-values` from a release that predates the key leaves it
+off. Set `cloud.aiRbac=true` on those installs.
+
 ### Connecting to Argo CD (GitOps deep diff)
 
 Radar's GitOps pages show a Git-rendered desired-vs-live diff when connected to

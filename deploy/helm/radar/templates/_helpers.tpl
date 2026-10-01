@@ -87,3 +87,17 @@ true
 false
 {{- end -}}
 {{- end -}}
+
+{{/*
+Whether the view-only binding for Radar Cloud's AI identity (radar:ai)
+renders. An absent value means OFF, as with radar.cloudSystemRbac: a
+`--reuse-values` upgrade from a release that predates the key never gains a
+new reader without someone choosing it.
+*/}}
+{{- define "radar.cloudAiRbac" -}}
+{{- if and .Values.cloud.enabled (eq (toString .Values.cloud.aiRbac) "true") -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end -}}
