@@ -3,10 +3,10 @@ Read-only access for Radar Cloud's own background identities.
 
 The hub's background identities have no user or IdP groups; they assert the
 radar:system group. That is the alerts worker and the timeline puller (AI
-diagnose reads as radar:viewer). Without a binding of their own they would ride
-on radar:owner, which disappears when an org turns the role bindings off
-(cloud.defaultRbac.create=false) to let IdP groups decide cluster access —
-silently stopping alerts and the hub timeline.
+diagnose reads as radar:ai, see cloud-rbac-ai.yaml). Without a binding of
+their own they would ride on radar:owner, which disappears when an org turns
+the role bindings off (cloud.defaultRbac.create=false) to let IdP groups
+decide cluster access — silently stopping alerts and the hub timeline.
 
 The grant is the viewer set (view here, plus the cluster-read and
 integration-read add-ons, which bind radar:system in their own templates) and

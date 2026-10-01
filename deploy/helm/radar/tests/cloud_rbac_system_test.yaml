@@ -30,6 +30,7 @@ tests:
         clusterName: test-cluster
         defaultRbac:
           create: false
+        aiRbac: false
     template: cloud-rbac-cluster-read.yaml
     asserts:
       - hasDocuments:

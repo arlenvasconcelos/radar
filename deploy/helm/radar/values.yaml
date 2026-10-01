@@ -536,6 +536,14 @@ cloud:
   # An upgrade with --reuse-values from a release that predates this key leaves
   # it OFF, so an existing install never gains Secret read without choosing it.
   systemRbac: true
+  # View-only binding for Radar Cloud's AI identity: every AI Diagnose run,
+  # manual or background, reads the cluster as the radar:ai group. Grants the
+  # viewer set (view + cluster-read + integration-read), no Secrets, no writes.
+  # See templates/cloud-rbac-ai.yaml. Independent of defaultRbac, so Diagnose
+  # works when IdP groups decide cluster access. false removes the grant.
+  # An upgrade with --reuse-values from a release that predates this key leaves
+  # it OFF.
+  aiRbac: true
 
 # Anonymous usage report to Skyhook, daily and when the pod stops: views,
 # actions and MCP tools used, plus this cluster's minor version, platform,
