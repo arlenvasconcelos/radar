@@ -116,3 +116,38 @@ func TestResourceDiffMasksSecretValues(t *testing.T) {
 		}
 	}
 }
+
+func TestRedactSecretManifestsCoversCopiesAndLists(t *testing.T) {
+	cases := map[string]string{
+		"last-applied copy": `apiVersion: v1
+kind: Secret
+metadata:
+  name: db
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: '{"kind":"Secret","data":{"password":"czNjcjN0LXZhbHVl"}}'
+data:
+  password: czNjcjN0LXZhbHVl
+`,
+		"Secret inside a List": `apiVersion: v1
+kind: List
+items:
+  - apiVersion: v1
+    kind: Secret
+    metadata:
+      name: db
+    stringData:
+      password: s3cr3t-value
+`,
+		"unparseable with a trailing comment": "apiVersion: v1\nkind: Secret # credential\ndata:\n  password: [unclosed s3cr3t-value\n",
+	}
+	for name, manifest := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := redactSecretManifests(manifest)
+			for _, leak := range []string{"s3cr3t-value", "czNjcjN0LXZhbHVl"} {
+				if strings.Contains(got, leak) {
+					t.Fatalf("Secret value leaked: %q", got)
+				}
+			}
+		})
+	}
+}

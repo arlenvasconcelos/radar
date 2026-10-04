@@ -839,11 +839,8 @@ func computeRedactedManifestDiff(manifest1, manifest2 string, rev1, rev2 int) st
 // splits on.
 var manifestSeparator = regexp.MustCompile(`(?:^|\s*\n)---\s*`)
 
-// secretKindLine spots a Secret document that failed to parse.
-var secretKindLine = regexp.MustCompile(`(?m)^kind:\s*["']?Secret["']?\s*$`)
-
-// redactSecretManifests rewrites the kind: Secret documents of a rendered
-// manifest and leaves every other document byte-for-byte untouched.
+// redactSecretManifests rewrites the documents of a rendered manifest that can
+// carry Secret values and leaves every other document byte-for-byte untouched.
 func redactSecretManifests(manifest string) string {
 	seps := manifestSeparator.FindAllStringIndex(manifest, -1)
 	var out strings.Builder
@@ -856,35 +853,25 @@ func redactSecretManifests(manifest string) string {
 	return out.String()
 }
 
+const lastAppliedAnnotation = "kubectl.kubernetes.io/last-applied-configuration"
+
+// redactSecretDocument masks Secret values in one manifest document. A document
+// that doesn't parse is withheld whole: the diff goes to an AI model, and a
+// regex can't tell a malformed Secret from anything else.
 func redactSecretDocument(doc string) string {
-	if strings.TrimSpace(doc) == "" {
+	if strings.TrimSpace(stripYAMLComments(doc)) == "" {
 		return doc
 	}
 	var obj map[string]any
 	if err := yaml.Unmarshal([]byte(doc), &obj); err != nil {
-		if secretKindLine.MatchString(doc) {
-			return "# [REDACTED: unparseable Secret manifest]"
-		}
-		return doc
+		return "# [REDACTED: unparseable manifest document]"
 	}
-	if kind, _ := obj["kind"].(string); kind != "Secret" {
+	if !redactSecretObject(obj) {
 		return doc
-	}
-	for _, field := range []string{"data", "stringData"} {
-		values, ok := obj[field].(map[string]any)
-		if !ok {
-			if obj[field] != nil {
-				obj[field] = "[REDACTED]"
-			}
-			continue
-		}
-		for k := range values {
-			values[k] = "[REDACTED]"
-		}
 	}
 	b, err := yaml.Marshal(obj)
 	if err != nil {
-		return "# [REDACTED: unparseable Secret manifest]"
+		return "# [REDACTED: unparseable manifest document]"
 	}
 	// Keep the "# Source:" comment Helm puts above each document.
 	var comments strings.Builder
@@ -895,6 +882,55 @@ func redactSecretDocument(doc string) string {
 		comments.WriteString(line + "\n")
 	}
 	return comments.String() + strings.TrimSuffix(string(b), "\n")
+}
+
+// redactSecretObject masks Secret data and stringData values, drops the
+// last-applied annotation (a full copy of the object, Secret values included)
+// and descends into List items. It reports whether anything changed.
+func redactSecretObject(obj map[string]any) bool {
+	changed := false
+	if meta, ok := obj["metadata"].(map[string]any); ok {
+		if ann, ok := meta["annotations"].(map[string]any); ok {
+			if _, has := ann[lastAppliedAnnotation]; has {
+				delete(ann, lastAppliedAnnotation)
+				changed = true
+			}
+		}
+	}
+	if kind, _ := obj["kind"].(string); kind == "Secret" {
+		for _, field := range []string{"data", "stringData"} {
+			values, ok := obj[field].(map[string]any)
+			if !ok {
+				if obj[field] != nil {
+					obj[field] = "[REDACTED]"
+					changed = true
+				}
+				continue
+			}
+			for k := range values {
+				values[k] = "[REDACTED]"
+				changed = true
+			}
+		}
+	}
+	if items, ok := obj["items"].([]any); ok {
+		for _, item := range items {
+			if m, ok := item.(map[string]any); ok && redactSecretObject(m) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+func stripYAMLComments(doc string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(doc, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "#") {
+			b.WriteString(line + "\n")
+		}
+	}
+	return b.String()
 }
 
 func releaseNotes(rel *release.Release) string {
