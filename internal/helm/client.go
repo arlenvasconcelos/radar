@@ -733,15 +733,21 @@ func getValuesWith(actionConfig *action.Configuration, name string, allValues bo
 
 // GetValuesDiff returns a values diff between two revisions.
 func (c *Client) GetValuesDiff(namespace, name string, revision1, revision2 int, allValues bool) (*ValuesDiff, error) {
-	return c.getValuesDiff(namespace, name, revision1, revision2, allValues, "", nil)
+	return c.getValuesDiff(namespace, name, revision1, revision2, allValues, "", nil, false)
 }
 
 // GetValuesDiffAsUser is GetValuesDiff with K8s impersonation.
 func (c *Client) GetValuesDiffAsUser(namespace, name string, revision1, revision2 int, allValues bool, username string, groups []string) (*ValuesDiff, error) {
-	return c.getValuesDiff(namespace, name, revision1, revision2, allValues, username, groups)
+	return c.getValuesDiff(namespace, name, revision1, revision2, allValues, username, groups, false)
 }
 
-func (c *Client) getValuesDiff(namespace, name string, revision1, revision2 int, allValues bool, username string, groups []string) (*ValuesDiff, error) {
+// GetValuesDiffAsUserRedacted redacts credential values in both revisions before
+// diffing for AI callers. The REST/UI diff retains the user's own values.
+func (c *Client) GetValuesDiffAsUserRedacted(namespace, name string, revision1, revision2 int, allValues bool, username string, groups []string) (*ValuesDiff, error) {
+	return c.getValuesDiff(namespace, name, revision1, revision2, allValues, username, groups, true)
+}
+
+func (c *Client) getValuesDiff(namespace, name string, revision1, revision2 int, allValues bool, username string, groups []string, redact bool) (*ValuesDiff, error) {
 	values1, err := c.GetValuesRevisionAsUser(namespace, name, allValues, revision1, username, groups)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get values for revision %d: %w", revision1, err)
@@ -750,7 +756,12 @@ func (c *Client) getValuesDiff(namespace, name string, revision1, revision2 int,
 	if err != nil {
 		return nil, fmt.Errorf("failed to get values for revision %d: %w", revision2, err)
 	}
-	diff, err := computeValuesDiff(values1, values2, revision1, revision2, allValues)
+	var diff string
+	if redact {
+		diff, err = computeRedactedValuesDiff(values1, values2, revision1, revision2, allValues)
+	} else {
+		diff, err = computeValuesDiff(values1, values2, revision1, revision2, allValues)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1047,6 +1058,17 @@ func (c *Client) getReleaseRevisionAsUser(namespace, name string, revision int, 
 		return nil, fmt.Errorf("failed to get helm release: %w", err)
 	}
 	return rel, nil
+}
+
+func computeRedactedValuesDiff(values1, values2 *HelmValues, rev1, rev2 int, allValues bool) (string, error) {
+	if allValues {
+		aicontext.RedactHelmValues(values1.Computed)
+		aicontext.RedactHelmValues(values2.Computed)
+	} else {
+		aicontext.RedactHelmValues(values1.UserSupplied)
+		aicontext.RedactHelmValues(values2.UserSupplied)
+	}
+	return computeValuesDiff(values1, values2, rev1, rev2, allValues)
 }
 
 func computeValuesDiff(values1, values2 *HelmValues, rev1, rev2 int, allValues bool) (string, error) {

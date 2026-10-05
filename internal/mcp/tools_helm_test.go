@@ -57,6 +57,8 @@ func TestRedactedHelmValuesRedactsSecretsAndKeepsReferences(t *testing.T) {
 			"tag":        "1.2.3",
 		},
 		"password":   "supersecret",
+		"dbPassword": "SENTINEL",
+		"auth":       map[string]any{"postgresPassword": "NESTED_SENTINEL"},
 		"secretName": "cart-db-secret",
 		"nested": []any{
 			map[string]any{"token": "short-token"},
@@ -72,6 +74,9 @@ func TestRedactedHelmValuesRedactsSecretsAndKeepsReferences(t *testing.T) {
 	if got["secretName"] != "cart-db-secret" {
 		t.Fatalf("secretName = %#v, want reference preserved", got["secretName"])
 	}
+	if got["dbPassword"] != "[REDACTED]" || got["auth"].(map[string]any)["postgresPassword"] != "[REDACTED]" {
+		t.Fatalf("Helm credential keys were not redacted: %#v", got)
+	}
 	nested := got["nested"].([]any)
 	nestedMap := nested[0].(map[string]any)
 	if nestedMap["token"] != "[REDACTED]" {
@@ -82,6 +87,9 @@ func TestRedactedHelmValuesRedactsSecretsAndKeepsReferences(t *testing.T) {
 	}
 	if input["password"] != "supersecret" {
 		t.Fatalf("input mutated: %#v", input["password"])
+	}
+	if input["dbPassword"] != "SENTINEL" || input["auth"].(map[string]any)["postgresPassword"] != "NESTED_SENTINEL" {
+		t.Fatalf("Helm credential input mutated: %#v", input)
 	}
 }
 

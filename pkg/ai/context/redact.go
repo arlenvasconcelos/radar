@@ -149,19 +149,43 @@ func redactBase64Secrets(text string) string {
 // config — hashes, IDs, match expressions — survives. Closes the CRD-spec gap:
 // no value-level redaction reached unstructured specs before.
 func RedactInlineSecrets(node any) {
-	redactNode(node, false)
+	redactNode(node, false, isSensitiveKey)
 }
 
-func redactNode(node any, keySensitive bool) any {
+// RedactHelmValues walks Helm values in place, redacting strings under credential
+// keys and applying high-confidence secret patterns to other strings. Helm values
+// are free-form: charts name credentials dbPassword or auth.postgresPassword,
+// while CRD specs need exact-key matching to preserve diagnostic references.
+func RedactHelmValues(node any) {
+	redactNode(node, false, isSensitiveHelmKey)
+}
+
+func isSensitiveHelmKey(key string) bool {
+	norm := strings.NewReplacer("-", "", "_", "", ".", "").Replace(strings.ToLower(key))
+	if sensitiveValueKeys[norm] {
+		return true
+	}
+	for _, suffix := range []string{
+		"password", "passwd", "passphrase", "token", "apikey", "apitoken",
+		"accesskey", "secretkey", "privatekey", "clientsecret", "credentials",
+	} {
+		if strings.HasSuffix(norm, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func redactNode(node any, keySensitive bool, sensitiveKey func(string) bool) any {
 	switch v := node.(type) {
 	case map[string]any:
 		for k, val := range v {
-			v[k] = redactNode(val, keySensitive || isSensitiveKey(k))
+			v[k] = redactNode(val, keySensitive || sensitiveKey(k), sensitiveKey)
 		}
 		return v
 	case []any:
 		for i, item := range v {
-			v[i] = redactNode(item, keySensitive)
+			v[i] = redactNode(item, keySensitive, sensitiveKey)
 		}
 		return v
 	case string:

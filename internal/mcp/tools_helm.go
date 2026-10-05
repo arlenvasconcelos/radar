@@ -35,7 +35,7 @@ type listHelmReleasesInput struct {
 type getHelmReleaseInput struct {
 	Namespace string `json:"namespace" jsonschema:"Helm release storage namespace; use storageNamespace from list_helm_releases when present, otherwise namespace"`
 	Name      string `json:"name" jsonschema:"release name"`
-	Include   string `json:"include,omitempty" jsonschema:"comma-separated extras to include: values (key-aware redacted), history, operations, diff (Secret values redacted), values_diff, notes_diff (Secret values redacted), resource_diff. Hook diagnostics are included by default when present. Example: values,history"`
+	Include   string `json:"include,omitempty" jsonschema:"comma-separated extras to include: values (key-aware redacted), history, operations, diff (Secret values redacted), values_diff (key-aware redacted), notes_diff (Secret values redacted), resource_diff. Hook diagnostics are included by default when present. Example: values,history"`
 	DiffRev1  int    `json:"diff_revision_1,omitempty" jsonschema:"first revision for revision diffs; used when include contains diff, values_diff, notes_diff, or resource_diff"`
 	DiffRev2  int    `json:"diff_revision_2,omitempty" jsonschema:"second revision for revision diffs; used when include contains diff, values_diff, notes_diff, or resource_diff; defaults to current"`
 }
@@ -185,7 +185,7 @@ func handleGetHelmRelease(ctx context.Context, req *mcp.CallToolRequest, input g
 			result["valuesDiffError"] = errMsg
 		} else {
 			rev1, rev2 := diffRevisions(input, detail.Revision)
-			diff, err := helmClient.GetValuesDiffAsUser(input.Namespace, input.Name, rev1, rev2, false, username, groups)
+			diff, err := helmClient.GetValuesDiffAsUserRedacted(input.Namespace, input.Name, rev1, rev2, false, username, groups)
 			if err != nil {
 				log.Printf("[mcp] Failed to get values diff for %s/%s: %v", input.Namespace, input.Name, err)
 				result["valuesDiffError"] = err.Error()
@@ -289,7 +289,7 @@ func redactedHelmValues(values map[string]any) map[string]any {
 	if !ok {
 		return map[string]any{}
 	}
-	aicontext.RedactInlineSecrets(cloned)
+	aicontext.RedactHelmValues(cloned)
 	return cloned
 }
 
