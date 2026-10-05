@@ -62,14 +62,33 @@ func TestComputeRedactedManifestDiffHidesSecretValuesAndKeepsTheRest(t *testing.
 		}
 	}
 	for _, want := range []string{
-		"+  dbUrl: '[REDACTED]'", // a key added to the Secret still shows
-		"  password: ",           // an unchanged key stays as context
-		"-  replicas: \"1\"",     // non-Secret documents diff as before
+		"+  dbUrl: '[REDACTED]'",
+		"  password: ",
+		"-  replicas: \"1\"",
 		"+  replicas: \"2\"",
 		"# Source: app/templates/secret.yaml",
 	} {
 		if !strings.Contains(diff, want) {
 			t.Errorf("diff missing %q:\n%s", want, diff)
+		}
+	}
+}
+
+func TestRedactSecretManifestsKeepsOnlySourceComments(t *testing.T) {
+	const source = "# Source: chart/templates/secret.yaml"
+	for _, comments := range []string{
+		"# token: short-secret-123\n" + source,
+		source + "\n# token: short-secret-123",
+	} {
+		manifest := comments + "\napiVersion: v1\nkind: Secret\nstringData:\n  password: secret-value\n"
+		got := redactSecretManifests(manifest)
+		for _, leak := range []string{"# token:", "short-secret-123", "secret-value"} {
+			if strings.Contains(got, leak) {
+				t.Errorf("redacted Secret contains %q:\n%s", leak, got)
+			}
+		}
+		if !strings.Contains(got, source) {
+			t.Errorf("redacted Secret missing source comment:\n%s", got)
 		}
 	}
 }

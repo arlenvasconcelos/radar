@@ -191,7 +191,7 @@ func redactHelmNode(node any, keySensitive, ownKeySensitive bool) any {
 		return v
 	case []any:
 		for i, item := range v {
-			v[i] = redactHelmNode(item, keySensitive, false)
+			v[i] = redactHelmNode(item, keySensitive, ownKeySensitive)
 		}
 		return v
 	case string:

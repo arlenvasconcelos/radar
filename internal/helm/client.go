@@ -890,7 +890,9 @@ func redactSecretDocument(doc string) string {
 		if !strings.HasPrefix(strings.TrimSpace(line), "#") {
 			break
 		}
-		comments.WriteString(line + "\n")
+		if strings.HasPrefix(strings.TrimSpace(line), "# Source: ") {
+			comments.WriteString(line + "\n")
+		}
 	}
 	return comments.String() + strings.TrimSuffix(string(b), "\n")
 }
