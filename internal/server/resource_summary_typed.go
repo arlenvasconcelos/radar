@@ -113,8 +113,8 @@ type podRowSpec struct {
 	NodeName       string            `json:"nodeName,omitempty"`
 	Containers     []podRowContainer `json:"containers,omitempty"`
 	InitContainers []podRowContainer `json:"initContainers,omitempty"`
-	// Pod-level budget (PodLevelResources): the CPU/Mem column's ceiling when
-	// containers carry no limits of their own.
+	// Pod-level budget (PodLevelResources): the CPU/Mem column checks which
+	// requests/limits it sets.
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 

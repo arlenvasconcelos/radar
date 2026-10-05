@@ -462,19 +462,17 @@ func SumRunningContainerResources(pod *corev1.Pod) PodResourceTotals {
 		}
 	}
 	if pr := pod.Spec.Resources; pr != nil {
-		var podLevel PodResourceTotals
-		addContainerResources(&podLevel, &corev1.Container{Resources: *pr})
-		if _, ok := pr.Requests[corev1.ResourceCPU]; ok {
-			t.CPURequest = podLevel.CPURequest
+		if q, ok := pr.Requests[corev1.ResourceCPU]; ok {
+			t.CPURequest = q.MilliValue() * 1000000
 		}
-		if _, ok := pr.Limits[corev1.ResourceCPU]; ok {
-			t.CPULimit = podLevel.CPULimit
+		if q, ok := pr.Limits[corev1.ResourceCPU]; ok {
+			t.CPULimit = q.MilliValue() * 1000000
 		}
-		if _, ok := pr.Requests[corev1.ResourceMemory]; ok {
-			t.MemoryRequest = podLevel.MemoryRequest
+		if q, ok := pr.Requests[corev1.ResourceMemory]; ok {
+			t.MemoryRequest = q.Value()
 		}
-		if _, ok := pr.Limits[corev1.ResourceMemory]; ok {
-			t.MemoryLimit = podLevel.MemoryLimit
+		if q, ok := pr.Limits[corev1.ResourceMemory]; ok {
+			t.MemoryLimit = q.Value()
 		}
 	}
 	return t

@@ -7935,9 +7935,11 @@ function PodCell({ resource, column }: { resource: any; column: string }) {
       // The pod totals already carry any pod-level value (overlaid server-side
       // with exact quantity parsing); spec.resources only says whether one is set.
       const podLevel = resource.spec?.resources
+      const podRequest = isCPU ? m.cpuRequest : m.memoryRequest
+      const podLimit = isCPU ? m.cpuLimit : m.memoryLimit
       const { mode, totalUsage, denom, markerPct, unlimitedCount } = podAggregate(list, kind, {
-        request: podLevel?.requests?.[kind] ? (isCPU ? m.cpuRequest : m.memoryRequest) : undefined,
-        limit: podLevel?.limits?.[kind] ? (isCPU ? m.cpuLimit : m.memoryLimit) : undefined,
+        request: podLevel?.requests?.[kind] ? podRequest : undefined,
+        limit: podLevel?.limits?.[kind] ? podLimit : undefined,
       })
       if (totalUsage === 0) return <span className="text-sm text-theme-text-tertiary">-</span>
 
@@ -8593,7 +8595,6 @@ export function podAggregate(
   const isCPU = kind === 'cpu'
   let totalUsage = 0
   let limitedCount = 0
-  let requestedCount = 0
   let unlimitedCount = 0
   let summedLimit = 0
   let summedRequest = 0
@@ -8608,35 +8609,24 @@ export function podAggregate(
     } else {
       unlimitedCount++
     }
-    if (request > 0) {
-      requestedCount++
-      summedRequest += request
-    }
+    if (request > 0) summedRequest += request
   }
   if (podLevel?.request) summedRequest = podLevel.request
-  if (podLevel?.limit) {
-    return {
-      mode: 'limit',
-      totalUsage,
-      denom: podLevel.limit,
-      markerPct: podLevel.request ? (podLevel.request / podLevel.limit) * 100 : undefined,
-      unlimitedCount,
-    }
-  }
   const allLimited = list.length > 0 && limitedCount === list.length
-  if (allLimited) {
+  const ceiling = podLevel?.limit || (allLimited ? summedLimit : 0)
+  if (ceiling) {
     return {
       mode: 'limit',
       totalUsage,
-      denom: summedLimit,
-      markerPct: summedRequest > 0 ? (summedRequest / summedLimit) * 100 : undefined,
+      denom: ceiling,
+      markerPct: summedRequest > 0 ? (summedRequest / ceiling) * 100 : undefined,
       unlimitedCount,
     }
   }
   if (limitedCount > 0) {
     return { mode: 'partial', totalUsage, denom: 0, unlimitedCount }
   }
-  if (requestedCount > 0 || podLevel?.request) {
+  if (summedRequest > 0) {
     return { mode: 'request', totalUsage, denom: summedRequest, unlimitedCount }
   }
   return { mode: 'none', totalUsage, denom: 0, unlimitedCount }

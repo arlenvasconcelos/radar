@@ -147,7 +147,7 @@ export function MetricsChart({
             <div
               className="absolute left-0 right-0 border-t-2 border-red-500 border-dashed pointer-events-none"
               style={{ bottom: `${limitPercent}%` }}
-              title={`${limitLabel[0].toUpperCase()}${limitLabel.slice(1)}: ${limit}`}
+              title={`${limitLabel}: ${limit}`}
             />
           )}
 
