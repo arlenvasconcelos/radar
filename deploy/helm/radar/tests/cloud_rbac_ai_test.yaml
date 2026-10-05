@@ -9,22 +9,47 @@ set:
   cloud.url: wss://cloud.example
   cloud.clusterName: test-cluster
 tests:
-  - it: binds radar:ai to view, and only radar:ai
+  - it: aggregates the owned read role exactly like view without feeding view
     template: cloud-rbac-ai.yaml
+    documentIndex: 0
     asserts:
       - hasDocuments:
-          count: 1
+          count: 2
+      - isKind:
+          of: ClusterRole
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-radar-cloud-ai-read
+      - equal:
+          path: aggregationRule
+          value:
+            clusterRoleSelectors:
+              - matchLabels:
+                  rbac.authorization.k8s.io/aggregate-to-view: "true"
+      - notExists:
+          path: rules
+      - notExists:
+          path: metadata.labels["rbac.authorization.k8s.io/aggregate-to-view"]
+      - notExists:
+          path: metadata.labels["rbac.authorization.k8s.io/aggregate-to-edit"]
+      - notExists:
+          path: metadata.labels["rbac.authorization.k8s.io/aggregate-to-admin"]
+
+  - it: binds only radar:ai to the owned read role
+    template: cloud-rbac-ai.yaml
+    documentIndex: 1
+    asserts:
       - isKind:
           of: ClusterRoleBinding
       - equal:
           path: metadata.name
-          value: RELEASE-NAME-radar-cloud-ai-view
+          value: RELEASE-NAME-radar-cloud-ai-read
       - equal:
           path: roleRef
           value:
             apiGroup: rbac.authorization.k8s.io
             kind: ClusterRole
-            name: view
+            name: RELEASE-NAME-radar-cloud-ai-read
       - equal:
           path: subjects
           value:
@@ -32,13 +57,14 @@ tests:
               name: radar:ai
               apiGroup: rbac.authorization.k8s.io
 
-  - it: keeps radar:ai's view binding when the role bindings are off
+  - it: keeps radar:ai's read grant when the tier bindings are off
     set:
       cloud.defaultRbac.create: false
     template: cloud-rbac-ai.yaml
+    documentIndex: 1
     asserts:
       - hasDocuments:
-          count: 1
+          count: 2
       - equal:
           path: subjects[0].name
           value: radar:ai
@@ -82,14 +108,15 @@ tests:
     set:
       cloud.defaultRbac.create: false
     template: cloud-rbac-ai.yaml
+    documentIndex: 1
     asserts:
       - hasDocuments:
-          count: 1
+          count: 2
       - isKind:
           of: ClusterRoleBinding
       - equal:
           path: roleRef.name
-          value: view
+          value: RELEASE-NAME-radar-cloud-ai-read
 
   - it: gives radar:ai the cluster-read add-on without the tiers
     set:
