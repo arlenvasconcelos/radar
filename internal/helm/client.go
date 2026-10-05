@@ -877,7 +877,7 @@ func redactSecretDocument(doc string) string {
 	if err := yaml.Unmarshal([]byte(doc), &obj); err != nil {
 		return "# [REDACTED: unparseable manifest document]"
 	}
-	if !redactSecretObject(obj) {
+	if !redactSecretObject(obj, "") {
 		return doc
 	}
 	b, err := yaml.Marshal(obj)
@@ -900,7 +900,11 @@ func redactSecretDocument(doc string) string {
 // redactSecretObject masks Secret data and stringData values, drops the
 // last-applied annotation (a full copy of the object, Secret values included)
 // and descends into List items. It reports whether anything changed.
-func redactSecretObject(obj map[string]any) bool {
+func redactSecretObject(obj map[string]any, defaultKind string) bool {
+	kind, _ := obj["kind"].(string)
+	if kind == "" {
+		kind = defaultKind
+	}
 	changed := false
 	if meta, ok := obj["metadata"].(map[string]any); ok {
 		if ann, ok := meta["annotations"].(map[string]any); ok {
@@ -910,7 +914,7 @@ func redactSecretObject(obj map[string]any) bool {
 			}
 		}
 	}
-	if kind, _ := obj["kind"].(string); kind == "Secret" {
+	if kind == "Secret" {
 		for _, field := range []string{"data", "stringData"} {
 			values, ok := obj[field].(map[string]any)
 			if !ok {
@@ -927,8 +931,12 @@ func redactSecretObject(obj map[string]any) bool {
 		}
 	}
 	if items, ok := obj["items"].([]any); ok {
+		itemKind := ""
+		if kind == "SecretList" {
+			itemKind = "Secret"
+		}
 		for _, item := range items {
-			if m, ok := item.(map[string]any); ok && redactSecretObject(m) {
+			if m, ok := item.(map[string]any); ok && redactSecretObject(m, itemKind) {
 				changed = true
 			}
 		}

@@ -157,6 +157,18 @@ items:
     stringData:
       password: s3cr3t-value
 `,
+		"kind-less items in a SecretList": `apiVersion: v1
+kind: SecretList
+items:
+  - metadata:
+      name: db
+    data:
+      password: czNjcjN0LXZhbHVl
+  - metadata:
+      name: api
+    stringData:
+      password: s3cr3t-value
+`,
 		"unparseable with a trailing comment": "apiVersion: v1\nkind: Secret # credential\ndata:\n  password: [unclosed s3cr3t-value\n",
 	}
 	for name, manifest := range cases {
@@ -166,6 +178,43 @@ items:
 				if strings.Contains(got, leak) {
 					t.Fatalf("Secret value leaked: %q", got)
 				}
+			}
+		})
+	}
+}
+
+func TestRedactSecretManifestsPreservesConfigMapInMixedLists(t *testing.T) {
+	const manifest = `apiVersion: v1
+kind: List
+items:
+  - apiVersion: v1
+    kind: Secret
+    metadata:
+      name: db
+    data:
+      password: czNjcjN0LXZhbHVl
+    stringData:
+      password: s3cr3t-value
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: config
+    data:
+      setting: config-value
+`
+	for _, kind := range []string{"List", "SecretList"} {
+		t.Run(kind, func(t *testing.T) {
+			got := redactSecretManifests(strings.Replace(manifest, "kind: List", "kind: "+kind, 1))
+			for _, leak := range []string{"czNjcjN0LXZhbHVl", "s3cr3t-value"} {
+				if strings.Contains(got, leak) {
+					t.Errorf("Secret value leaked: %q", got)
+				}
+			}
+			if strings.Count(got, "[REDACTED]") != 2 {
+				t.Errorf("want two redacted Secret values: %q", got)
+			}
+			if !strings.Contains(got, "setting: config-value") {
+				t.Errorf("ConfigMap value missing: %q", got)
 			}
 		})
 	}
