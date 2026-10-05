@@ -533,8 +533,9 @@ cloud:
   # (alert-triggered) Diagnose runs. Manual turns read as the person who started
   # them; Radar Cloud forwards that person's identity and groups.
   # Includes view via a chart-owned aggregated role and the cluster-read and
-  # integration-read add-ons. No Kubernetes Secret permission; pod logs and
-  # ConfigMaps are readable and may contain sensitive data. Keep radar:ai
+  # integration-read add-ons. No Kubernetes Secret permission with the standard
+  # view role (it inherits anything added to view via aggregate-to-view); pod
+  # logs and ConfigMaps are readable and may contain sensitive data. Keep radar:ai
   # permanently read-only; future write-capable features need their own group.
   # Independent of defaultRbac. False or absent (e.g. an older --reuse-values
   # install) creates no default grant; customer bindings remain. Radar Cloud

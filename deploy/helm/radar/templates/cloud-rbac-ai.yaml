@@ -7,8 +7,10 @@ radar:ai is not involved. Keep radar:ai permanently read-only; any future
 write-capable feature needs its own group.
 
 The default grant is view plus the cluster-read and integration-read add-ons.
-It grants no Kubernetes Secret permission, but view includes pod logs and
-ConfigMaps, which may contain sensitive data.
+With the standard view role it grants no Kubernetes Secret permission; it
+also inherits anything a cluster adds to view (roles labelled
+aggregate-to-view). view includes pod logs and ConfigMaps, which may contain
+sensitive data.
 
 cloud.aiRbac controls only this chart's default grant, independently of
 cloud.defaultRbac. False or absent creates none and leaves customer bindings

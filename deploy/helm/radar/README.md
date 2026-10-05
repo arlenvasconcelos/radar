@@ -181,8 +181,10 @@ read-only background diagnostic reader. Never grant this group write
 permissions; a future write-capable feature needs its own group.
 `cloud.aiRbac` (default `true`) creates the chart's default grant: a chart-owned
 role aggregated to match `view` plus the cluster-read and integration-read
-add-ons. This grant includes no Kubernetes Secret permission. It does include
-pod logs and ConfigMaps, which may contain sensitive data.
+add-ons. With the standard `view` role this grant includes no Kubernetes Secret
+permission; it also inherits anything your cluster adds to `view` (ClusterRoles
+labelled `rbac.authorization.k8s.io/aggregate-to-view`). It does include pod
+logs and ConfigMaps, which may contain sensitive data.
 
 Both values are independent of `cloud.defaultRbac`. They control only the
 chart's default grants, not whether features run; Radar Cloud controls whether
