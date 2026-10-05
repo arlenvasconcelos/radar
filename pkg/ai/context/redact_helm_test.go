@@ -1,6 +1,8 @@
 package context
 
 import (
+	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -78,5 +80,89 @@ func TestRedactInlineSecretsKeepsHelmOnlyCredentialKeys(t *testing.T) {
 				t.Fatalf("CRD exact-key redaction changed for %q: %#v", key, spec[key])
 			}
 		})
+	}
+}
+
+func TestRedactHelmValuesNonStringCredentials(t *testing.T) {
+	for _, value := range []any{12345678, int64(12345678), float64(12345678), true, false, json.Number("12345678")} {
+		t.Run(fmt.Sprintf("%T/%v", value, value), func(t *testing.T) {
+			values := map[string]any{
+				"dbPassword":  value,
+				"credentials": map[string]any{"password": value, "replicaCount": value},
+			}
+			RedactHelmValues(values)
+			want := map[string]any{
+				"dbPassword":  "[REDACTED]",
+				"credentials": map[string]any{"password": "[REDACTED]", "replicaCount": value},
+			}
+			if !reflect.DeepEqual(values, want) {
+				t.Fatalf("got %#v, want %#v", values, want)
+			}
+			spec := map[string]any{"password": value}
+			RedactInlineSecrets(spec)
+			if !reflect.DeepEqual(spec["password"], value) {
+				t.Fatalf("CRD non-string redaction changed: %#v", spec)
+			}
+		})
+	}
+}
+
+func TestRedactHelmValuesReferencesUnderCredentials(t *testing.T) {
+	for _, key := range []string{
+		"existingSecret", "secretName", "tokenSecretRef", "existingSecretPasswordKey",
+		"prefixExistingSecret", "existingSecretPassword", "ExIsTiNg._-SeCrEt", "ToKeN._-SeCrEtReF",
+		"passwordSecretName", "SeCrEt._-NaMe",
+	} {
+		t.Run(key, func(t *testing.T) {
+			values := map[string]any{"credentials": map[string]any{key: "db-secret", "password": "SENTINEL"}}
+			RedactHelmValues(values)
+			want := map[string]any{"credentials": map[string]any{key: "db-secret", "password": "[REDACTED]"}}
+			if !reflect.DeepEqual(values, want) {
+				t.Fatalf("got %#v, want %#v", values, want)
+			}
+		})
+	}
+	values := map[string]any{"credentials": map[string]any{
+		"tokenSecretRef": []any{map[string]any{
+			"key": "db-password", "password": "SENTINEL", "dbPassword": true,
+			"description": "Bearer abcdefghijklmnopqrstuvwxyz123456",
+		}},
+		"secretName": "Bearer abcdefghijklmnopqrstuvwxyz123456",
+	}}
+	RedactHelmValues(values)
+	want := map[string]any{"credentials": map[string]any{
+		"tokenSecretRef": []any{map[string]any{
+			"key": "db-password", "password": "[REDACTED]", "dbPassword": "[REDACTED]",
+			"description": "Bearer [REDACTED]",
+		}},
+		"secretName": "Bearer [REDACTED]",
+	}}
+	if !reflect.DeepEqual(values, want) {
+		t.Fatalf("got %#v, want %#v", values, want)
+	}
+}
+
+func TestRedactHelmValuesNameFieldsUnderCredentials(t *testing.T) {
+	for _, key := range []string{"name", "username", "userName", "dbName", "passwordName", "user._-name"} {
+		t.Run(key, func(t *testing.T) {
+			values := map[string]any{"credentials": map[string]any{key: "SENTINEL"}}
+			RedactHelmValues(values)
+			want := map[string]any{"credentials": map[string]any{key: "[REDACTED]"}}
+			if !reflect.DeepEqual(values, want) {
+				t.Fatalf("got %#v, want %#v", values, want)
+			}
+		})
+	}
+}
+
+func TestRedactHelmValuesExactSensitiveReferenceKey(t *testing.T) {
+	const key = "testsecretref"
+	sensitiveValueKeys[key] = true
+	t.Cleanup(func() { delete(sensitiveValueKeys, key) })
+	values := map[string]any{"credentials": map[string]any{key: "SENTINEL"}}
+	RedactHelmValues(values)
+	want := map[string]any{"credentials": map[string]any{key: "[REDACTED]"}}
+	if !reflect.DeepEqual(values, want) {
+		t.Fatalf("got %#v, want %#v", values, want)
 	}
 }

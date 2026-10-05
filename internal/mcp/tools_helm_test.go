@@ -1,6 +1,8 @@
 package mcp
 
 import (
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/skyhook-io/radar/internal/helm"
@@ -105,5 +107,36 @@ func TestNewestHelmRevisionsKeepsTheNewestAndTheOrderOfShortHistories(t *testing
 	got := newestHelmRevisions(long, 10)
 	if len(got) != 10 || got[0].Revision != 12 || got[9].Revision != 3 {
 		t.Fatalf("long history = %d entries, first %d, last %d; want 10, 12, 3", len(got), got[0].Revision, got[len(got)-1].Revision)
+	}
+}
+
+func TestRedactedHelmValuesNonStringCredentialsAndNestedReferences(t *testing.T) {
+	input := map[string]any{
+		"dbPassword":    12345678,
+		"adminPassword": true,
+		"auth":          map[string]any{"postgresPassword": json.Number("87654321")},
+		"credentials": map[string]any{
+			"existingSecret": "db-secret", "secretName": "db-secret",
+			"tokenSecretRef": "db-secret", "existingSecretPasswordKey": "password-key",
+			"password": false, "replicaCount": 2,
+		},
+	}
+	want := map[string]any{
+		"dbPassword":    "[REDACTED]",
+		"adminPassword": "[REDACTED]",
+		"auth":          map[string]any{"postgresPassword": "[REDACTED]"},
+		"credentials": map[string]any{
+			"existingSecret": "db-secret", "secretName": "db-secret",
+			"tokenSecretRef": "db-secret", "existingSecretPasswordKey": "password-key",
+			"password": "[REDACTED]", "replicaCount": 2,
+		},
+	}
+	if got := redactedHelmValues(input); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+	if input["dbPassword"] != 12345678 || input["adminPassword"] != true ||
+		input["auth"].(map[string]any)["postgresPassword"] != json.Number("87654321") ||
+		input["credentials"].(map[string]any)["password"] != false {
+		t.Fatalf("input mutated: %#v", input)
 	}
 }
