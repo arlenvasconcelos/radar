@@ -150,7 +150,7 @@ import {
 import { SEVERITY_BADGE, EVENT_TYPE_COLORS } from '../../utils/badge-colors'
 import { pluralize } from '../../utils/pluralize'
 import { getPodGpuCount, getNodeGpuCount } from '../../utils/extended-resources'
-import { parseCPUToNanocores, parseMemoryToBytes, parseQuantityToNumber } from '../../utils/format'
+import { parseQuantityToNumber } from '../../utils/format'
 import { type CustomColumnDef, type CustomColumnSource, customColumnKey, readCustomColumnValue, sanitizeCustomColumnDefs } from '../../utils/custom-columns'
 import { isRolloutActivityVisible } from '../../utils/workload-rollout'
 import { FreshnessControl, type FreshnessConnection } from '../ui/FreshnessControl'
@@ -7932,12 +7932,12 @@ function PodCell({ resource, column }: { resource: any; column: string }) {
             memory: m.memory, memoryRequest: m.memoryRequest, memoryLimit: m.memoryLimit,
           }]
 
-      const podRequest = resource.spec?.resources?.requests?.[kind]
-      const podLimit = resource.spec?.resources?.limits?.[kind]
-      const parse = isCPU ? parseCPUToNanocores : parseMemoryToBytes
+      // The pod totals already carry any pod-level value (overlaid server-side
+      // with exact quantity parsing); spec.resources only says whether one is set.
+      const podLevel = resource.spec?.resources
       const { mode, totalUsage, denom, markerPct, unlimitedCount } = podAggregate(list, kind, {
-        request: podRequest ? parse(podRequest) : undefined,
-        limit: podLimit ? parse(podLimit) : undefined,
+        request: podLevel?.requests?.[kind] ? (isCPU ? m.cpuRequest : m.memoryRequest) : undefined,
+        limit: podLevel?.limits?.[kind] ? (isCPU ? m.cpuLimit : m.memoryLimit) : undefined,
       })
       if (totalUsage === 0) return <span className="text-sm text-theme-text-tertiary">-</span>
 
