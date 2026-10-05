@@ -170,7 +170,7 @@ export function MetricsChart({
 
         {/* Right-side labels for limit/request */}
         {(limitPercent !== undefined || requestPercent !== undefined) && (
-          <div className={clsx('relative pl-1', limitLabel === 'limit' ? 'w-8' : 'w-12')} style={{ height }}>
+          <div className="relative w-8 pl-1" style={{ height }}>
             {limitPercent !== undefined && limitPercent <= 100 && (
               <span
                 className="absolute text-[9px] text-red-400 leading-none whitespace-nowrap"
