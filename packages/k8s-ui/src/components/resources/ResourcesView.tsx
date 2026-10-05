@@ -150,7 +150,7 @@ import {
 import { SEVERITY_BADGE, EVENT_TYPE_COLORS } from '../../utils/badge-colors'
 import { pluralize } from '../../utils/pluralize'
 import { getPodGpuCount, getNodeGpuCount } from '../../utils/extended-resources'
-import { parseQuantityToNumber } from '../../utils/format'
+import { parseCPUToNanocores, parseMemoryToBytes, parseQuantityToNumber } from '../../utils/format'
 import { type CustomColumnDef, type CustomColumnSource, customColumnKey, readCustomColumnValue, sanitizeCustomColumnDefs } from '../../utils/custom-columns'
 import { isRolloutActivityVisible } from '../../utils/workload-rollout'
 import { FreshnessControl, type FreshnessConnection } from '../ui/FreshnessControl'
@@ -7932,7 +7932,13 @@ function PodCell({ resource, column }: { resource: any; column: string }) {
             memory: m.memory, memoryRequest: m.memoryRequest, memoryLimit: m.memoryLimit,
           }]
 
-      const { mode, totalUsage, denom, markerPct, unlimitedCount } = podAggregate(list, kind)
+      const podRequest = resource.spec?.resources?.requests?.[kind]
+      const podLimit = resource.spec?.resources?.limits?.[kind]
+      const parse = isCPU ? parseCPUToNanocores : parseMemoryToBytes
+      const { mode, totalUsage, denom, markerPct, unlimitedCount } = podAggregate(list, kind, {
+        request: podRequest ? parse(podRequest) : undefined,
+        limit: podLimit ? parse(podLimit) : undefined,
+      })
       if (totalUsage === 0) return <span className="text-sm text-theme-text-tertiary">-</span>
 
       // Pod-vs-node context: how full the pod's node is (the risk signal) and
@@ -8577,8 +8583,13 @@ interface PodAggregate {
 // headline renders — total usage measured against a pod-level yardstick. It
 // keeps the dominant consumer visible instead of demoting it behind a small
 // limited container, and stays honest about partial limits (which don't form a
-// real ceiling).
-export function podAggregate(list: ContainerResourceMetrics[], kind: 'cpu' | 'memory'): PodAggregate {
+// real ceiling). A pod-level budget (spec.resources) bounds every container, so
+// its limit is a real ceiling regardless of what the containers set.
+export function podAggregate(
+  list: ContainerResourceMetrics[],
+  kind: 'cpu' | 'memory',
+  podLevel?: { request?: number; limit?: number },
+): PodAggregate {
   const isCPU = kind === 'cpu'
   let totalUsage = 0
   let limitedCount = 0
@@ -8602,6 +8613,16 @@ export function podAggregate(list: ContainerResourceMetrics[], kind: 'cpu' | 'me
       summedRequest += request
     }
   }
+  if (podLevel?.request) summedRequest = podLevel.request
+  if (podLevel?.limit) {
+    return {
+      mode: 'limit',
+      totalUsage,
+      denom: podLevel.limit,
+      markerPct: podLevel.request ? (podLevel.request / podLevel.limit) * 100 : undefined,
+      unlimitedCount,
+    }
+  }
   const allLimited = list.length > 0 && limitedCount === list.length
   if (allLimited) {
     return {
@@ -8615,7 +8636,7 @@ export function podAggregate(list: ContainerResourceMetrics[], kind: 'cpu' | 'me
   if (limitedCount > 0) {
     return { mode: 'partial', totalUsage, denom: 0, unlimitedCount }
   }
-  if (requestedCount > 0) {
+  if (requestedCount > 0 || podLevel?.request) {
     return { mode: 'request', totalUsage, denom: summedRequest, unlimitedCount }
   }
   return { mode: 'none', totalUsage, denom: 0, unlimitedCount }

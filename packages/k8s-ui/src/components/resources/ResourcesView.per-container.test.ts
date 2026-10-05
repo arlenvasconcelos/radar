@@ -109,3 +109,28 @@ describe('podAggregate', () => {
     expect(result.denom).toBe(384) // summed memory limit
   })
 })
+
+describe('podAggregate with pod-level resources', () => {
+  it("treats a pod-level limit as the ceiling even when containers set none", () => {
+    const containers = [cpu('app', 300, 0, 0), cpu('sidecar', 100, 0, 0)]
+    const result = podAggregate(containers, 'cpu', { request: 500, limit: 1000 })
+    expect(result.mode).toBe('limit')
+    expect(result.denom).toBe(1000)
+    expect(result.markerPct).toBeCloseTo(50)
+  })
+
+  it("uses the pod-level limit over a partial container sum", () => {
+    const containers = [cpu('app', 300, 0, 0), cpu('sidecar', 100, 0, 200)]
+    const result = podAggregate(containers, 'cpu', { limit: 1000 })
+    expect(result.mode).toBe('limit')
+    expect(result.denom).toBe(1000)
+    expect(result.markerPct).toBeUndefined()
+  })
+
+  it("uses a pod-level request as the yardstick when nothing is limited", () => {
+    const containers = [cpu('app', 300, 0, 0), cpu('sidecar', 100, 0, 0)]
+    const result = podAggregate(containers, 'cpu', { request: 800 })
+    expect(result.mode).toBe('request')
+    expect(result.denom).toBe(800)
+  })
+})

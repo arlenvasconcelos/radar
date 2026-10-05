@@ -446,6 +446,11 @@ func addContainerResources(t *PodResourceTotals, c *corev1.Container) {
 // are excluded — they don't hold a reservation for the pod's whole lifetime.
 // Usage is reported across the same set, so summing here keeps request/limit
 // percentages honest.
+//
+// A pod-level budget (spec.resources, PodLevelResources) replaces the container
+// sum for each CPU/memory value it sets. It is overlaid per value rather than
+// taken from resourcehelper.PodRequests, which also folds in max(init
+// containers) and would shift the steady-state totals of every pod.
 func SumRunningContainerResources(pod *corev1.Pod) PodResourceTotals {
 	var t PodResourceTotals
 	for i := range pod.Spec.Containers {
@@ -454,6 +459,22 @@ func SumRunningContainerResources(pod *corev1.Pod) PodResourceTotals {
 	for i := range pod.Spec.InitContainers {
 		if isNativeSidecar(&pod.Spec.InitContainers[i]) {
 			addContainerResources(&t, &pod.Spec.InitContainers[i])
+		}
+	}
+	if pr := pod.Spec.Resources; pr != nil {
+		var podLevel PodResourceTotals
+		addContainerResources(&podLevel, &corev1.Container{Resources: *pr})
+		if _, ok := pr.Requests[corev1.ResourceCPU]; ok {
+			t.CPURequest = podLevel.CPURequest
+		}
+		if _, ok := pr.Limits[corev1.ResourceCPU]; ok {
+			t.CPULimit = podLevel.CPULimit
+		}
+		if _, ok := pr.Requests[corev1.ResourceMemory]; ok {
+			t.MemoryRequest = podLevel.MemoryRequest
+		}
+		if _, ok := pr.Limits[corev1.ResourceMemory]; ok {
+			t.MemoryLimit = podLevel.MemoryLimit
 		}
 	}
 	return t
