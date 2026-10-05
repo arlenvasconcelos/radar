@@ -613,11 +613,14 @@ export function PodRenderer({
           {/* Pod-level budget (spec.resources) is shared by all containers, so it
               stays its own row rather than being merged into the container rows. */}
           {(podResources?.requests || podResources?.limits) && (
-            <div className="card-inner-lg">
-              <div className="text-sm font-medium text-theme-text-primary mb-2">Pod (aggregate)</div>
-              <div className="flex gap-4 text-xs text-theme-text-secondary">
-                {podResources.requests && <span>Requests: {formatResources(podResources.requests)}</span>}
-                {podResources.limits && <span>Limits: {formatResources(podResources.limits)}</span>}
+            <div className="rounded-[10px] border border-dashed border-theme-border p-3">
+              <div className="flex items-baseline justify-between gap-2 mb-2">
+                <span className="text-sm font-medium text-theme-text-primary">Pod (aggregate)</span>
+                <span className="text-xs text-theme-text-tertiary">Shared by all containers</span>
+              </div>
+              <div className="text-xs text-theme-text-secondary space-y-1">
+                {podResources.requests && <div>Requests: {formatResources(podResources.requests)}</div>}
+                {podResources.limits && <div>Limits: {formatResources(podResources.limits)}</div>}
               </div>
             </div>
           )}
