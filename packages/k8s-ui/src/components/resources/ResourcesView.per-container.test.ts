@@ -128,6 +128,14 @@ describe('podAggregate with pod-level resources', () => {
     expect(result.markerPct).toBeUndefined()
   })
 
+  it("uses the container limits when they are tighter than the pod limit", () => {
+    const single = podAggregate([cpu('app', 450, 100, 500)], 'cpu', { request: 800, limit: 1000 })
+    expect(single.mode).toBe('limit')
+    expect(single.denom).toBe(500)
+    const both = podAggregate([cpu('app', 200, 0, 300), cpu('sidecar', 50, 0, 300)], 'cpu', { limit: 1000 })
+    expect(both.denom).toBe(600)
+  })
+
   it("uses a pod-level request as the yardstick when nothing is limited", () => {
     const containers = [cpu('app', 300, 0, 0), cpu('sidecar', 100, 0, 0)]
     const result = podAggregate(containers, 'cpu', { request: 800 })

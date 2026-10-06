@@ -209,3 +209,17 @@ func TestSumRunningContainerResourcesPodLevel(t *testing.T) {
 		t.Errorf("bare containers: got %+v, want %+v", got, wantPod)
 	}
 }
+
+// A pod-level budget is reported apart from the containers it covers, so a
+// single-container pod keeps its own row instead of the folded pod totals.
+func TestBuildPodContainerMetricsKeepsSingleContainerWithPodLevelResources(t *testing.T) {
+	podRes := resReq("800m", "1", "", "")
+	pod := &corev1.Pod{Spec: corev1.PodSpec{
+		Containers: []corev1.Container{{Name: "app", Resources: resReq("100m", "500m", "", "")}},
+		Resources:  &podRes,
+	}}
+	got := BuildPodContainerMetrics(pod, nil)
+	if len(got) != 1 || got[0].CPURequest != 100*1_000_000 || got[0].CPULimit != 500*1_000_000 {
+		t.Fatalf("got %+v, want the app container's own 100m/500m", got)
+	}
+}

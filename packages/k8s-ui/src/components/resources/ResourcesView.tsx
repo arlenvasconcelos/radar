@@ -7921,9 +7921,9 @@ function PodCell({ resource, column }: { resource: any; column: string }) {
       const label = isCPU ? 'CPU' : 'Memory'
       const format = isCPU ? formatCPU : formatMemoryShort
 
-      // Multi-container pods carry a per-container breakdown; single-container
-      // pods fall back to the (union-summed) pod-level fields as one synthetic
-      // container so the rest of the logic is uniform.
+      // Multi-container pods (and any pod with a pod-level budget) carry a
+      // per-container breakdown; other single-container pods fall back to the
+      // pod-level fields as one synthetic container so the logic is uniform.
       const list: ContainerResourceMetrics[] = (m.containers && m.containers.length > 0)
         ? m.containers
         : [{
@@ -8618,7 +8618,11 @@ export function podAggregate(
   }
   if (podLevel?.request) summedRequest = podLevel.request
   const allLimited = list.length > 0 && limitedCount === list.length
-  const ceiling = podLevel?.limit || (allLimited ? summedLimit : 0)
+  // Container limits still apply inside a pod-level budget, so when every
+  // container has one the tighter of the two totals is the real ceiling.
+  const ceiling = podLevel?.limit && allLimited
+    ? Math.min(podLevel.limit, summedLimit)
+    : podLevel?.limit || (allLimited ? summedLimit : 0)
   if (ceiling) {
     return {
       mode: 'limit',

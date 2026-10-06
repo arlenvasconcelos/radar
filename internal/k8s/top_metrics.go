@@ -482,8 +482,9 @@ func SumRunningContainerResources(pod *corev1.Pod) PodResourceTotals {
 // running containers (regular + native sidecars), merging spec requests/limits
 // with observed usage. usage is keyed by container name. Names present only in
 // usage (e.g. ephemeral debug containers reporting metrics) are appended with
-// zero request/limit. Returns nil when the pod has a single running container —
-// callers fall back to the pod-level sums.
+// zero request/limit. Returns nil when the pod has a single running container
+// and no pod-level budget — callers fall back to the pod-level sums. With a
+// budget those sums are the pod's, not the container's, so the row is kept.
 func BuildPodContainerMetrics(pod *corev1.Pod, usage map[string]ContainerResourceMetrics) []ContainerResourceMetrics {
 	specs := make(map[string]corev1.ResourceRequirements, len(pod.Spec.Containers)+len(pod.Spec.InitContainers))
 	order := make([]string, 0, len(pod.Spec.Containers)+len(pod.Spec.InitContainers))
@@ -503,7 +504,7 @@ func BuildPodContainerMetrics(pod *corev1.Pod, usage map[string]ContainerResourc
 			add(pod.Spec.InitContainers[i].Name, pod.Spec.InitContainers[i].Resources)
 		}
 	}
-	if runningCount <= 1 {
+	if runningCount <= 1 && pod.Spec.Resources == nil {
 		return nil
 	}
 	// Only the pod's declared long-running containers (regular + native
