@@ -1,6 +1,7 @@
+import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { ContainerResourceMetrics } from '../../types'
-import { podAggregate, readContainer } from './ResourcesView'
+import { buildContainerResourceTooltip, podAggregate, readContainer } from './ResourcesView'
 
 // Build a CPU-only container fixture; memory fields default to 0.
 function cpu(name: string, usage: number, request: number, limit: number): ContainerResourceMetrics {
@@ -132,5 +133,26 @@ describe('podAggregate with pod-level resources', () => {
     const result = podAggregate(containers, 'cpu', { request: 800 })
     expect(result.mode).toBe('request')
     expect(result.denom).toBe(800)
+  })
+})
+
+describe('buildContainerResourceTooltip with a pod-level budget', () => {
+  const fmt = (n: number) => `${n}m`
+  const containers = [cpu('app', 300, 0, 0), cpu('sidecar', 100, 0, 0)]
+
+  it('shows the shared pod budget instead of calling covered containers unlimited', () => {
+    const html = renderToStaticMarkup(
+      buildContainerResourceTooltip('CPU', containers, 'cpu', fmt, undefined, { usage: 400, limit: 1000, request: 500 }),
+    )
+    expect(html).not.toContain('no limit')
+    expect(html).toContain('pod limit')
+    expect(html).toContain('Pod (shared)')
+    expect(html).toContain('400m · 40% · 1000m limit · req 500m')
+  })
+
+  it('keeps "no limit" when there is no pod-level budget', () => {
+    const html = renderToStaticMarkup(buildContainerResourceTooltip('CPU', containers, 'cpu', fmt))
+    expect(html).toContain('no limit')
+    expect(html).not.toContain('Pod (shared)')
   })
 })

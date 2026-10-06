@@ -7935,11 +7935,11 @@ function PodCell({ resource, column }: { resource: any; column: string }) {
       // The pod totals already carry any pod-level value (overlaid server-side
       // with exact quantity parsing); spec.resources only says whether one is set.
       const podLevel = resource.spec?.resources
-      const podRequest = isCPU ? m.cpuRequest : m.memoryRequest
-      const podLimit = isCPU ? m.cpuLimit : m.memoryLimit
+      const podRequest = podLevel?.requests?.[kind] ? (isCPU ? m.cpuRequest : m.memoryRequest) : undefined
+      const podLimit = podLevel?.limits?.[kind] ? (isCPU ? m.cpuLimit : m.memoryLimit) : undefined
       const { mode, totalUsage, denom, markerPct, unlimitedCount } = podAggregate(list, kind, {
-        request: podLevel?.requests?.[kind] ? podRequest : undefined,
-        limit: podLevel?.limits?.[kind] ? podLimit : undefined,
+        request: podRequest,
+        limit: podLimit,
       })
       if (totalUsage === 0) return <span className="text-sm text-theme-text-tertiary">-</span>
 
@@ -7960,7 +7960,12 @@ function PodCell({ resource, column }: { resource: any; column: string }) {
           }
         : undefined
 
-      const tip = buildContainerResourceTooltip(label, list, kind, format, nodeCtx)
+      // The synthetic single-container row already carries the pod totals, so
+      // only a real per-container breakdown needs the shared budget spelled out.
+      const podBudget = podLimit && m.containers?.length
+        ? { usage: totalUsage, limit: podLimit, request: podRequest }
+        : undefined
+      const tip = buildContainerResourceTooltip(label, list, kind, format, nodeCtx, podBudget)
 
       // Every container is limited → aggregate bar against the summed limit; a
       // real pod-level ceiling, so it may go red.
@@ -8654,12 +8659,13 @@ function formatSharePct(pct: number): string {
   return `${Math.round(pct)}%`
 }
 
-function buildContainerResourceTooltip(
+export function buildContainerResourceTooltip(
   label: 'CPU' | 'Memory',
   containers: ContainerResourceMetrics[],
   kind: 'cpu' | 'memory',
   formatFn: (n: number) => string,
   nodeCtx?: NodeContext,
+  podBudget?: { usage: number; limit: number; request?: number },
 ) {
   const rows = [...containers].sort((a, b) => {
     const diff = readContainer(b, kind).pct - readContainer(a, kind).pct
@@ -8682,7 +8688,7 @@ function buildContainerResourceTooltip(
             ? `${formatFn(r.usage)} · ${Math.round(r.pct)}% · ${formatFn(r.denom)} limit${r.request > 0 ? ` · req ${formatFn(r.request)}` : ''}`
             : r.yardstick === 'request'
               ? `${formatFn(r.usage)} · ${Math.round(r.pct)}% · ${formatFn(r.denom)} request`
-              : `${formatFn(r.usage)} · no limit`
+              : `${formatFn(r.usage)} · ${podBudget ? 'pod limit' : 'no limit'}`
           return (
             <div key={c.name} className="flex flex-col leading-snug">
               <span className="text-[11px] text-theme-text-tertiary truncate">{c.name}</span>
@@ -8694,6 +8700,14 @@ function buildContainerResourceTooltip(
       {remaining > 0 && (
         <div className="text-[11px] text-theme-text-tertiary border-t border-theme-border/50 pt-1">
           +{remaining} more → open pod
+        </div>
+      )}
+      {podBudget && (
+        <div className="flex flex-col leading-snug border-t border-theme-border/50 pt-1">
+          <span className="text-[11px] text-theme-text-tertiary truncate">Pod (shared)</span>
+          <span className="text-xs font-mono text-theme-text-primary">
+            {`${formatFn(podBudget.usage)} · ${Math.round((podBudget.usage / podBudget.limit) * 100)}% · ${formatFn(podBudget.limit)} limit${podBudget.request ? ` · req ${formatFn(podBudget.request)}` : ''}`}
+          </span>
         </div>
       )}
       {nodeCtx && (
