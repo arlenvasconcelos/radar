@@ -853,14 +853,9 @@ export function PodRenderer({
                 // fall through to them or their chart shows no limit line.
                 const containerSpec = containers.find((c: any) => c.name === historyContainer.name)
                   || initContainers.find((c: any) => c.name === historyContainer.name && c.restartPolicy === 'Always')
-                const requests = containerSpec?.resources?.requests
                 // A container without its own limit is still bounded by the pod-level one.
-                const ownLimits = containerSpec?.resources?.limits
-                const limitOf = (r: 'cpu' | 'memory') => ownLimits?.[r]
-                  ? { value: ownLimits[r], label: 'limit' }
-                  : { value: podResources?.limits?.[r], label: 'pod limit' }
-                const cpuLimit = limitOf('cpu')
-                const memoryLimit = limitOf('memory')
+                const limits = { ...podResources?.limits, ...containerSpec?.resources?.limits }
+                const requests = containerSpec?.resources?.requests
 
                 // Get historical data points (from history or empty)
                 const dataPoints = 'dataPoints' in historyContainer ? historyContainer.dataPoints : []
@@ -880,8 +875,7 @@ export function PodRenderer({
                             type="cpu"
                             height={80}
                             showAxis={true}
-                            limit={cpuLimit.value}
-                            limitLabel={cpuLimit.label}
+                            limit={limits?.cpu}
                             request={requests?.cpu}
                           />
                         </div>
@@ -892,8 +886,7 @@ export function PodRenderer({
                             type="memory"
                             height={80}
                             showAxis={true}
-                            limit={memoryLimit.value}
-                            limitLabel={memoryLimit.label}
+                            limit={limits?.memory}
                             request={requests?.memory}
                           />
                         </div>
@@ -905,8 +898,8 @@ export function PodRenderer({
                           <div className="text-theme-text-tertiary mb-1">CPU</div>
                           <div className="flex items-baseline gap-1">
                             <span className="text-sm font-medium text-blue-400">{currentContainerMetrics.usage.cpu}</span>
-                            {cpuLimit.value && (
-                              <span className="text-theme-text-tertiary">/ {cpuLimit.value} {cpuLimit.label}</span>
+                            {limits?.cpu && (
+                              <span className="text-theme-text-tertiary">/ {limits.cpu} limit</span>
                             )}
                           </div>
                         </div>
@@ -914,8 +907,8 @@ export function PodRenderer({
                           <div className="text-theme-text-tertiary mb-1">Memory</div>
                           <div className="flex items-baseline gap-1">
                             <span className="text-sm font-medium text-purple-400">{currentContainerMetrics.usage.memory}</span>
-                            {memoryLimit.value && (
-                              <span className="text-theme-text-tertiary">/ {memoryLimit.value} {memoryLimit.label}</span>
+                            {limits?.memory && (
+                              <span className="text-theme-text-tertiary">/ {limits.memory} limit</span>
                             )}
                           </div>
                         </div>

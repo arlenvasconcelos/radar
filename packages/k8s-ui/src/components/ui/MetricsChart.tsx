@@ -37,8 +37,6 @@ interface MetricsChartProps {
   showAxis?: boolean
   /** K8s resource limit string (e.g., "500m", "1Gi") */
   limit?: string
-  /** Label for the limit line; "pod limit" when the line is the pod-level budget */
-  limitLabel?: string
   /** K8s resource request string (e.g., "100m", "256Mi") */
   request?: string
 }
@@ -50,7 +48,6 @@ export function MetricsChart({
   className,
   showAxis = true,
   limit,
-  limitLabel = 'limit',
   request,
 }: MetricsChartProps) {
   // Parse limit and request to the same unit as data (nanocores or bytes)
@@ -147,7 +144,7 @@ export function MetricsChart({
             <div
               className="absolute left-0 right-0 border-t-2 border-red-500 border-dashed pointer-events-none"
               style={{ bottom: `${limitPercent}%` }}
-              title={`${limitLabel}: ${limit}`}
+              title={`Limit: ${limit}`}
             />
           )}
 
@@ -173,10 +170,10 @@ export function MetricsChart({
           <div className="relative w-8 pl-1" style={{ height }}>
             {limitPercent !== undefined && limitPercent <= 100 && (
               <span
-                className="absolute text-[9px] text-red-400 leading-none whitespace-nowrap"
+                className="absolute text-[9px] text-red-400 leading-none"
                 style={{ bottom: `${limitPercent}%`, transform: 'translateY(50%)' }}
               >
-                {limitLabel}
+                limit
               </span>
             )}
             {requestPercent !== undefined && requestPercent <= 100 && (
