@@ -75,6 +75,7 @@ import { Tooltip } from './components/ui/Tooltip'
 import { LargeClusterNamespacePicker } from './components/shared/LargeClusterNamespacePicker'
 import { SettingsDialog, type SettingsSectionId } from './components/settings/SettingsDialog'
 import type { APIResource, TopologyNode, GroupingMode, MainView, SelectedResource, SelectedHelmRelease, NodeKind, TopologyMode, Topology, K8sEvent } from './types'
+import { createViewMemory } from './utils/viewMemory'
 import { kindToPluralWithGroup, pluralToKind, openExternal, apiVersionToGroup, relatedResourcePath, searchHitToSelectedResource, withCrossViewParams } from './utils/navigation'
 import { findSelectedTopologyNode } from './utils/topology-selection'
 import { type OmnibarHandle } from './components/ui/Omnibar'
@@ -492,6 +493,16 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     )
   }, [location.pathname, location.search, location.hash, navigate])
 
+  // Per-mount, so a reload forgets it and Radar Hub (one mount per cluster) keeps clusters apart.
+  const [viewMemory] = useState(createViewMemory)
+  useEffect(() => {
+    viewMemory.record(mainView, location.pathname, location.search)
+  }, [viewMemory, mainView, location.pathname, location.search])
+  const rememberedKindSearch = useCallback(
+    (kind: { name: string; group: string }) => viewMemory.kindSearch(kind.name, kind.group),
+    [viewMemory],
+  )
+
   // Set mainView by navigating to the path
   const setMainView = useCallback((view: ExtendedMainView, params?: Record<string, string>) => {
     // Host takeover: fleet-shaped views (issues/gitops/checks) are owned by the
@@ -506,6 +517,13 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
         goHost(href)
         return
       }
+    }
+
+    // Explicit params are a link with its own state; otherwise go back to where the user left this section.
+    const remembered = params ? undefined : viewMemory.sectionPath(view)
+    if (remembered) {
+      navigate(withCrossViewParams(remembered, location.search))
+      return
     }
 
     const path = view === 'home' ? '/' : `/${view}`
@@ -532,7 +550,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     }
 
     navigate({ pathname: path, search: newParams.toString() })
-  }, [location.search, navigate, takeover, goHost])
+  }, [location.search, navigate, takeover, goHost, viewMemory])
 
   const whatsNewStatus = useWhatsNewStatus()
 
@@ -1203,6 +1221,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
       // removeQueries clears cached data, invalidateQueries triggers refetch
       queryClient.removeQueries()
       queryClient.invalidateQueries()
+      viewMemory.clear()
 
       // Cancel any pending SSE-driven invalidation — old cluster's events are irrelevant
       if (fastInvalidationRef.current.timer !== null) clearTimeout(fastInvalidationRef.current.timer)
@@ -1425,6 +1444,13 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
       { onSuccess: () => setNamespaces([]) },
     )
   }, [namespaceScope?.cacheScoped, namespaces.length, setActiveNamespace])
+  // Same write as the header picker, which then mirrors it into `namespaces`.
+  // The flash shows where that scope lives from now on.
+  const [namespacePickerFlash, setNamespacePickerFlash] = useState(0)
+  const applyNamespacesToAllSections = useCallback(
+    (picked: string[]) => setActiveNamespace.mutateAsync({ namespaces: picked }).then(() => setNamespacePickerFlash(n => n + 1)),
+    [setActiveNamespace],
+  )
   const initialBookmarkReconciledRef = useRef(false)
   const scopeActives = useMemo(() => namespaceScope?.actives ?? [], [namespaceScope?.actives])
   const namespaceScopeKey = useMemo(() => namespaceScope ? [...scopeActives].sort().join(',') : null, [namespaceScope, scopeActives])
@@ -1814,7 +1840,9 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
             <ScopePill>
               <ContextSwitcher ref={contextSwitcherRef} variant="segment" />
               <NamespaceSwitcher
+                key={namespacePickerFlash}
                 ref={namespaceSwitcherRef}
+                className={namespacePickerFlash ? 'reach-flash' : undefined}
                 variant="segment"
                 disabled={namespaceFilter.disabled}
                 disabledTooltip={namespaceFilter.tooltip}
@@ -2238,6 +2266,10 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
             onResourceClickYaml={(res) => navigateToResource(res, 'yaml')}
             onKindChange={() => setSelectedResource(null)}
             onClearNamespaces={clearAllNamespaces}
+            rememberedKindSearch={rememberedKindSearch}
+            // Embedded hosts own their namespace picker, and a cache-scoped
+            // Radar can't take an arbitrary set.
+            onApplyNamespacesToAllSections={embedded || namespaceScope?.cacheScoped ? undefined : applyNamespacesToAllSections}
           />
         )}
 

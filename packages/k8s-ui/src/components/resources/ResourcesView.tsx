@@ -3480,6 +3480,19 @@ interface ResourcesViewProps {
    * the switcher lives outside this component and may persist server-side.
    */
   onClearNamespaces?: () => void
+  /**
+   * The query string last seen for a kind in this session (host-owned, because
+   * this view unmounts on section switches). A user kind switch restores that
+   * kind's column and problem filters from it instead of starting empty.
+   */
+  rememberedKindSearch?: (kind: { name: string; group: string }) => string | undefined
+  /**
+   * Promotes the Namespace column's included values to the global namespace
+   * selection (replacing it). When wired, the column's filter dropdown offers
+   * "Apply to all sections" and clears the column filter once the returned
+   * promise resolves (a rejection keeps it).
+   */
+  onApplyNamespacesToAllSections?: (namespaces: string[]) => Promise<unknown> | void
   // Bulk operations
   onBulkDelete?: (items: BulkResourceItem[], options?: { force?: boolean; onSuccess?: () => void }) => void
   isBulkDeleting?: boolean
@@ -3603,19 +3616,24 @@ export function deriveSidebarResourceCounts(
   return results
 }
 
+/** The per-kind filters in a query string: what a kind switch resets or restores. */
+export function kindFiltersFromSearch(search: string | undefined) {
+  const params = new URLSearchParams(search ?? '')
+  const filtersParam = params.get('filters')
+  return {
+    columnFilters: parseColumnFilters(filtersParam),
+    columnFilterExcludes: parseColumnFilterExcludes(filtersParam),
+    problemFilters: params.get('problems')?.split(',').filter(Boolean) || [],
+  }
+}
+
 // Get initial filters from URL
 function getInitialFiltersFromURL() {
   const params = new URLSearchParams(window.location.search)
-  // Parse generic column filters
-  const filtersParam = params.get('filters')
-  const columnFilters = parseColumnFilters(filtersParam)
-  const columnFilterExcludes = parseColumnFilterExcludes(filtersParam)
   const result = {
     search: params.get('search') || '',
     regex: params.get('regex') === 'true',
-    columnFilters,
-    columnFilterExcludes,
-    problemFilters: params.get('problems')?.split(',').filter(Boolean) || [],
+    ...kindFiltersFromSearch(window.location.search),
     showInactive: params.get('showInactive') === 'true',
     labelSelector: params.get('labels') || '', // e.g., "app=caretta,version=v1"
     ownerKind: params.get('ownerKind') || '', // e.g., "DaemonSet"
@@ -3665,6 +3683,8 @@ export function ResourcesView({
   onCompareSubmit,
   resolveRowCluster,
   onClearNamespaces,
+  rememberedKindSearch,
+  onApplyNamespacesToAllSections,
   onBulkDelete,
   isBulkDeleting = false,
   onBulkRestart,
@@ -5083,7 +5103,7 @@ export function ResourcesView({
     isForbiddenError(selectedQueryError) ||
     (!selectedHasRows && !selectedQueryError && forbiddenKinds.has(selectedKindCountKey))
 
-  // Reset filters when kind changes (but not when syncing from URL navigation)
+  // On a kind change, restore that kind's remembered filters, or start empty (but not when syncing from URL navigation)
   // Track previous kind to skip on mount (where the effect fires but kind hasn't actually changed)
   // Keyed on group as well as plural: two CRDs can share a plural across API
   // groups, and their printer columns are unrelated. Resetting on the plural
@@ -5097,12 +5117,15 @@ export function ResourcesView({
     }
     prevKindRef.current = selectedKindIdentity
     setOpenColumnFilter(null)
-    if (!isSyncingFromURL.current) {
-      setColumnFilters({})
-      setColumnFilterExcludes({})
+    if (isSyncingFromURL.current) {
+      setProblemFilters([])
+      return
     }
-    setProblemFilters([])
-  }, [selectedKindIdentity])
+    const remembered = kindFiltersFromSearch(rememberedKindSearch?.(selectedKind))
+    setColumnFilters(remembered.columnFilters)
+    setColumnFilterExcludes(remembered.columnFilterExcludes)
+    setProblemFilters(remembered.problemFilters)
+  }, [selectedKindIdentity, selectedKind, rememberedKindSearch])
 
   // Toggle sort for a column
   const handleSort = useCallback((column: string) => {
@@ -6697,6 +6720,22 @@ export function ResourcesView({
                                   <div className="px-3 py-2 text-xs text-theme-text-disabled">No matches</div>
                                 )}
                               </div>
+                              {col.key === 'namespace' && onApplyNamespacesToAllSections && activeFilterValues.length > 0 && !columnFilterExcludes[col.key] && (
+                                <div className="p-1 border-t border-theme-border">
+                                  <button
+                                    onClick={() => {
+                                      setOpenColumnFilter(null)
+                                      // Keep the column filter until the scope change lands; a failed one keeps the user's filter.
+                                      Promise.resolve(onApplyNamespacesToAllSections(activeFilterValues))
+                                        .then(() => clearColumnFilter(col.key), () => {})
+                                    }}
+                                    className="w-full text-left px-2 py-1.5 text-xs rounded text-theme-text-secondary hover:bg-theme-elevated hover:text-theme-text-primary transition-colors"
+                                    title="Scope every section to these namespaces in the header namespace picker"
+                                  >
+                                    Apply to all sections
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           )
                         })()}
