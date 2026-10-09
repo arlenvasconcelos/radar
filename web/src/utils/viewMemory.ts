@@ -11,11 +11,7 @@ const NOT_REMEMBERED = new Set<string>([
   'drawer', 'event',
 ])
 
-const RESOURCE_LIST_PATH = /^\/resources\/([^/]+)$/
-
-function kindKey(plural: string, group: string): string {
-  return `${plural}\x00${group}`
-}
+const RESOURCE_LIST_PATH = /^\/resources\/[^/]+$/
 
 function cleanSearch(search: string): string {
   const params = new URLSearchParams(search)
@@ -25,40 +21,28 @@ function cleanSearch(search: string): string {
 }
 
 /**
- * Session memory of the last list URL per section and the last query per
- * resource kind. The URL stays the source of truth: entries are recorded from
- * it and restored by navigating back to them. In-memory only, so a reload
- * forgets everything.
+ * Session memory of the last list URL per section. The URL stays the source
+ * of truth: entries are recorded from it and restored by navigating back to
+ * them. In-memory only, so a reload forgets everything.
  */
 export function createViewMemory() {
   const sections = new Map<string, string>()
-  const kinds = new Map<string, string>()
 
   return {
     /** Records a location. Only list routes are remembered, not detail pages. */
     record(view: string, pathname: string, search: string) {
       const path = pathname.replace(/\/+$/, '') || '/'
       const query = cleanSearch(search)
-      const resourceList = view === 'resources' ? path.match(RESOURCE_LIST_PATH) : null
-      if (resourceList) {
-        const group = new URLSearchParams(search).get('apiGroup') ?? ''
-        kinds.set(kindKey(resourceList[1], group), query)
-      } else if (path !== (view === 'home' ? '/' : `/${view}`)) {
-        return
-      }
+      const resourceList = view === 'resources' && RESOURCE_LIST_PATH.test(path)
+      if (!resourceList && path !== (view === 'home' ? '/' : `/${view}`)) return
       sections.set(view, path + query)
     },
     /** The section's last list URL, without cross-view params. */
     sectionPath(view: string): string | undefined {
       return sections.get(view)
     },
-    /** The kind's last query string, without cross-view params. */
-    kindSearch(plural: string, group: string): string | undefined {
-      return kinds.get(kindKey(plural, group))
-    },
     clear() {
       sections.clear()
-      kinds.clear()
     },
   }
 }

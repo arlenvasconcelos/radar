@@ -142,6 +142,7 @@ import {
   healthColors,
 } from './resource-utils'
 import { getGenericResourceStatus } from './generic-status'
+import { ActiveFilterBar } from './ActiveFilterBar'
 import { getIstioGatewayServerCount, getIstioGatewaySelectorString } from './resource-utils-istio'
 import {
   type PrinterColumnDef, type PrinterTable, PRINTER_COLUMN_PREFIX, formatPrinterCell, printerCellSortValue,
@@ -3481,11 +3482,21 @@ interface ResourcesViewProps {
    */
   onClearNamespaces?: () => void
   /**
-   * The query string last seen for a kind in this session (host-owned, because
-   * this view unmounts on section switches). A user kind switch restores that
-   * kind's column and problem filters from it instead of starting empty.
+   * A kind's saved filters, as last reported through `onKindFiltersChange`
+   * (host-owned, because this view unmounts on section switches). A user kind
+   * switch, or a URL with no list state of its own (see `hasFilterIntent`),
+   * restores that kind's column and problem filters from it. Pass undefined
+   * until the host can answer: the first defined value is still applied to a
+   * bare URL.
    */
   rememberedKindSearch?: (kind: { name: string; group: string }) => string | undefined
+  /**
+   * Called with a kind's serialized `filters` + `problems` query ('' when
+   * none) whenever the filters the kind shows change, including the ones a
+   * link arrives with. A list that arrives with no filters does not report
+   * '', so a link to one resource keeps what was saved.
+   */
+  onKindFiltersChange?: (kind: { name: string; group: string }, search: string) => void
   /**
    * Promotes the Namespace column's included values to the global namespace
    * selection (replacing it). When wired, the column's filter dropdown offers
@@ -3627,6 +3638,34 @@ export function kindFiltersFromSearch(search: string | undefined) {
   }
 }
 
+/** The `filters` param value. Drops an exclude flag on a column with no active values. */
+function columnFiltersParam(colFilters: Record<string, string[]>, colExcludes: Record<string, boolean>): string {
+  const activeExcludes = Object.fromEntries(
+    Object.entries(colExcludes).filter(([k, on]) => on && (colFilters[k]?.length ?? 0) > 0)
+  )
+  return serializeColumnFilters(colFilters, activeExcludes)
+}
+
+/** Inverse of kindFiltersFromSearch: the `filters` + `problems` query, '' when none. */
+export function kindFiltersToSearch(f: ReturnType<typeof kindFiltersFromSearch>): string {
+  const params = new URLSearchParams()
+  const filters = columnFiltersParam(f.columnFilters, f.columnFilterExcludes)
+  if (filters) params.set('filters', filters)
+  if (f.problemFilters.length > 0) params.set('problems', f.problemFilters.join(','))
+  return params.toString()
+}
+
+const FILTER_INTENT_PARAMS = ['filters', 'problems', 'search', 'regex', 'labels', 'ownerKind', 'ownerName', 'resource', 'showInactive']
+
+/**
+ * Whether a URL states its own list state. Only a URL without any of these
+ * (a bare `/resources/<kind>`) gets the kind's remembered filters.
+ */
+export function hasFilterIntent(search: string): boolean {
+  const params = new URLSearchParams(search)
+  return FILTER_INTENT_PARAMS.some((key) => params.has(key))
+}
+
 // Get initial filters from URL
 function getInitialFiltersFromURL() {
   const params = new URLSearchParams(window.location.search)
@@ -3684,6 +3723,7 @@ export function ResourcesView({
   resolveRowCluster,
   onClearNamespaces,
   rememberedKindSearch,
+  onKindFiltersChange,
   onApplyNamespacesToAllSections,
   onBulkDelete,
   isBulkDeleting = false,
@@ -3732,6 +3772,30 @@ export function ResourcesView({
   const [columnFilters, setColumnFilters] = useState<Record<string, string[]>>(initialFilters.columnFilters)
   const [columnFilterExcludes, setColumnFilterExcludes] = useState<Record<string, boolean>>(initialFilters.columnFilterExcludes)
   const [problemFilters, setProblemFilters] = useState<string[]>(initialFilters.problemFilters)
+  // The kind the filter state belongs to. During a kind switch one render
+  // pairs the new kind with the old kind's filters; saving then would file
+  // them under the wrong kind.
+  const [filtersKind, setFiltersKind] = useState(() => selectedKindIdentityOf(selectedKind))
+  // Where the current filter state came from when it wasn't a user edit.
+  const filtersArrivedRef = useRef<'url' | 'restore' | null>('url')
+  // The serialized filters last restored from rememberedKindSearch ('' when none).
+  const [restoredKindSearch, setRestoredKindSearch] = useState('')
+  // A bare URL at mount takes the kind's saved filters. Adjusted during render
+  // (not in an effect) so the unfiltered list never paints, and so it still
+  // applies when the host's lookup arrives after mount.
+  const [mountRestorePending, setMountRestorePending] = useState(() => !hasFilterIntent(locationSearch ?? window.location.search))
+  if (mountRestorePending && rememberedKindSearch) {
+    setMountRestorePending(false)
+    const restored = kindFiltersToSearch(kindFiltersFromSearch(rememberedKindSearch(selectedKind)))
+    if (restored && !hasFilterIntent(locationSearch ?? window.location.search)) {
+      const remembered = kindFiltersFromSearch(restored)
+      setColumnFilters(remembered.columnFilters)
+      setColumnFilterExcludes(remembered.columnFilterExcludes)
+      setProblemFilters(remembered.problemFilters)
+      setRestoredKindSearch(restored)
+      filtersArrivedRef.current = 'restore'
+    }
+  }
   const [openColumnFilter, setOpenColumnFilter] = useState<string | null>(null)
   const [columnFilterSearch, setColumnFilterSearch] = useState('')
   const columnFilterDropdownRef = useRef<HTMLDivElement>(null)
@@ -4584,8 +4648,21 @@ export function ResourcesView({
     const newFilters = getInitialFiltersFromURL()
 
     // Update kind if it changed
-    if (newKind.name !== selectedKind.name || newKind.group !== selectedKind.group) {
+    const kindChanged = newKind.name !== selectedKind.name || newKind.group !== selectedKind.group
+    let restored = ''
+    if (kindChanged) {
       setSelectedKind(newKind)
+      // A bare URL for another kind links to the list, not to a state of it:
+      // take that kind's saved filters and put them in the address bar. Never
+      // for the same kind, where a bare URL is the echo of Clear filters.
+      restored = hasFilterIntent(locationSearch ?? window.location.search)
+        ? ''
+        : kindFiltersToSearch(kindFiltersFromSearch(rememberedKindSearch?.(newKind)))
+      setRestoredKindSearch(restored)
+      if (restored) {
+        Object.assign(newFilters, kindFiltersFromSearch(restored))
+        updateURL(newKind, newFilters.search, newFilters.regex, newFilters.columnFilters, newFilters.columnFilterExcludes, newFilters.problemFilters, newFilters.showInactive)
+      }
     }
 
     // Update owner filter if it changed
@@ -4624,6 +4701,13 @@ export function ResourcesView({
     const excludeKeys = (m: Record<string, boolean>) => Object.keys(m).filter(k => m[k]).sort().join(',')
     if (excludeKeys(newFilters.columnFilterExcludes) !== excludeKeys(columnFilterExcludes)) {
       setColumnFilterExcludes(newFilters.columnFilterExcludes)
+    }
+
+    if (newFilters.problemFilters.join(',') !== problemFilters.join(',')) {
+      setProblemFilters(newFilters.problemFilters)
+    }
+    if (kindChanged || kindFiltersToSearch(newFilters) !== kindFiltersSearch) {
+      filtersArrivedRef.current = restored ? 'restore' : 'url'
     }
 
     // Reset the flag after a tick to allow normal URL updates
@@ -4680,11 +4764,7 @@ export function ResourcesView({
     }
     // Write column filters as `filters` param; the exclude operator is folded
     // into each column entry, so it can never drift from the values it negates.
-    // Guard against a stale exclude flag on a column with no active values.
-    const activeExcludes = Object.fromEntries(
-      Object.entries(colExcludes).filter(([k, on]) => on && (colFilters[k]?.length ?? 0) > 0)
-    )
-    const filtersStr = serializeColumnFilters(colFilters, activeExcludes)
+    const filtersStr = columnFiltersParam(colFilters, colExcludes)
     if (filtersStr) {
       params.set('filters', filtersStr)
     } else {
@@ -4800,7 +4880,12 @@ export function ResourcesView({
         : typeof window !== 'undefined'
           ? window.location.pathname
           : ''
-    const pathChanged = currentPath !== targetPath
+    // The router commits a navigation as a transition, so the injected path can
+    // still be the previous kind's right after a push to this one (e.g. the
+    // write of filters restored on a kind switch); the address bar is already
+    // there, and pushing again would add a second entry for the same visit.
+    const pathChanged = currentPath !== targetPath &&
+      !(typeof window !== 'undefined' && window.location.pathname.endsWith(targetPath))
     const prev = prevSelectedResourceRef.current
     const current = selectedResource ?? null
     const drawerSwitched =
@@ -4834,6 +4919,12 @@ export function ResourcesView({
     }
     // Signal that initial resource param has been processed — URL update effect can now run
     hasProcessedInitialResource.current = true
+
+    // Filters restored at mount go into the address bar (with the kind segment).
+    if (restoredKindSearch) {
+      updateURL(selectedKind, searchTerm, regexMode, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets)
+      return
+    }
 
     // If the URL has no kind segment (e.g., /resources), update to include the default kind.
     // Route through `navigate` so an onNavigate-suppressing host can opt out.
@@ -5117,15 +5208,39 @@ export function ResourcesView({
     }
     prevKindRef.current = selectedKindIdentity
     setOpenColumnFilter(null)
-    if (isSyncingFromURL.current) {
-      setProblemFilters([])
-      return
-    }
-    const remembered = kindFiltersFromSearch(rememberedKindSearch?.(selectedKind))
+    setFiltersKind(selectedKindIdentity)
+    // The URL sync already set this kind's filters (and restoredKindSearch).
+    if (isSyncingFromURL.current) return
+    filtersArrivedRef.current = 'restore'
+    const restored = kindFiltersToSearch(kindFiltersFromSearch(rememberedKindSearch?.(selectedKind)))
+    const remembered = kindFiltersFromSearch(restored)
     setColumnFilters(remembered.columnFilters)
     setColumnFilterExcludes(remembered.columnFilterExcludes)
     setProblemFilters(remembered.problemFilters)
+    setRestoredKindSearch(restored)
   }, [selectedKindIdentity, selectedKind, rememberedKindSearch])
+
+  const kindFiltersSearch = useMemo(
+    () => kindFiltersToSearch({ columnFilters, columnFilterExcludes, problemFilters }),
+    [columnFilters, columnFilterExcludes, problemFilters],
+  )
+  // Saved filters are the last ones chosen for a kind: by the user, or by a
+  // link that brought its own. A restore only shows what was saved (saving it
+  // again would overwrite another tab's newer choice); a list that arrives
+  // with no filters (a link to one resource, an owner's pods) keeps what was
+  // saved; Clear filters saves none.
+  const lastSeenKindFiltersRef = useRef<{ kind: string; search: string } | null>(null)
+  useEffect(() => {
+    // The host may wire saving after mount; until then nothing counts as seen.
+    if (!onKindFiltersChange || filtersKind !== selectedKindIdentity) return
+    const last = lastSeenKindFiltersRef.current
+    lastSeenKindFiltersRef.current = { kind: filtersKind, search: kindFiltersSearch }
+    const arrived = filtersArrivedRef.current
+    filtersArrivedRef.current = null
+    if (last?.kind === filtersKind && last.search === kindFiltersSearch) return
+    if (arrived === 'restore' || (arrived === 'url' && !kindFiltersSearch)) return
+    onKindFiltersChange(selectedKind, kindFiltersSearch)
+  }, [filtersKind, selectedKindIdentity, kindFiltersSearch, selectedKind, onKindFiltersChange])
 
   // Toggle sort for a column
   const handleSort = useCallback((column: string) => {
@@ -5827,6 +5942,15 @@ export function ResourcesView({
     Object.values(columnFilters).some((vals) => vals.length > 0) ||
     showInactiveReplicaSets ||
     (!!onClearNamespaces && namespaces.length > 0)
+  const filtersRestored = !!kindFiltersSearch && kindFiltersSearch === restoredKindSearch
+  const activeFilterCount =
+    Object.values(columnFilters).filter((vals) => vals.length > 0).length +
+    (problemFilters.length > 0 ? 1 : 0) +
+    (labelSelector ? 1 : 0) +
+    (searchTerm || regexMode ? 1 : 0) +
+    (hasOwnerFilter ? 1 : 0) +
+    (showInactiveReplicaSets ? 1 : 0) +
+    (!!onClearNamespaces && namespaces.length > 0 ? 1 : 0)
 
 
   // Toggle problem filter
@@ -6142,10 +6266,10 @@ export function ResourcesView({
               <button
                 type="button"
                 onClick={clearAllFilters}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated transition-colors"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs selection selection-text hover:selection-strong transition-colors"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                <span>Clear filters</span>
+                <span>Clear filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}</span>
               </button>
             </Tooltip>
           )}
@@ -6377,6 +6501,21 @@ export function ResourcesView({
           </div>
         )}
 
+        {!isLoading && !isSelectedForbidden && !largeListGuard && filteredResources.length > 0 && (
+          <ActiveFilterBar
+            columnFilters={columnFilters}
+            columnFilterExcludes={columnFilterExcludes}
+            problemFilters={problemFilters}
+            labelSelector={labelSelector}
+            onClearColumn={clearColumnFilter}
+            onClearProblems={() => setProblemFilters([])}
+            onClearLabels={() => setLabelSelector('')}
+            restored={filtersRestored}
+            onClearAll={clearAllFilters}
+            className="shrink-0 px-4 py-1.5 border-b border-theme-border"
+          />
+        )}
+
         {/* Table */}
         <div
           className="flex-1 overflow-auto relative"
@@ -6453,46 +6592,17 @@ export function ResourcesView({
                 </button>
               )}
               {namespaces.length > 0 && <p className="text-sm mt-1 text-theme-text-disabled">Searching in {namespaces.length === 1 ? `namespace: ${namespaces[0]}` : `${namespaces.length} namespaces`}</p>}
-              {/* Show active filters as dismissible badges so user can clear them */}
-              {(() => {
-                const activeColEntries = Object.entries(columnFilters).filter(([, vals]) => vals.length > 0)
-                if (activeColEntries.length === 0 && problemFilters.length === 0 && !labelSelector) return null
-                return (
-                  <div className="flex flex-wrap items-center gap-1.5 mt-3">
-                    {activeColEntries.map(([key, vals]) => (
-                      <button
-                        key={key}
-                        onClick={() => clearColumnFilter(key)}
-                        className="flex items-center gap-1 px-2 py-1 text-xs selection selection-text rounded-md hover:selection-strong transition-colors"
-                      >
-                        <ListFilter className="w-3 h-3" />
-                        <span>{key}: {columnFilterExcludes[key] ? 'not ' : ''}{vals.join(', ')}</span>
-                        <X className="w-3 h-3" />
-                      </button>
-                    ))}
-                    {problemFilters.length > 0 && (
-                      <button
-                        onClick={() => setProblemFilters([])}
-                        className="flex items-center gap-1 px-2 py-1 text-xs bg-red-500/15 text-red-700 dark:text-red-300 rounded-md hover:bg-red-500/25 transition-colors"
-                      >
-                        <AlertTriangle className="w-3 h-3" />
-                        <span>Problems: {problemFilters.join(', ')}</span>
-                        <X className="w-3 h-3" />
-                      </button>
-                    )}
-                    {labelSelector && (
-                      <button
-                        onClick={() => setLabelSelector('')}
-                        className="flex items-center gap-1 px-2 py-1 text-xs bg-green-500/15 text-green-700 dark:text-green-300 rounded-md hover:bg-green-500/25 transition-colors"
-                      >
-                        <Tag className="w-3 h-3" />
-                        <span>{labelSelector}</span>
-                        <X className="w-3 h-3" />
-                      </button>
-                    )}
-                  </div>
-                )
-              })()}
+              <ActiveFilterBar
+                columnFilters={columnFilters}
+                columnFilterExcludes={columnFilterExcludes}
+                problemFilters={problemFilters}
+                labelSelector={labelSelector}
+                onClearColumn={clearColumnFilter}
+                onClearProblems={() => setProblemFilters([])}
+                onClearLabels={() => setLabelSelector('')}
+                restored={filtersRestored}
+                className="mt-3"
+              />
               {hasAnyFilter && (
                 <button
                   type="button"

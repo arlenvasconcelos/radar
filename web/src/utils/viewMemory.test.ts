@@ -2,29 +2,18 @@ import { describe, expect, it } from 'vitest'
 import { createViewMemory } from './viewMemory'
 
 describe('createViewMemory', () => {
-  it('remembers the last resource kind and its filters for the Resources section', () => {
+  it('remembers the last resource kind list for the Resources section', () => {
     const memory = createViewMemory()
     memory.record('resources', '/resources/pods', '?filters=namespace:a&namespaces=x')
     memory.record('resources', '/resources/services', '?search=web')
 
     expect(memory.sectionPath('resources')).toBe('/resources/services?search=web')
-    expect(memory.kindSearch('pods', '')).toBe('?filters=namespace%3Aa')
-  })
-
-  it('keys kinds by API group so colliding plurals stay apart', () => {
-    const memory = createViewMemory()
-    memory.record('resources', '/resources/services', '?filters=type:ClusterIP')
-    memory.record('resources', '/resources/services', '?apiGroup=serving.knative.dev&problems=failed')
-
-    expect(memory.kindSearch('services', '')).toBe('?filters=type%3AClusterIP')
-    expect(memory.kindSearch('services', 'serving.knative.dev')).toBe('?apiGroup=serving.knative.dev&problems=failed')
   })
 
   it('never remembers the global namespace pick, the investigation focus or an open drawer', () => {
     const memory = createViewMemory()
     memory.record('resources', '/resources/pods', '?namespaces=a,b&ai-run=r1&resource=a/web&tab=yaml&full=1&problems=failed')
 
-    expect(memory.kindSearch('pods', '')).toBe('?problems=failed')
     expect(memory.sectionPath('resources')).toBe('/resources/pods?problems=failed')
   })
 
@@ -56,7 +45,6 @@ describe('createViewMemory', () => {
     memory.record('resources', '/resources/pods', '?filters=namespace:a')
     memory.record('resources', '/resources/pods', '?namespaces=x')
 
-    expect(memory.kindSearch('pods', '')).toBe('')
     expect(memory.sectionPath('resources')).toBe('/resources/pods')
   })
 
@@ -66,6 +54,5 @@ describe('createViewMemory', () => {
     memory.clear()
 
     expect(memory.sectionPath('resources')).toBeUndefined()
-    expect(memory.kindSearch('pods', '')).toBeUndefined()
   })
 })
