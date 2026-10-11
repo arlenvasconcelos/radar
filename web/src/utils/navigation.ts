@@ -139,6 +139,9 @@ export function openExternal(url: string): void {
 // user's namespace scope.
 export const CROSS_VIEW_PARAMS = ['namespaces', 'ai-run'] as const
 
+/** A Resources list route (`/resources/<plural>`), as opposed to bare `/resources` or a detail page. */
+export const RESOURCE_LIST_PATH = /^\/resources\/[^/]+$/
+
 /** Carries the current cross-view params onto an in-app path that doesn't set them itself. */
 export function withCrossViewParams(path: string, currentSearch: string): string {
   const destination = new URL(path, 'http://radar.invalid')

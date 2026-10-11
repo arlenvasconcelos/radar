@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { hasFilterIntent, kindFiltersFromSearch, kindFiltersToSearch } from './ResourcesView'
-import { serializeColumnFilters } from './resource-utils'
+import { hasFilterIntent } from './ResourcesView'
+import { kindFiltersFromSearch, kindFiltersToSearch, serializeColumnFilters } from './resource-utils'
 
 describe('kindFiltersFromSearch', () => {
   it('restores column filters, their exclude operator and problem filters', () => {

@@ -19,15 +19,26 @@ describe('createViewMemory', () => {
 
   it('returns to the list, not to a detail view opened on top of it', () => {
     const memory = createViewMemory()
-    memory.record('helm', '/helm', '?release=default/web&releaseStorage=secret&q=web')
-    memory.record('applications', '/applications', '?workload=apps/Deployment/a/web&run=r1&sort=name')
-    memory.record('cnpg', '/cnpg', '?drawer=cluster:a/db&cluster=db')
-    memory.record('timeline', '/timeline', '?event=e1&filter=warnings')
+    memory.record('helm', '/helm', '?release=default/web&releaseStorage=secret')
+    memory.record('applications', '/applications', '?health=degraded&app=default/web&view=cost&workload=apps/Deployment/a/web&tab=logs&run=r1')
+    memory.record('cnpg', '/cnpg', '?drawer=cluster:a/db&cat=backups')
+    memory.record('timeline', '/timeline', '?event=e1&activity=warnings')
 
-    expect(memory.sectionPath('helm')).toBe('/helm?q=web')
-    expect(memory.sectionPath('applications')).toBe('/applications?sort=name')
-    expect(memory.sectionPath('cnpg')).toBe('/cnpg?cluster=db')
-    expect(memory.sectionPath('timeline')).toBe('/timeline?filter=warnings')
+    expect(memory.sectionPath('helm')).toBe('/helm')
+    expect(memory.sectionPath('applications')).toBe('/applications?health=degraded')
+    expect(memory.sectionPath('cnpg')).toBe('/cnpg?cat=backups')
+    expect(memory.sectionPath('timeline')).toBe('/timeline?activity=warnings')
+  })
+
+  it("keeps only the params that shape that section's list", () => {
+    const memory = createViewMemory()
+    memory.record('timeline', '/timeline', '?app=default/Deployment/web&scopeNamespaces=default&time=all&whats-new=1')
+    memory.record('topology', '/topology', '?mode=traffic&group=namespace&unknown=x')
+    memory.record('traffic', '/traffic', '?q=web')
+
+    expect(memory.sectionPath('timeline')).toBe('/timeline?app=default%2FDeployment%2Fweb&scopeNamespaces=default&time=all')
+    expect(memory.sectionPath('topology')).toBe('/topology?mode=traffic&group=namespace')
+    expect(memory.sectionPath('traffic')).toBe('/traffic')
   })
 
   it('remembers section list routes but not their detail pages', () => {

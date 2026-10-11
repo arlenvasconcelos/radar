@@ -1,21 +1,26 @@
-import { CROSS_VIEW_PARAMS } from './navigation'
+import { RESOURCE_LIST_FILTER_PARAMS } from '../components/resources/resource-utils'
+import { RESOURCE_LIST_PATH } from './navigation'
 
-// The global picker owns the cross-view params. The rest open a drawer or a
-// detail view on top of a list; they belong to one visit, not to the list the
-// user returns to.
-const NOT_REMEMBERED = new Set<string>([
-  ...CROSS_VIEW_PARAMS,
-  'resource', 'tab', 'full',
-  'release', 'releaseStorage',
-  'workload', 'run',
-  'drawer', 'event',
-])
+// The params that shape each section's list. Anything else (the global
+// picker's params, a drawer, a detail opened on top of the list, a one-off
+// modal) belongs to one visit, so a param a view adds later is forgotten until
+// it is listed here. A section that isn't listed returns to its bare path.
+const REMEMBERED: Record<string, readonly string[]> = {
+  resources: ['apiGroup', ...RESOURCE_LIST_FILTER_PARAMS],
+  topology: ['mode', 'group'],
+  timeline: ['view', 'window', 'from', 'to', 'activity', 'kinds', 'deleted', 'routine', 'pinnedOnly', 'q', 'grouping', 'sort', 'app', 'scopeNamespaces', 'time'],
+  gitops: ['q', 'sync', 'health', 'project', 'automation', 'labels', 'lifecycle', 'kind'],
+  applications: ['q', 'health', 'class', 'type', 'env', 'source', 'system'],
+  checks: ['q', 'severity', 'category', 'framework'],
+  cnpg: ['q', 'cat', 'filter'],
+}
 
-const RESOURCE_LIST_PATH = /^\/resources\/[^/]+$/
-
-function cleanSearch(search: string): string {
+function listSearch(view: string, search: string): string {
+  const remembered = REMEMBERED[view] ?? []
   const params = new URLSearchParams(search)
-  for (const key of NOT_REMEMBERED) params.delete(key)
+  for (const key of [...params.keys()]) {
+    if (!remembered.includes(key)) params.delete(key)
+  }
   const query = params.toString()
   return query ? `?${query}` : ''
 }
@@ -32,7 +37,7 @@ export function createViewMemory() {
     /** Records a location. Only list routes are remembered, not detail pages. */
     record(view: string, pathname: string, search: string) {
       const path = pathname.replace(/\/+$/, '') || '/'
-      const query = cleanSearch(search)
+      const query = listSearch(view, search)
       const resourceList = view === 'resources' && RESOURCE_LIST_PATH.test(path)
       if (!resourceList && path !== (view === 'home' ? '/' : `/${view}`)) return
       sections.set(view, path + query)

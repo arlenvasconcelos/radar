@@ -6,6 +6,8 @@ vi.stubGlobal('localStorage', {
   getItem: (k: string) => storage.get(k) ?? null,
   setItem: (k: string, v: string) => void storage.set(k, v),
   removeItem: (k: string) => void storage.delete(k),
+  get length() { return storage.size },
+  key: (i: number) => [...storage.keys()][i] ?? null,
 })
 afterEach(() => storage.clear())
 
@@ -69,6 +71,29 @@ describe('createKindFilterStore', () => {
 
     expect(tabA.get('pods', '')).toBe('filters=namespace%3Aa')
     expect(tabA.get('services', '')).toBeUndefined()
+  })
+
+  it('clears one column on every kind of the cluster, in the tab and in storage', () => {
+    const tab = createKindFilterStore('/api|ctx')
+    tab.set('pods', '', 'filters=namespace%3Aa%7Cstatus%3ARunning&problems=failed')
+    tab.set('services', '', 'filters=namespace%3Aexclude%3Ab')
+    tab.set('deployments', '', 'problems=failed')
+    // Another tab saved this kind; this tab never read it.
+    createKindFilterStore('/api|ctx').set('configmaps', '', 'filters=namespace%3Ac')
+    const otherCluster = createKindFilterStore('/api|ctx:2')
+    otherCluster.set('pods', '', 'filters=namespace%3Aa')
+
+    tab.clearColumn('namespace')
+
+    expect(tab.get('pods', '')).toBe('filters=status%3ARunning&problems=failed')
+    expect(tab.get('services', '')).toBeUndefined()
+    expect(tab.get('deployments', '')).toBe('problems=failed')
+    expect(tab.get('configmaps', '')).toBeUndefined()
+    const fresh = createKindFilterStore('/api|ctx')
+    expect(fresh.get('pods', '')).toBe('filters=status%3ARunning&problems=failed')
+    expect(fresh.get('services', '')).toBeUndefined()
+    expect(fresh.get('configmaps', '')).toBeUndefined()
+    expect(createKindFilterStore('/api|ctx:2').get('pods', '')).toBe('filters=namespace%3Aa')
   })
 
   it('remembers filters in the tab only when storage is unavailable', () => {

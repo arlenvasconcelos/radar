@@ -1,6 +1,8 @@
+import { kindFiltersFromSearch, kindFiltersToSearch } from '../components/resources/resource-utils'
+import { RESOURCE_LIST_PATH } from './navigation'
+
 const FILTERS_PREFIX = 'radar-filters:'
 const LAST_KIND_PREFIX = 'radar-last-kind:'
-const RESOURCE_LIST_PATH = /^\/resources\/[^/]+$/
 
 /**
  * Per-cluster Resources filters (one query string per kind) and the last
@@ -35,6 +37,30 @@ export function createKindFilterStore(cluster: string) {
       try {
         if (search) localStorage.setItem(filtersKey(plural, group), search)
         else localStorage.removeItem(filtersKey(plural, group))
+      } catch { /* ignore */ }
+    },
+    /** Removes one column's filter from every kind of this cluster, in this tab and in storage. */
+    clearColumn(column: string) {
+      const withoutColumn = (search: string) => {
+        const filters = kindFiltersFromSearch(search)
+        delete filters.columnFilters[column]
+        delete filters.columnFilterExcludes[column]
+        return kindFiltersToSearch(filters)
+      }
+      for (const [key, search] of tab) tab.set(key, withoutColumn(search))
+      const prefix = `${FILTERS_PREFIX}${cluster}:`
+      try {
+        const keys: string[] = []
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i)
+          // The rest is `<plural>/<group>`, never a colon: guards against a context named `<cluster>:…`.
+          if (key?.startsWith(prefix) && !key.slice(prefix.length).includes(':')) keys.push(key)
+        }
+        for (const key of keys) {
+          const next = withoutColumn(localStorage.getItem(key) ?? '')
+          if (next) localStorage.setItem(key, next)
+          else localStorage.removeItem(key)
+        }
       } catch { /* ignore */ }
     },
     /** The last Resources list path (`/resources/<plural>[?apiGroup=…]`). */

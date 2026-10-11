@@ -137,6 +137,10 @@ import {
   parseColumnFilters,
   serializeColumnFilters,
   parseColumnFilterExcludes,
+  kindFiltersFromSearch,
+  kindFiltersToSearch,
+  columnFiltersParam,
+  RESOURCE_LIST_FILTER_PARAMS,
   podMatchesProblemCategory,
   SEVERITY_DOT_COLOR,
   healthColors,
@@ -3627,35 +3631,7 @@ export function deriveSidebarResourceCounts(
   return results
 }
 
-/** The per-kind filters in a query string: what a kind switch resets or restores. */
-export function kindFiltersFromSearch(search: string | undefined) {
-  const params = new URLSearchParams(search ?? '')
-  const filtersParam = params.get('filters')
-  return {
-    columnFilters: parseColumnFilters(filtersParam),
-    columnFilterExcludes: parseColumnFilterExcludes(filtersParam),
-    problemFilters: params.get('problems')?.split(',').filter(Boolean) || [],
-  }
-}
-
-/** The `filters` param value. Drops an exclude flag on a column with no active values. */
-function columnFiltersParam(colFilters: Record<string, string[]>, colExcludes: Record<string, boolean>): string {
-  const activeExcludes = Object.fromEntries(
-    Object.entries(colExcludes).filter(([k, on]) => on && (colFilters[k]?.length ?? 0) > 0)
-  )
-  return serializeColumnFilters(colFilters, activeExcludes)
-}
-
-/** Inverse of kindFiltersFromSearch: the `filters` + `problems` query, '' when none. */
-export function kindFiltersToSearch(f: ReturnType<typeof kindFiltersFromSearch>): string {
-  const params = new URLSearchParams()
-  const filters = columnFiltersParam(f.columnFilters, f.columnFilterExcludes)
-  if (filters) params.set('filters', filters)
-  if (f.problemFilters.length > 0) params.set('problems', f.problemFilters.join(','))
-  return params.toString()
-}
-
-const FILTER_INTENT_PARAMS = ['filters', 'problems', 'search', 'regex', 'labels', 'ownerKind', 'ownerName', 'resource', 'showInactive']
+const FILTER_INTENT_PARAMS = [...RESOURCE_LIST_FILTER_PARAMS, 'resource']
 
 /**
  * Whether a URL states its own list state. Only a URL without any of these
@@ -4836,7 +4812,7 @@ export function ResourcesView({
     // params are out of scope here; the host's onClearNamespaces (and its
     // own state→URL sync) owns namespace cleanup.
     const params = new URLSearchParams(window.location.search)
-    for (const key of ['search', 'regex', 'filters', 'problems', 'labels', 'ownerKind', 'ownerName', 'showInactive']) {
+    for (const key of RESOURCE_LIST_FILTER_PARAMS) {
       params.delete(key)
     }
     navigate({ pathname: window.location.pathname, search: params.toString() }, { replace: true })
@@ -5933,16 +5909,6 @@ export function ResourcesView({
   // Namespace contribution gated on a host-wired clearer: without it the
   // Clear filters button can't drop the namespace, so showing it would be
   // a no-op for that case.
-  const hasAnyFilter =
-    !!searchTerm ||
-    regexMode ||
-    !!labelSelector ||
-    hasOwnerFilter ||
-    problemFilters.length > 0 ||
-    Object.values(columnFilters).some((vals) => vals.length > 0) ||
-    showInactiveReplicaSets ||
-    (!!onClearNamespaces && namespaces.length > 0)
-  const filtersRestored = !!kindFiltersSearch && kindFiltersSearch === restoredKindSearch
   const activeFilterCount =
     Object.values(columnFilters).filter((vals) => vals.length > 0).length +
     (problemFilters.length > 0 ? 1 : 0) +
@@ -5951,6 +5917,8 @@ export function ResourcesView({
     (hasOwnerFilter ? 1 : 0) +
     (showInactiveReplicaSets ? 1 : 0) +
     (!!onClearNamespaces && namespaces.length > 0 ? 1 : 0)
+  const hasAnyFilter = activeFilterCount > 0
+  const filtersRestored = !!kindFiltersSearch && kindFiltersSearch === restoredKindSearch
 
 
   // Toggle problem filter

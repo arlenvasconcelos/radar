@@ -1473,11 +1473,15 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     )
   }, [namespaceScope?.cacheScoped, namespaces.length, setActiveNamespace])
   // Same write as the header picker, which then mirrors it into `namespaces`.
-  // The flash shows where that scope lives from now on.
+  // The flash shows where that scope lives from now on. The picker owns the
+  // namespace scope from then on, so no kind keeps a Namespace column filter.
   const [namespacePickerFlash, setNamespacePickerFlash] = useState(0)
   const applyNamespacesToAllSections = useCallback(
-    (picked: string[]) => setActiveNamespace.mutateAsync({ namespaces: picked }).then(() => setNamespacePickerFlash(n => n + 1)),
-    [setActiveNamespace],
+    (picked: string[]) => setActiveNamespace.mutateAsync({ namespaces: picked }).then(() => {
+      kindFilterStore?.clearColumn('namespace')
+      setNamespacePickerFlash(n => n + 1)
+    }),
+    [setActiveNamespace, kindFilterStore],
   )
   const initialBookmarkReconciledRef = useRef(false)
   const scopeActives = useMemo(() => namespaceScope?.actives ?? [], [namespaceScope?.actives])
@@ -2286,7 +2290,8 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
         )}
 
         {/* Resources view */}
-        {mainView === 'resources' && (
+        {/* Bare /resources waits for App's redirect to the last kind; mounted, the view would redirect to Pods first. */}
+        {mainView === 'resources' && (location.pathname.replace(/\/+$/, '') || '/') !== '/resources' && (
           <ResourcesView
             namespaces={namespaces}
             selectedResource={routeSelectedResource}
@@ -2298,7 +2303,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
             onKindFiltersChange={saveKindFilters}
             // Embedded hosts own their namespace picker, and a cache-scoped
             // Radar can't take an arbitrary set.
-            onApplyNamespacesToAllSections={embedded || namespaceScope?.cacheScoped ? undefined : applyNamespacesToAllSections}
+            onApplyNamespacesToAllSections={embedded || namespaceScope?.cacheScoped || !kindFilterStore ? undefined : applyNamespacesToAllSections}
           />
         )}
 
