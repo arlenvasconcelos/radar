@@ -2303,7 +2303,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
             onKindFiltersChange={saveKindFilters}
             // Embedded hosts own their namespace picker, and a cache-scoped
             // Radar can't take an arbitrary set.
-            onApplyNamespacesToAllSections={embedded || namespaceScope?.cacheScoped || !kindFilterStore ? undefined : applyNamespacesToAllSections}
+            onApplyNamespacesToAllSections={namespaceScope?.cacheScoped || !kindFilterStore ? undefined : applyNamespacesToAllSections}
           />
         )}
 
