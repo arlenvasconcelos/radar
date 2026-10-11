@@ -4831,6 +4831,8 @@ export function ResourcesView({
       prevSelectedResourceRef.current = selectedResource ?? null
       return
     }
+    // Right after a kind switch the filters are still the previous kind's.
+    if (filtersKind !== selectedKindIdentityOf(selectedKind)) return
     // Skip URL update if selectedResource's kind doesn't match selectedKind (still syncing)
     if (selectedResource) {
       const resourceKindLower = selectedResource.kind.toLowerCase()
@@ -4875,7 +4877,7 @@ export function ResourcesView({
     prevSelectedResourceRef.current = current
 
     updateURL(selectedKind, debouncedSearchTerm, regexMode, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets, selectedResource?.namespace, selectedResource?.name, pushHistory)
-  }, [selectedKind, debouncedSearchTerm, regexMode, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets, selectedResource, updateURL, basePath, locationPathname])
+  }, [selectedKind, filtersKind, debouncedSearchTerm, regexMode, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets, selectedResource, updateURL, basePath, locationPathname])
 
   // Handle resource click from URL on mount
   useEffect(() => {
