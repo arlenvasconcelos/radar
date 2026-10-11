@@ -6237,7 +6237,7 @@ export function ResourcesView({
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs selection selection-text hover:selection-strong transition-colors"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                <span>Clear filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}</span>
+                <span>Clear filters ({activeFilterCount})</span>
               </button>
             </Tooltip>
           )}
