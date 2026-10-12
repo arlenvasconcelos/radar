@@ -484,17 +484,19 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     return slug || 'pods'
   }, [location.pathname])
 
-  // Per-mount, so a reload forgets it and Radar Hub (one mount per cluster) keeps clusters apart.
-  const [viewMemory] = useState(createViewMemory)
-  // Resources filters and the last kind persist per cluster; inert until the context is known.
+  // Section memory and Resources filters are kept per cluster; inert until the context is known.
   const { data: clusterInfoData, isLoading: clusterInfoLoading } = useClusterInfo()
   const clusterContext = clusterInfoData?.context
+  const viewMemory = useMemo(
+    () => (clusterContext ? createViewMemory(`${getApiBase()}|${clusterContext}`) : undefined),
+    [clusterContext],
+  )
   const kindFilterStore = useMemo(
     () => (clusterContext ? createKindFilterStore(`${getApiBase()}|${clusterContext}`) : undefined),
     [clusterContext],
   )
   useEffect(() => {
-    viewMemory.record(mainView, location.pathname, location.search)
+    viewMemory?.record(mainView, location.pathname, location.search)
     if (mainView === 'resources') kindFilterStore?.recordLastKind(location.pathname, location.search)
   }, [viewMemory, kindFilterStore, mainView, location.pathname, location.search])
   const rememberedKindSearch = useMemo(
@@ -541,7 +543,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     // Explicit params are a link with its own state; otherwise go back to where the user left this section.
     const remembered = params
       ? undefined
-      : viewMemory.sectionPath(view) ?? (view === 'resources' ? kindFilterStore?.lastKind() : undefined)
+      : viewMemory?.sectionPath(view) ?? (view === 'resources' ? kindFilterStore?.lastKind() : undefined)
     if (remembered) {
       navigate(withCrossViewParams(remembered, location.search))
       return
@@ -1249,7 +1251,6 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
       // removeQueries clears cached data, invalidateQueries triggers refetch
       queryClient.removeQueries()
       queryClient.invalidateQueries()
-      viewMemory.clear()
 
       // Cancel any pending SSE-driven invalidation — old cluster's events are irrelevant
       if (fastInvalidationRef.current.timer !== null) clearTimeout(fastInvalidationRef.current.timer)

@@ -9,7 +9,20 @@ vi.stubGlobal('localStorage', {
   get length() { return storage.size },
   key: (i: number) => [...storage.keys()][i] ?? null,
 })
-afterEach(() => storage.clear())
+afterEach(() => {
+  storage.clear()
+  vi.stubGlobal('sessionStorage', undefined)
+})
+
+function fakeSessionStorage() {
+  const items = new Map<string, string>()
+  return {
+    getItem: (k: string) => items.get(k) ?? null,
+    setItem: (k: string, v: string) => void items.set(k, v),
+    get length() { return items.size },
+    key: (i: number) => [...items.keys()][i] ?? null,
+  }
+}
 
 describe('createKindFilterStore', () => {
   it('keeps each cluster and each API group apart', () => {
@@ -94,6 +107,27 @@ describe('createKindFilterStore', () => {
     expect(fresh.get('services', '')).toBeUndefined()
     expect(fresh.get('configmaps', '')).toBeUndefined()
     expect(createKindFilterStore('/api|ctx:2').get('pods', '')).toBe('filters=namespace%3Aa')
+  })
+
+  it("keeps the tab's own filters on reload and in a duplicated tab; a new tab starts from the last saved", () => {
+    const tabA = fakeSessionStorage()
+    vi.stubGlobal('sessionStorage', tabA)
+    createKindFilterStore('/api|ctx').set('pods', '', 'filters=namespace%3Aa')
+
+    // Tab B saves a newer choice.
+    vi.stubGlobal('sessionStorage', fakeSessionStorage())
+    createKindFilterStore('/api|ctx').set('pods', '', 'filters=namespace%3Ab')
+
+    vi.stubGlobal('sessionStorage', tabA)
+    expect(createKindFilterStore('/api|ctx').get('pods', '')).toBe('filters=namespace%3Aa')
+
+    const duplicate = fakeSessionStorage()
+    for (let i = 0; i < tabA.length; i++) duplicate.setItem(tabA.key(i)!, tabA.getItem(tabA.key(i)!)!)
+    vi.stubGlobal('sessionStorage', duplicate)
+    expect(createKindFilterStore('/api|ctx').get('pods', '')).toBe('filters=namespace%3Aa')
+
+    vi.stubGlobal('sessionStorage', fakeSessionStorage())
+    expect(createKindFilterStore('/api|ctx').get('pods', '')).toBe('filters=namespace%3Ab')
   })
 
   it('remembers filters in the tab only when storage is unavailable', () => {

@@ -1,5 +1,6 @@
 import { RESOURCE_LIST_FILTER_PARAMS } from '../components/resources/resource-utils'
 import { RESOURCE_LIST_PATH } from './navigation'
+import { createTabStorage } from './tabStorage'
 
 // The params that shape each section's list. Anything else (the global
 // picker's params, a drawer, a detail opened on top of the list, a one-off
@@ -26,12 +27,13 @@ function listSearch(view: string, search: string): string {
 }
 
 /**
- * Session memory of the last list URL per section. The URL stays the source
+ * The tab's last list URL per section, per cluster. The URL stays the source
  * of truth: entries are recorded from it and restored by navigating back to
- * them. In-memory only, so a reload forgets everything.
+ * them. Kept per tab (see createTabStorage), never shared with other tabs.
  */
-export function createViewMemory() {
-  const sections = new Map<string, string>()
+export function createViewMemory(cluster: string) {
+  const sections = createTabStorage()
+  const sectionKey = (view: string) => `radar-section:${cluster}:${view}`
 
   return {
     /** Records a location. Only list routes are remembered, not detail pages. */
@@ -40,14 +42,11 @@ export function createViewMemory() {
       const query = listSearch(view, search)
       const resourceList = view === 'resources' && RESOURCE_LIST_PATH.test(path)
       if (!resourceList && path !== (view === 'home' ? '/' : `/${view}`)) return
-      sections.set(view, path + query)
+      sections.set(sectionKey(view), path + query)
     },
     /** The section's last list URL, without cross-view params. */
     sectionPath(view: string): string | undefined {
-      return sections.get(view)
-    },
-    clear() {
-      sections.clear()
+      return sections.get(sectionKey(view))
     },
   }
 }

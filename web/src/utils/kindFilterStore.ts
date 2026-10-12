@@ -1,5 +1,6 @@
 import { kindFiltersFromSearch, kindFiltersToSearch } from '../components/resources/resource-utils'
 import { RESOURCE_LIST_PATH } from './navigation'
+import { createTabStorage } from './tabStorage'
 
 const FILTERS_PREFIX = 'radar-filters:'
 const LAST_KIND_PREFIX = 'radar-last-kind:'
@@ -10,19 +11,21 @@ const LAST_KIND_PREFIX = 'radar-last-kind:'
  * Storage can be unavailable (private mode, blocked site data): every access
  * degrades to "nothing remembered".
  *
- * Filters are read from this instance's own memory first, so a tab keeps
- * showing what happened in that tab while another tab saves different
- * filters; localStorage only seeds a kind the first time the tab reads it.
+ * Filters are read from the tab's own copy first (sessionStorage: kept on
+ * reload, copied to a duplicated tab), so a tab keeps showing what happened
+ * in it while another tab saves different filters; localStorage only seeds a
+ * kind the first time the tab reads it.
  */
 export function createKindFilterStore(cluster: string) {
   const filtersKey = (plural: string, group: string) => `${FILTERS_PREFIX}${cluster}:${plural}/${group}`
   const lastKindKey = LAST_KIND_PREFIX + cluster
-  const tab = new Map<string, string>()
+  const tab = createTabStorage()
 
   return {
     get(plural: string, group: string): string | undefined {
       const key = filtersKey(plural, group)
-      if (tab.has(key)) return tab.get(key) || undefined
+      const own = tab.get(key)
+      if (own !== undefined) return own || undefined
       let saved: string | undefined
       try {
         saved = localStorage.getItem(key) ?? undefined
@@ -39,7 +42,7 @@ export function createKindFilterStore(cluster: string) {
         else localStorage.removeItem(filtersKey(plural, group))
       } catch { /* ignore */ }
     },
-    /** Removes one column's filter from every kind of this cluster, in this tab and in storage. */
+    /** Removes one column's filter from every kind of this cluster, in the tab and in localStorage. */
     clearColumn(column: string) {
       const withoutColumn = (search: string) => {
         const filters = kindFiltersFromSearch(search)
@@ -47,14 +50,15 @@ export function createKindFilterStore(cluster: string) {
         delete filters.columnFilterExcludes[column]
         return kindFiltersToSearch(filters)
       }
-      for (const [key, search] of tab) tab.set(key, withoutColumn(search))
       const prefix = `${FILTERS_PREFIX}${cluster}:`
+      // The rest is `<plural>/<group>`, never a colon: guards against a context named `<cluster>:…`.
+      const ofCluster = (key: string | null): key is string => !!key?.startsWith(prefix) && !key.slice(prefix.length).includes(':')
+      for (const key of tab.keys().filter(ofCluster)) tab.set(key, withoutColumn(tab.get(key) ?? ''))
       try {
         const keys: string[] = []
         for (let i = 0; i < localStorage.length; i++) {
           const key = localStorage.key(i)
-          // The rest is `<plural>/<group>`, never a colon: guards against a context named `<cluster>:…`.
-          if (key?.startsWith(prefix) && !key.slice(prefix.length).includes(':')) keys.push(key)
+          if (ofCluster(key)) keys.push(key)
         }
         for (const key of keys) {
           const next = withoutColumn(localStorage.getItem(key) ?? '')
