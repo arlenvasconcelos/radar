@@ -4819,6 +4819,12 @@ export function ResourcesView({
     onClearNamespaces?.()
   }, [navigate, onClearNamespaces])
 
+  const clearKindFilters = useCallback(() => {
+    setColumnFilters({})
+    setColumnFilterExcludes({})
+    setProblemFilters([])
+  }, [])
+
   // Update URL when any filter changes
   useEffect(() => {
     // Skip URL update if we're syncing FROM the URL (e.g., browser back button)
@@ -6481,7 +6487,7 @@ export function ResourcesView({
             onClearProblems={() => setProblemFilters([])}
             onClearLabels={() => setLabelSelector('')}
             restored={filtersRestored}
-            onClearAll={clearAllFilters}
+            onClearAll={clearKindFilters}
             className="shrink-0 px-4 py-1.5 border-b border-theme-border"
           />
         )}

@@ -35,12 +35,12 @@ export function ActiveFilterBar({
       {restored && (
         <span className="flex items-center gap-1 text-xs text-theme-text-tertiary">
           <History className="w-3 h-3" />
-          <span>Filters restored from your last visit</span>
+          <span>Filters restored from your last visit.</span>
           {onClearAll && (
             <button
               type="button"
               onClick={onClearAll}
-              className="text-theme-text-secondary hover:text-theme-text-primary underline-offset-2 hover:underline"
+              className="text-theme-text-secondary hover:text-theme-text-primary underline underline-offset-2"
             >
               Clear
             </button>
