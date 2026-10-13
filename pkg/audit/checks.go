@@ -172,9 +172,12 @@ func RunChecks(input *CheckInput) *ScanResults {
 	// One central seam instead of a per-check concern: every check emits
 	// normally, then a subject's annotation withdraws its own findings and its
 	// own evaluated tally before results are built.
-	findings = applyIgnoreAnnotations(findings, tr, buildIgnoreIndex(input))
+	findings, ignored := applyIgnoreAnnotations(findings, tr, buildIgnoreIndex(input))
 
-	return buildResults(findings, tr, missingInputs)
+	results := buildResults(findings, tr, missingInputs)
+	results.IgnoreChecksAnnotation = IgnoreChecksAnnotation
+	results.AnnotationIgnoredByNamespace = ignored
+	return results
 }
 
 // ============================================================================

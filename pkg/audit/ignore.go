@@ -43,15 +43,15 @@ func parseIgnoredChecks(value string) map[string]bool {
 }
 
 func (idx ignoreIndex) add(kind string, obj metav1.Object) {
+	idx.addKeyed(resourceid.GroupForBuiltinKind(kind), kind, obj)
+}
+
+func (idx ignoreIndex) addKeyed(group, kind string, obj metav1.Object) {
 	ids := parseIgnoredChecks(obj.GetAnnotations()[IgnoreChecksAnnotation])
 	if ids == nil {
 		return
 	}
-	// Emission sites leave Finding.Group empty and buildResults backfills it
-	// from the same table, so both sides of the lookup normalize identically.
-	// CRD kinds aren't in the table and resolve to "" on both sides — matching
-	// the group audit findings actually carry, not the object's real API group.
-	key := resourceid.ResourceKey(resourceid.GroupForBuiltinKind(kind), kind, obj.GetNamespace(), obj.GetName())
+	key := resourceid.ResourceKey(group, kind, obj.GetNamespace(), obj.GetName())
 	existing := idx[key]
 	if existing == nil {
 		idx[key] = ids
@@ -67,7 +67,7 @@ func (idx ignoreIndex) addUnstructured(objs []*unstructured.Unstructured) {
 		if o == nil {
 			continue
 		}
-		idx.add(o.GetKind(), o)
+		idx.addKeyed(resourceid.GroupFromAPIVersion(o.GetAPIVersion()), o.GetKind(), o)
 	}
 }
 
@@ -117,6 +117,12 @@ func buildIgnoreIndex(input *CheckInput) ignoreIndex {
 	for _, o := range input.ServiceAccounts {
 		idx.add("ServiceAccount", o)
 	}
+	for _, o := range input.PersistentVolumeClaims {
+		idx.add("PersistentVolumeClaim", o)
+	}
+	for _, o := range input.PersistentVolumes {
+		idx.add("PersistentVolume", o)
+	}
 	idx.addUnstructured(input.ManagedResources)
 	idx.addUnstructured(input.CompositeResources)
 	idx.addUnstructured(input.IngressRoutes)
@@ -136,13 +142,15 @@ func buildIgnoreIndex(input *CheckInput) ignoreIndex {
 //
 // Findings arrive pre-merge, so one (resource, checkID) pair can appear several
 // times (one per container). The denominator is decremented once per distinct
-// pair — the same grain the tracker counts in.
-func applyIgnoreAnnotations(findings []Finding, tr *evalTracker, idx ignoreIndex) []Finding {
+// pair — the same grain the tracker counts in. The same distinct pairs are
+// returned as checkID → namespace → count.
+func applyIgnoreAnnotations(findings []Finding, tr *evalTracker, idx ignoreIndex) ([]Finding, map[string]map[string]int) {
 	if len(idx) == 0 {
-		return findings
+		return findings, nil
 	}
 	type checkKey struct{ resource, checkID string }
 	dropped := make(map[checkKey]bool)
+	var ignored map[string]map[string]int
 
 	kept := findings[:0]
 	for _, f := range findings {
@@ -159,7 +167,14 @@ func applyIgnoreAnnotations(findings []Finding, tr *evalTracker, idx ignoreIndex
 		if !dropped[key] {
 			dropped[key] = true
 			tr.unrecord(f.CheckID, f.Namespace)
+			if ignored == nil {
+				ignored = make(map[string]map[string]int)
+			}
+			if ignored[f.CheckID] == nil {
+				ignored[f.CheckID] = make(map[string]int)
+			}
+			ignored[f.CheckID][f.Namespace]++
 		}
 	}
-	return kept
+	return kept, ignored
 }

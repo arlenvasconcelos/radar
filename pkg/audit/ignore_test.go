@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"reflect"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -114,6 +115,43 @@ func TestIgnoreAnnotation_MultiContainerDecrementsEvaluatedOnce(t *testing.T) {
 	}
 	if got := results.CheckCounts["readinessProbeMissing"]; got != (CheckCount{Evaluated: 1, Passed: 1}) {
 		t.Errorf("readinessProbeMissing counts = %+v, want {Evaluated:1 Passed:1}", got)
+	}
+}
+
+func TestIgnoreAnnotation_ReportsIgnoredSubjects(t *testing.T) {
+	input := &CheckInput{
+		ServiceAccounts:          []*corev1.ServiceAccount{},
+		HorizontalPodAutoscalers: []*autoscalingv2.HorizontalPodAutoscaler{},
+		Deployments: []*appsv1.Deployment{
+			// Two containers → two raw findings, but one ignored subject.
+			annotated(deploymentInNS("multi", "prod", 2, secureContainer("a", false), secureContainer("b", false)), "readinessProbeMissing,singleReplica"),
+			annotated(deploymentInNS("solo", "dev", 1, secureContainer("a", true)), "singleReplica"),
+			// Passing subjects produce no finding, so nothing is ignored.
+			annotated(deploymentInNS("ok", "prod", 2, secureContainer("a", true)), "readinessProbeMissing"),
+		},
+	}
+	results := RunChecks(input)
+
+	if results.IgnoreChecksAnnotation != IgnoreChecksAnnotation {
+		t.Errorf("IgnoreChecksAnnotation = %q, want %q", results.IgnoreChecksAnnotation, IgnoreChecksAnnotation)
+	}
+	want := map[string]map[string]int{
+		"readinessProbeMissing": {"prod": 1},
+		"singleReplica":         {"dev": 1},
+	}
+	if !reflect.DeepEqual(results.AnnotationIgnoredByNamespace, want) {
+		t.Errorf("AnnotationIgnoredByNamespace = %v, want %v", results.AnnotationIgnoredByNamespace, want)
+	}
+
+	filtered := ApplySettings(results, []string{"dev"}, []string{"readinessProbeMissing"})
+	if len(filtered.AnnotationIgnoredByNamespace) != 0 {
+		t.Errorf("ignored namespaces and disabled checks must drop their counts, got %v", filtered.AnnotationIgnoredByNamespace)
+	}
+	if filtered.IgnoreChecksAnnotation != IgnoreChecksAnnotation {
+		t.Error("ApplySettings must keep IgnoreChecksAnnotation")
+	}
+	if !reflect.DeepEqual(results.AnnotationIgnoredByNamespace, want) {
+		t.Error("ApplySettings must not mutate the cached scan's map")
 	}
 }
 
