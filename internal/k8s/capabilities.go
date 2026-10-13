@@ -137,6 +137,7 @@ type FeatureCapabilities struct {
 	YAMLSchemas           bool `json:"yamlSchemas"`
 	WorkloadImages        bool `json:"workloadImages"`
 	ResourceIssues        bool `json:"resourceIssues"`        // GET /api/issues/resource/{kind}/{namespace}/{name}
+	ResourceIssueCoverage bool `json:"resourceIssueCoverage"` // Resource issues with ?coverage=1
 	PodEnvironment        bool `json:"podEnvironment"`        // GET /api/pods/{namespace}/{name}/environment
 	PolicyResource        bool `json:"policyResource"`        // GET /api/policy/resource/{kind}/{namespace}/{name}
 	WorkloadHistory       bool `json:"workloadHistory"`       // GET /api/workloads/{kind}/{namespace}/{name}/history
@@ -698,15 +699,19 @@ func canIAs(ctx context.Context, client *kubernetes.Clientset, username string, 
 		return false, true
 	}
 
+	// Split "pods/exec" as k8score.CanI does: webhook authorizers only
+	// recognize a subresource in its own field.
+	baseResource, subresource, _ := strings.Cut(resource, "/")
 	review := &authv1.SubjectAccessReview{
 		Spec: authv1.SubjectAccessReviewSpec{
 			User:   username,
 			Groups: groups,
 			ResourceAttributes: &authv1.ResourceAttributes{
-				Namespace: namespace,
-				Group:     group,
-				Verb:      verb,
-				Resource:  resource,
+				Namespace:   namespace,
+				Group:       group,
+				Verb:        verb,
+				Resource:    baseResource,
+				Subresource: subresource,
 			},
 		},
 	}

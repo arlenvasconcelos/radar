@@ -23,8 +23,10 @@ import (
 	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/argoapi"
+	"github.com/skyhook-io/radar/pkg/finalizers"
 	gitopsinsights "github.com/skyhook-io/radar/pkg/gitops/insights"
 	gitopstree "github.com/skyhook-io/radar/pkg/gitops/tree"
+	"github.com/skyhook-io/radar/pkg/health"
 	"github.com/skyhook-io/radar/pkg/k8score"
 	"github.com/skyhook-io/radar/pkg/topology"
 )
@@ -101,7 +103,7 @@ func (s *Server) buildGitOpsTree(ctx context.Context, req *gitopsRequest) (*gito
 	opts.IncludeReplicaSets = true
 	opts.ForRelationshipCache = true
 
-	topo, err := s.topoMemo.Get(opts, func() (*topology.Topology, error) {
+	topo, err := s.topoMemo.GetScoped(req.Cache.Generation(), opts, func() (*topology.Topology, error) {
 		return topology.NewBuilder(k8s.NewTopologyResourceProvider(req.Cache)).
 			WithDynamic(k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())).
 			Build(opts)
@@ -172,6 +174,9 @@ func (s *Server) resolveGitOpsTree(r *http.Request, req *gitopsRequest) (*gitops
 		return s.canAccessGitOpsRef(r, req, group, kind, namespace, name, false)
 	}
 	resolver := newInsightsResolver(r.Context(), req.Cache, req.AllowedNamespaces, canAccess)
+	resolver.canReadClusterScoped = s.issueClusterScopedAccess(r)
+	resolver.canReadSubject = s.issueSubjectAccess(r)
+	resolver.canReadEvidence = s.issueEvidenceAccess(r)
 	memoKey := gitopsIssuesMemoKey(auth.UserFromContext(r.Context()), req.AllowedNamespaces)
 	resolver.composed = func() ([]issues.Issue, []issues.Issue) {
 		return s.gitopsIssuesMemo.load(memoKey, resolver.composeIssues)
@@ -188,7 +193,9 @@ func (s *Server) resolveGitOpsTree(r *http.Request, req *gitopsRequest) (*gitops
 // Only meaningful in appTree mode. Cached and throttled by the manager. A
 // nil health with a nil error is "no answer and nothing to tell the user":
 // nothing is configured and the install doesn't serve anonymous reads, so
-// the caller falls through to Radar's own read quietly. With the
+// the caller falls through to Radar's own read quietly. While a connection
+// is being made it returns *argoHealthPending (with no notice when nothing
+// is configured), so the page asks again. With the
 // integration configured, the failure comes back in the user's words — they
 // set the connection up for this, and the page should say it isn't
 // delivering rather than silently show Radar's read.
@@ -206,11 +213,35 @@ func (s *Server) argoAPIHealth(ctx context.Context, appNamespace, appName string
 		}
 		return nil, errors.New("this cluster's saved integration settings need review in Settings")
 	}
+	if errors.Is(err, argocd.ErrConnecting) {
+		pending := &argoHealthPending{}
+		if argocd.IsConfigured() {
+			pending.notice = argoAPIHealthFailure(err, argocd.TokenSet())
+		}
+		return nil, pending
+	}
 	if !argocd.IsConfigured() {
 		return nil, nil
 	}
+	if argocd.Retrying() {
+		// Say why it failed, and have the page ask again so it recovers
+		// when the retry connects.
+		return nil, &argoHealthPending{notice: argoAPIHealthFailure(err, argocd.TokenSet()), retrying: true}
+	}
 	return nil, errors.New(argoAPIHealthFailure(err, argocd.TokenSet()))
 }
+
+// argoHealthPending: Radar is connecting to argocd-server in the background,
+// and the page should ask again. notice is what to tell a user who
+// configured the integration (empty when they didn't, since they set
+// nothing up to wait for). retrying: a connect failed and is being retried;
+// notice is that failure, shown as one.
+type argoHealthPending struct {
+	notice   string
+	retrying bool
+}
+
+func (p *argoHealthPending) Error() string { return p.notice }
 
 // argoAPIHealthFailure is the clause the notice appends to "Radar couldn't
 // read Argo's per-resource health from your Argo CD server".
@@ -221,12 +252,16 @@ func argoAPIHealthFailure(err error, tokenSet bool) string {
 			return "the token isn't accepted for this application"
 		}
 		return "it requires a token"
-	case errors.Is(err, argoapi.ErrNotFound):
-		return "it doesn't know this application"
+	case errors.Is(err, argocd.ErrConnecting):
+		return "the connection is still being set up"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "the request timed out"
 	case errors.Is(err, argocd.ErrUnreachable):
+		// Before ErrNotFound: a URL that 404s on /api/version is not an Argo
+		// CD server, which is not the same as Argo not knowing the app.
 		return "the server couldn't be reached"
+	case errors.Is(err, argoapi.ErrNotFound):
+		return "it doesn't know this application"
 	}
 	// Anything else (a 500, a body that didn't parse) is still a configured
 	// connection that didn't deliver; an empty clause would read as nothing
@@ -253,6 +288,16 @@ func overlayArgoAPIHealth(ctx context.Context, tree *gitopstree.ResourceTree, ro
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	health, err := fetch(ctx, root.GetNamespace(), root.GetName())
+	var pending *argoHealthPending
+	if errors.As(err, &pending) {
+		tree.HealthAPIError = pending.notice
+		if pending.retrying {
+			tree.HealthAPIRetrying = true
+		} else {
+			tree.HealthAPIPending = true
+		}
+		return false
+	}
 	if err != nil {
 		tree.HealthAPIError = err.Error()
 		return false
@@ -404,6 +449,10 @@ func (s *Server) handleGitOpsInsights(w http.ResponseWriter, r *http.Request) {
 				insight.Capabilities.ArgoDiffAvailable = isInClusterDestination(root)
 			}
 		}
+		// Read after the managed-resources call: a failure there may just
+		// have started a re-check the page should wait out.
+		insight.Capabilities.ArgoConnecting = argocd.Connecting()
+		insight.Capabilities.ArgoRetrying = insight.Capabilities.ArgoConfigured && argocd.Retrying()
 		if insight.Capabilities.ArgoConfigured {
 			// Best-effort: surface a broken Git repo connection (a top hidden cause
 			// of stuck syncs) as an Issue. Never fails insights if the Argo call errors.
@@ -840,10 +889,13 @@ func namespaceAllowedForGitOps(allowed []string, namespace string) bool {
 // pkg/gitops/insights API. Per-request: ctx + namespace allowlist captured
 // once at construction; lookups are namespace-filtered to enforce RBAC.
 type insightsResolver struct {
-	ctx               context.Context
-	cache             *k8s.ResourceCache
-	allowedNamespaces []string
-	canAccess         func(group, kind, namespace, name string) bool
+	ctx                  context.Context
+	cache                *k8s.ResourceCache
+	allowedNamespaces    []string
+	canAccess            func(group, kind, namespace, name string) bool
+	canReadClusterScoped func(kind, group string) bool
+	canReadSubject       func(issues.Ref) bool
+	canReadEvidence      func(issues.EvidenceRead) bool
 
 	// The cluster-wide issue set is composed at most once per insights request
 	// (lazily, only if a degraded managed resource asks for it) and reused
@@ -1038,6 +1090,9 @@ func (r *insightsResolver) ResourceProblems(group, kind, namespace, name string)
 		r.composedFlat, r.composedGrouped = r.composeIssues()
 	})
 	related := issues.RelatedIssuesFrom(r.composedFlat, r.composedGrouped, issues.RelatedIssueOptions{
+		CanReadClusterScoped: r.canReadClusterScoped,
+		CanReadSubject:       r.canReadSubject,
+		CanReadEvidence:      r.canReadEvidence,
 		CanReadRelated: func(ref issues.Ref) bool {
 			return r.canAccess != nil && r.canAccess(ref.Group, ref.Kind, ref.Namespace, ref.Name)
 		},
@@ -1146,6 +1201,9 @@ func (r *insightsResolver) composeIssues() ([]issues.Issue, []issues.Issue) {
 		SkipPodTemplateContext: true,
 		Namespaces:             r.allowedNamespaces,
 		Limit:                  issues.NoLimit,
+		CanReadClusterScoped:   r.canReadClusterScoped,
+		CanReadSubject:         r.canReadSubject,
+		CanReadEvidence:        r.canReadEvidence,
 		CanReadRelated: func(ref issues.Ref) bool {
 			return r.canAccess != nil && r.canAccess(ref.Group, ref.Kind, ref.Namespace, ref.Name)
 		},
@@ -1156,7 +1214,7 @@ func (r *insightsResolver) composeIssues() ([]issues.Issue, []issues.Issue) {
 // FinalizerOwnerStatus implements gitopsinsights.Resolver.
 //
 // Looks up the controller responsible for a finalizer (via the static
-// catalog in pkg/gitops/insights/finalizers.go) and reports the
+// catalog in pkg/finalizers/catalog.go) and reports the
 // aggregate health of its pods in the install namespace. Returns ""
 // when the finalizer isn't recognized, the install namespace is empty
 // (e.g. operator deployed Flux into a non-default namespace), or the
@@ -1171,14 +1229,17 @@ func (r *insightsResolver) composeIssues() ([]issues.Issue, []issues.Issue) {
 //	"source-controller is degraded (1/2 pods ready)"
 //	"helm-controller is not running in namespace flux-system (controller may not be installed, or runs under a different namespace)"
 func (r *insightsResolver) FinalizerOwnerStatus(finalizer string, root *unstructured.Unstructured) string {
-	owner := gitopsinsights.ResolveFinalizerOwner(finalizer, root)
-	if owner == nil {
+	owner := finalizers.ResolveOwner(finalizer, root)
+	if owner == nil || owner.Namespace == "" {
 		return ""
 	}
 	if r.cache == nil || r.cache.Pods() == nil {
 		return ""
 	}
 	if !r.namespaceAllowed(owner.Namespace) {
+		return ""
+	}
+	if r.canReadEvidence != nil && !r.canReadEvidence(issues.EvidenceRead{Resource: "pods", Namespace: owner.Namespace, Verb: "list"}) {
 		return ""
 	}
 	if r.canAccess != nil && !r.canAccess("", "Pod", owner.Namespace, "") {
@@ -1200,38 +1261,12 @@ func (r *insightsResolver) FinalizerOwnerStatus(finalizer string, root *unstruct
 		// isn't installed (broken finalizer-only state). Either way,
 		// the user needs to know "the controller isn't where I expect"
 		// to start debugging.
+		if owner.OffClusterOfferings != "" {
+			return owner.Controller + " has no pods in namespace " + owner.Namespace + " (it may run outside the cluster under " + owner.OffClusterOfferings + ", not be installed, or run under a different namespace)"
+		}
 		return owner.Controller + " is not running in namespace " + owner.Namespace + " (controller may not be installed, or runs under a different namespace)"
 	}
-	return summarizeControllerHealth(owner.Controller, matched)
-}
-
-// summarizeControllerHealth distills a slice of controller pods into a
-// short, operator-readable status verb. Aggregates over multiple
-// replicas (Argo's controller is typically deployed as a 2-replica
-// StatefulSet for HA): if any pod is in CrashLoopBackOff or Error, that
-// fact dominates the status. If all pods are Ready, "healthy". Anything
-// in between is "degraded" with a count.
-func summarizeControllerHealth(controller string, pods []*corev1.Pod) string {
-	health := summarizeControllerPods(pods)
-	switch {
-	case health.Crashing > 0:
-		return fmt.Sprintf("%s is %s (%d/%d pods)", controller, health.CrashReason, health.Crashing, health.Total)
-	case health.Ready == health.Total && health.Total > 0:
-		// All pods Ready — if the resource is *still* stuck deleting
-		// despite a healthy controller, it's a different problem (RBAC,
-		// network, broken finalizer logic). Surface the healthy state
-		// so the operator knows to dig into the controller's logs
-		// rather than its lifecycle.
-		suffix := "s"
-		if health.Ready == 1 {
-			suffix = ""
-		}
-		return fmt.Sprintf("%s is healthy (%d pod%s ready)", controller, health.Ready, suffix)
-	case health.Pending > 0:
-		return fmt.Sprintf("%s is pending start (%d/%d pods Pending)", controller, health.Pending, health.Total)
-	default:
-		return fmt.Sprintf("%s is degraded (%d/%d pods ready)", controller, health.Ready, health.Total)
-	}
+	return health.SummarizeControllerHealth(owner.Controller, matched)
 }
 
 func (r *insightsResolver) namespaceAllowed(namespace string) bool {

@@ -52,6 +52,7 @@ type AppConfig struct {
 	ListenAddress               string
 	ShowRemoteAccessHint        bool
 	BasePath                    string
+	TrustedOrigins              []string
 	NoBrowser                   bool
 	Browser                     string
 	DevMode                     bool
@@ -416,6 +417,7 @@ func RegisterCallbacks(cfg AppConfig, timelineStoreCfg timeline.StoreConfig) App
 				}
 			}
 			prometheuspkg.Prewarm()
+			argocd.Prewarm()
 		}
 	})
 	k8s.OnNamespaceRescope(func(_ string) { prometheuspkg.Prewarm() })
@@ -512,6 +514,7 @@ func CreateServer(cfg AppConfig) *server.Server {
 		PortFallback:          cfg.PortFallback,
 		ListenAddress:         cfg.ListenAddress,
 		BasePath:              cfg.BasePath,
+		TrustedOrigins:        cfg.TrustedOrigins,
 		StartupLog:            true,
 		RemoteAccessHint:      cfg.ShowRemoteAccessHint,
 		DevMode:               cfg.DevMode,

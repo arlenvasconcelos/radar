@@ -1,6 +1,7 @@
 import { dedupeResourceRefs, omitResourceRefs } from '../../utils/resource-refs'
+import { customResourceDefinitionRef, getCRDDefinitionsSnapshot, subscribeCRDDefinitions } from '../../utils/navigation'
 import { Disclosure } from './Disclosure'
-import { createContext, useContext, useState } from 'react'
+import { createContext, useContext, useState, useSyncExternalStore } from 'react'
 import { Copy, Check, Tag, AlertTriangle, CheckCircle, ExternalLink, Layers, X, Minus } from 'lucide-react'
 import { clsx } from 'clsx'
 import { formatDuration, formatResources } from '../resources/resource-utils'
@@ -412,11 +413,13 @@ interface AlertBannerProps {
   message?: React.ReactNode
   items?: string[]
   children?: React.ReactNode
-  /** Replaces the default bottom margin when the banner sits in a tighter layout. */
+  /** A control at the end of the title line, e.g. a link to where the problem is handled. */
+  action?: React.ReactNode
+  /** Replaces the default bottom margin (`mb-4`). */
   className?: string
 }
 
-export function AlertBanner({ variant, icon, title, message, items, children, className }: AlertBannerProps) {
+export function AlertBanner({ variant, icon, title, message, items, children, action, className }: AlertBannerProps) {
   const colors = ALERT_COLORS[variant]
   const Icon = icon || DEFAULT_ICONS[variant]
   const hasBody = message || items || children
@@ -427,7 +430,14 @@ export function AlertBanner({ variant, icon, title, message, items, children, cl
         <Icon className={clsx('w-4 h-4 shrink-0', colors.title, hasBody && 'mt-0.5')} />
         {hasBody ? (
           <div className="flex-1 min-w-0">
-            <div className={clsx('text-sm font-medium', colors.title, items && 'mb-1')}>{title}</div>
+            {action ? (
+              <div className={clsx('flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1', items && 'mb-1')}>
+                <div className={clsx('min-w-0 text-sm font-medium', colors.title)}>{title}</div>
+                <div className="shrink-0">{action}</div>
+              </div>
+            ) : (
+              <div className={clsx('text-sm font-medium', colors.title, items && 'mb-1')}>{title}</div>
+            )}
             {message && <div className={clsx('text-xs mt-1 break-words', colors.message)}>{message}</div>}
             {items && items.length > 0 && (
               <ul className={clsx('text-xs space-y-1', colors.list)}>
@@ -440,6 +450,11 @@ export function AlertBanner({ variant, icon, title, message, items, children, cl
               </ul>
             )}
             {children}
+          </div>
+        ) : action ? (
+          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-3 gap-y-1">
+            <div className={clsx('min-w-0 text-sm font-medium', colors.title)}>{title}</div>
+            <div className="shrink-0">{action}</div>
           </div>
         ) : (
           <div className={clsx('text-sm font-medium', colors.title)}>{title}</div>
@@ -527,13 +542,16 @@ export function AnnotationsSection({ data }: { data: any }) {
   )
 }
 
-export function MetadataSection({ data }: { data: any }) {
+export function MetadataSection({ data, onNavigate }: { data: any; onNavigate?: (ref: ResourceRef) => void }) {
+  useSyncExternalStore(subscribeCRDDefinitions, getCRDDefinitionsSnapshot, getCRDDefinitionsSnapshot)
   const meta = data.metadata
   if (!meta) return null
+  const definition = customResourceDefinitionRef(data.apiVersion, data.kind)
 
   return (
     <Section title="Metadata" defaultExpanded>
       <PropertyList>
+        {definition && <Property label="Definition" value={<ResourceLink {...definition} onNavigate={onNavigate} />} />}
         <Property label="UID" value={meta.uid} />
         <Property label="Resource Version" value={meta.resourceVersion} />
         <Property label="Generation" value={meta.generation} />
@@ -739,7 +757,7 @@ export function formatKindName(kind: string): string {
     pods: 'Pod', deployments: 'Deployment', daemonsets: 'DaemonSet', statefulsets: 'StatefulSet',
     replicasets: 'ReplicaSet', services: 'Service', endpointslices: 'EndpointSlice', ingresses: 'Ingress',
     gateways: 'Gateway', httproutes: 'HTTPRoute', grpcroutes: 'GRPCRoute',
-    tcproutes: 'TCPRoute', tlsroutes: 'TLSRoute', configmaps: 'ConfigMap',
+    tcproutes: 'TCPRoute', tlsroutes: 'TLSRoute', udproutes: 'UDPRoute', configmaps: 'ConfigMap',
     secrets: 'Secret', jobs: 'Job', cronjobs: 'CronJob', hpas: 'HPA',
     horizontalpodautoscalers: 'HPA', nodes: 'Node', namespaces: 'Namespace',
     persistentvolumeclaims: 'PVC', persistentvolumes: 'PV',
@@ -828,6 +846,13 @@ export function RelatedResourcesSection({ relationships, onNavigate }: RelatedRe
     (relationships.resourceClaims && relationships.resourceClaims.length > 0) ||
     (relationships.dependencies && relationships.dependencies.length > 0) ||
     (relationships.dependents && relationships.dependents.length > 0) ||
+    (relationships.monitors && relationships.monitors.length > 0) ||
+    (relationships.monitorTargets && relationships.monitorTargets.length > 0) ||
+    (relationships.backends && relationships.backends.length > 0) ||
+    (relationships.routedFrom && relationships.routedFrom.length > 0) ||
+    (relationships.protects && relationships.protects.length > 0) ||
+    (relationships.healthChecks && relationships.healthChecks.length > 0) ||
+    (relationships.stagedPolicies && relationships.stagedPolicies.length > 0) ||
     relationships.scaleTarget
 
   if (!hasRelationships) return null
@@ -889,6 +914,27 @@ export function RelatedResourcesSection({ relationships, onNavigate }: RelatedRe
         {relationships.dependents && relationships.dependents.length > 0 && (
           <RelationshipGroup label="Required By" refs={dedupeResourceRefs(relationships.dependents)} onNavigate={onNavigate} />
         )}
+        {relationships.monitors && relationships.monitors.length > 0 && (
+          <RelationshipGroup label="Monitored By" refs={dedupeResourceRefs(relationships.monitors)} onNavigate={onNavigate} />
+        )}
+        {relationships.monitorTargets && relationships.monitorTargets.length > 0 && (
+          <RelationshipGroup label="Monitors" refs={dedupeResourceRefs(relationships.monitorTargets)} onNavigate={onNavigate} />
+        )}
+        {relationships.backends && relationships.backends.length > 0 && (
+          <RelationshipGroup label="Routes To" refs={dedupeResourceRefs(relationships.backends)} onNavigate={onNavigate} />
+        )}
+        {relationships.routedFrom && relationships.routedFrom.length > 0 && (
+          <RelationshipGroup label="Routed From" refs={dedupeResourceRefs(relationships.routedFrom)} onNavigate={onNavigate} />
+        )}
+        {relationships.protects && relationships.protects.length > 0 && (
+          <RelationshipGroup label="Selects" refs={dedupeResourceRefs(relationships.protects)} onNavigate={onNavigate} />
+        )}
+        {relationships.healthChecks && relationships.healthChecks.length > 0 && (
+          <RelationshipGroup label="Health Checks" refs={dedupeResourceRefs(relationships.healthChecks)} onNavigate={onNavigate} />
+        )}
+        {relationships.stagedPolicies && relationships.stagedPolicies.length > 0 && (
+          <RelationshipGroup label="Staged Policies" refs={dedupeResourceRefs(relationships.stagedPolicies)} onNavigate={onNavigate} />
+        )}
         {relationships.scaleTarget && (
           <RelationshipGroup label="Scale Target" refs={[relationships.scaleTarget]} onNavigate={onNavigate} />
         )}
@@ -940,7 +986,7 @@ export interface ResourceRefBadgeProps {
 /** Reusable chip/badge for showing a related resource with click-to-navigate */
 export function ResourceRefBadge({ resourceRef, onClick, wrapAtSeparator }: ResourceRefBadgeProps) {
   const kindClass = getKindColor(resourceRef.kind)
-  const kindName = formatKindForRef(resourceRef.kind)
+  const kindName = formatKindForRef(resourceRef.kind, resourceRef.group)
   const content = wrapAtSeparator ? (
     <>
       <span className="shrink-0 opacity-60">{kindName}/</span>
@@ -1003,8 +1049,10 @@ export function ResourceLink({ name, kind, namespace = '', group, label, onNavig
   )
 }
 
-function formatKindForRef(kind: string): string {
+function formatKindForRef(kind: string, group?: string): string {
   const k = kind.toLowerCase()
+  // A Knative Service shares its kind with core Services; use Knative's own short name.
+  if (k === 'service' && group === 'serving.knative.dev') return 'ksvc'
   const shortNames: Record<string, string> = {
     deployment: 'deploy',
     daemonset: 'ds',
@@ -1017,6 +1065,7 @@ function formatKindForRef(kind: string): string {
     httproute: 'hr',
     grpcroute: 'grpc',
     tcproute: 'tcp',
+    udproute: 'udp',
     tlsroute: 'tls',
     secret: 'secret',
     pod: 'pod',
