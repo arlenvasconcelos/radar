@@ -11,7 +11,9 @@ import (
 
 	"github.com/skyhook-io/radar/internal/ingressstatus"
 	"github.com/skyhook-io/radar/internal/logsafe"
+	"github.com/skyhook-io/radar/pkg/configrefs"
 	"github.com/skyhook-io/radar/pkg/envresolve"
+	"github.com/skyhook-io/radar/pkg/timeutil"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
@@ -107,7 +109,7 @@ func missingRefProblemSev(now time.Time, kind, group, ns, name, severity, reason
 		Severity:          severity,
 		Reason:            reason,
 		Message:           message,
-		Age:               FormatAge(age),
+		Age:               timeutil.FormatAgeShort(age),
 		AgeSeconds:        int64(age.Seconds()),
 		ResourceCreatedAt: createdAt,
 		OnsetUnknown:      true,
@@ -566,7 +568,7 @@ func detectIngressMissingBackend(cache *ResourceCache, namespace string, now tim
 					Cause:             fmt.Sprintf("IngressClass %q is not installed, so no controller can claim these routing rules by that class.", className),
 					Action:            "Set spec.ingressClassName to an installed class, or install the intended ingress controller and IngressClass.",
 					Fingerprint:       missingRefFingerprint("Missing IngressClass", className),
-					Age:               FormatAge(age),
+					Age:               timeutil.FormatAgeShort(age),
 					AgeSeconds:        int64(age.Seconds()),
 					ResourceCreatedAt: ing.CreationTimestamp.Time,
 					OnsetUnknown:      true,
@@ -723,6 +725,8 @@ func detectIngressMissingBackend(cache *ResourceCache, namespace string, now tim
 					fmt.Sprintf("TLS Secret %q doesn't exist, so the controller may serve its default/self-signed cert and HTTPS clients see warnings.", tls.SecretName),
 					fmt.Sprintf("Point tls[].secretName at an existing kubernetes.io/tls Secret in namespace %q, remove the tls entry, or create TLS Secret %q if this host still needs TLS.", ing.Namespace, tls.SecretName))
 				p.Severity = "warning"
+				// Not gated on Secret access: the name is the Ingress's own, and
+				// whether it exists is all this finding says.
 				out = append(out, p)
 			}
 		}
@@ -1084,7 +1088,7 @@ func DetectMissingGatewayRefs(cache *ResourceCache, dynamicCache *DynamicResourc
 	now := time.Now()
 	getReferenceGrants := gatewayReferenceGrantGetter(dynamicCache, discovery)
 	var out []Detection
-	for _, kind := range []string{"HTTPRoute", "GRPCRoute", "TCPRoute", "TLSRoute"} {
+	for _, kind := range []string{"HTTPRoute", "GRPCRoute", "TCPRoute", "TLSRoute", "UDPRoute"} {
 		gvr, ok := discovery.GetGVRWithGroup(kind, "gateway.networking.k8s.io")
 		if !ok {
 			continue
@@ -1155,13 +1159,10 @@ func detectGatewayRouteMissingBackends(cache *ResourceCache, svcLister corev1lis
 				continue
 			}
 			name, _ := refm["name"].(string)
-			if name == "" || !gatewayBackendRefIsService(refm) {
+			if name == "" || !configrefs.GatewayBackendIsService(refm) {
 				continue
 			}
-			svcNS := route.GetNamespace()
-			if ns, _ := refm["namespace"].(string); ns != "" {
-				svcNS = ns
-			}
+			svcNS := configrefs.GatewayRefNamespace(refm, route.GetNamespace())
 			port := gatewayBackendPort(refm)
 			key := svcNS + "/" + name + "/" + port
 			if seen[key] {
@@ -1215,12 +1216,6 @@ func detectGatewayRouteMissingBackends(cache *ResourceCache, svcLister corev1lis
 		}
 	}
 	return out
-}
-
-func gatewayBackendRefIsService(ref map[string]any) bool {
-	group, _ := ref["group"].(string)
-	kind, _ := ref["kind"].(string)
-	return group == "" && (kind == "" || kind == "Service")
 }
 
 func gatewayBackendPort(ref map[string]any) string {

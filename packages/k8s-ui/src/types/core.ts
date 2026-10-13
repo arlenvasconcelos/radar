@@ -164,9 +164,13 @@ export interface FeatureCapabilities {
   yamlSchemas?: boolean
   workloadImages?: boolean
   resourceIssues?: boolean
+  resourceIssueCoverage?: boolean
   podEnvironment?: boolean
   policyResource?: boolean
   workloadHistory?: boolean
+  serviceEndpointSlices?: boolean
+  trafficRecords?: boolean
+  gitopsWriteEvidence?: boolean
 }
 
 // DeploymentMode is the closed set of topologies Radar can run in.
@@ -198,6 +202,7 @@ export type CoreNodeKind =
   | 'HTTPRoute'
   | 'GRPCRoute'
   | 'TCPRoute'
+  | 'UDPRoute'
   | 'TLSRoute'
   | 'Service'
   | 'Deployment'
@@ -653,6 +658,15 @@ export interface Relationships {
   consumers?: ResourceRef[]
   scalers?: ResourceRef[]
   storageRefs?: ResourceRef[]
+  dependencies?: ResourceRef[]
+  dependents?: ResourceRef[]
+  monitors?: ResourceRef[]
+  monitorTargets?: ResourceRef[]
+  backends?: ResourceRef[]
+  routedFrom?: ResourceRef[]
+  protects?: ResourceRef[]
+  healthChecks?: ResourceRef[]
+  stagedPolicies?: ResourceRef[]
   scaleTarget?: ResourceRef
   pdbs?: ResourceRef[]              // PodDisruptionBudgets protecting this workload
   networkPolicies?: ResourceRef[]   // NetworkPolicy / CiliumNetworkPolicy / ClusterNetworkPolicy variants selecting this workload
@@ -780,6 +794,8 @@ export interface APIResource {
   name: string // Plural name (e.g., "deployments")
   namespaced: boolean
   isCrd: boolean
+  /** Confirmed, readable cached CRD identity; never inferred from isCrd. */
+  definitionName?: string
   featured?: boolean
   verbs: string[]
   observation?: DynamicResourceObservation
@@ -817,6 +833,7 @@ export interface HelmRevision {
   appVersion: string
   description: string
   updated: string // ISO date string
+  deleted?: string
 }
 
 export type HelmOperationKind = 'release_failed' | 'upgrade_failed' | 'upgrade_rolled_back' | 'rollback' | 'pending'
@@ -1067,10 +1084,21 @@ export interface UpgradeInfo {
   error?: string
   // Machine-readable source-resolution failure, used to make the Helm drawer
   // explain whether tracking an OCI source can help.
-  sourceIssue?: 'untracked' | 'repo_index_error' | 'ambiguous_repository'
+  sourceIssue?: 'untracked' | 'repo_index_error' | 'ambiguous_repository' | 'ambiguous_source' | 'source_unavailable'
   // True only when the error is a genuinely untracked source (registering a
   // chart source could fix it). Kept for compatibility; prefer sourceIssue.
   untracked?: boolean
+}
+
+export type ChartSourceCandidate =
+  | { type: 'repository'; reference: string; url: string }
+  | { type: 'oci'; reference: string; url?: never }
+
+export interface ChartSourceStatus {
+  recorded?: ChartSourceCandidate
+  configured: boolean
+  available: boolean
+  candidates?: ChartSourceCandidate[]
 }
 
 // Batch upgrade info keyed by "storageNamespace/name".
@@ -1284,10 +1312,12 @@ export interface MetricsDataPoint {
 export interface TrafficEndpoint {
   name: string
   namespace: string
-  kind: string // Pod, Service, External, Host, Unknown
+  kind: string // Pod, Workload, Service, External, Host, Unknown
   ip?: string
   labels?: Record<string, string>
   workload?: string
+  /** Deployment, StatefulSet, CronJob, … when resolved from the pod's owners. */
+  workloadKind?: string
   port?: number
 }
 
@@ -1453,6 +1483,12 @@ export interface TrafficFlowsResponse {
    *  nodeFlowLimit, so older traffic in the window did not fit. */
   coveredSince?: string
   nodeFlowLimit?: number
+  /** Set when the source kept only its newest flowLimit flows in total; the
+   *  window is then complete only from coveredSince. */
+  flowLimit?: number
+  /** How many records the aggregation covers. `flows` holds only the newest of
+   *  them; a Radar that predates the cap omits this and sends every record. */
+  flowsTotal?: number
   warning?: string  // Non-fatal warning (e.g., query errors)
   /** 'transient' (or absent) means the condition may clear on its own and a
    *  retry is worthwhile. 'partial' means the flows are correct but some of
@@ -1460,6 +1496,23 @@ export interface TrafficFlowsResponse {
    *  not refetch. 'incomplete' means the fetch worked but could not see
    *  everything — events lost, nodes unreachable — so flows may be missing; show
    *  it, with or without flows, and do not retry at once. */
+  warningKind?: 'transient' | 'partial' | 'incomplete'
+}
+
+// Response from GET /api/traffic/flows/records — the newest records behind
+// one graph selection.
+export interface TrafficRecordsResponse {
+  source: string
+  timestamp: string
+  /** Newest first, at most the server's records limit. */
+  flows: TrafficFlow[]
+  /** How many records matched; more than flows.length when capped. */
+  matched: number
+  l7ResponsesCallerOriented?: boolean
+  coveredSince?: string
+  nodeFlowLimit?: number
+  flowLimit?: number
+  warning?: string
   warningKind?: 'transient' | 'partial' | 'incomplete'
 }
 

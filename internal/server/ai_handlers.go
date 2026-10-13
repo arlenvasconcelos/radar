@@ -233,7 +233,7 @@ func (s *Server) handleAIListResources(w http.ResponseWriter, r *http.Request) {
 	// so we pass nil here to compose cluster-wide.
 	if !skipContext && level == aicontext.LevelSummary {
 		idxNamespaces := issueIndexNamespaces(namespaces, kind, group)
-		if builder := s.newResourceSummaryContextBuilder(idxNamespaces); builder != nil {
+		if builder := s.newResourceSummaryContextBuilder(r, idxNamespaces); builder != nil {
 			// Typed list resolves group from each object's TypeMeta —
 			// MinifyList sets it via SetTypeMeta before producing rows,
 			// so we can trust apiVersion on the typed source.
@@ -294,7 +294,7 @@ func (s *Server) aiListDynamic(w http.ResponseWriter, r *http.Request, cache *k8
 
 	if !skipContext && level == aicontext.LevelSummary {
 		idxNamespaces := issueIndexNamespaces(namespaces, kind, group)
-		if builder := s.newResourceSummaryContextBuilder(idxNamespaces); builder != nil {
+		if builder := s.newResourceSummaryContextBuilder(r, idxNamespaces); builder != nil {
 			summarycontext.AttachToUnstructuredList(results, allItems, builder)
 		}
 	}
@@ -465,7 +465,7 @@ func (s *Server) buildAIResourceContext(r *http.Request, obj runtime.Object, kin
 	}
 	canonicalGroup := gvk.Group
 
-	issueSum := computeIssueSummaryForResource(cache, s.issueClusterScopedAccess(r), s.issueRelatedResourceAccess(r), canonicalGroup, canonicalKind, namespace, name)
+	issueSum := computeIssueSummaryForResource(cache, s.issueClusterScopedAccess(r), s.issueRelatedResourceAccess(r), s.issueSubjectAccess(r), s.issueEvidenceAccess(r), canonicalGroup, canonicalKind, namespace, name)
 	auditSum := s.computeAuditSummaryForResource(r, cache, canonicalGroup, canonicalKind, namespace, name)
 
 	opts := resourcecontext.Options{
@@ -531,12 +531,13 @@ func (s *Server) topologyForContext(namespace string) (*topology.Topology, topol
 		opts.Namespaces = []string{namespace}
 	}
 	opts.IncludeReplicaSets = true
+	opts.IncludeSecrets = true
 	opts.ForRelationshipCache = true
 
 	provider := k8s.NewTopologyResourceProvider(cache)
 	dyn := k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())
 
-	topo, err := s.topoMemo.Get(opts, func() (*topology.Topology, error) {
+	topo, err := s.topoMemo.GetScoped(cache.Generation(), opts, func() (*topology.Topology, error) {
 		return topology.NewBuilder(provider).WithDynamic(dyn).Build(opts)
 	})
 	if err != nil || topo == nil {
@@ -562,15 +563,15 @@ func (s *Server) topologyForContext(namespace string) (*topology.Topology, topol
 // summary silently collapses to nil.
 //
 // Returns nil when no issues match — Build then omits the IssueSummary field.
-func computeIssueSummaryForResource(cache *k8s.ResourceCache, canReadClusterScoped func(kind, group string) bool, canReadRelated func(issues.Ref) bool, group, kind, namespace, name string) *resourcecontext.IssueSummary {
-	sum, _ := computeIssueSummaryAndRows(cache, canReadClusterScoped, canReadRelated, group, kind, namespace, name, false)
+func computeIssueSummaryForResource(cache *k8s.ResourceCache, canReadClusterScoped func(kind, group string) bool, canReadRelated func(issues.Ref) bool, canReadSubject func(issues.Ref) bool, canReadEvidence func(issues.EvidenceRead) bool, group, kind, namespace, name string) *resourcecontext.IssueSummary {
+	sum, _ := computeIssueSummaryAndRows(cache, canReadClusterScoped, canReadRelated, canReadSubject, canReadEvidence, group, kind, namespace, name, false)
 	return sum
 }
 
 // computeIssueSummaryAndRows additionally returns the matched rows sorted by
 // (severity desc, reason asc) — the diagnose health frame shows the actual
 // lines, not just the rollup.
-func computeIssueSummaryAndRows(cache *k8s.ResourceCache, canReadClusterScoped func(kind, group string) bool, canReadRelated func(issues.Ref) bool, group, kind, namespace, name string, includeFacts bool) (*resourcecontext.IssueSummary, []issues.Issue) {
+func computeIssueSummaryAndRows(cache *k8s.ResourceCache, canReadClusterScoped func(kind, group string) bool, canReadRelated func(issues.Ref) bool, canReadSubject func(issues.Ref) bool, canReadEvidence func(issues.EvidenceRead) bool, group, kind, namespace, name string, includeFacts bool) (*resourcecontext.IssueSummary, []issues.Issue) {
 	if cache == nil {
 		return nil, nil
 	}
@@ -591,6 +592,8 @@ func computeIssueSummaryAndRows(cache *k8s.ResourceCache, canReadClusterScoped f
 		Namespaces:             namespaces,
 		CanReadClusterScoped:   canReadClusterScoped,
 		CanReadRelated:         canReadRelated,
+		CanReadSubject:         canReadSubject,
+		CanReadEvidence:        canReadEvidence,
 	}, group, kind, namespace, name)
 	if len(matched) == 0 {
 		return nil, nil

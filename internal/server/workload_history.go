@@ -90,7 +90,7 @@ func (s *Server) handleWorkloadHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	store := timeline.GetStore()
 	if store == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "Timeline store not available")
+		s.writeTimelineStoreUnavailable(w)
 		return
 	}
 
@@ -102,7 +102,7 @@ func (s *Server) handleWorkloadHistory(w http.ResponseWriter, r *http.Request) {
 	events, incomplete, err := readWorkloadHistory(r.Context(), store, clusterContext, key, live, attached, beforeSeq, limit+1)
 	if err != nil {
 		log.Printf("[workload-history] Failed to query the history of %s %s/%s: %v", kind, namespace, name, err)
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeTimelineQueryError(w, err)
 		return
 	}
 	resp := workloadHistoryResponse{Events: events, Incomplete: incomplete}
@@ -421,8 +421,8 @@ func (s *Server) workloadAttachments(r *http.Request, key resourceid.Ref, obj me
 
 // attachedRefs lists the resources whose own history belongs with a
 // workload's: the Services exposing it, the Ingresses and routes in front of
-// those, and the ConfigMaps, Secrets, scalers, PDBs, NetworkPolicies and PVCs
-// attached to it. Only the workload's
+// those, and the ConfigMaps, Secrets, scalers, PDBs, NetworkPolicies, staged
+// policies and PVCs attached to it. Only the workload's
 // namespace counts; a Service's other backends are never included.
 func attachedRefs(rel *topology.Relationships, namespace string) []resourceid.Ref {
 	if rel == nil {
@@ -432,7 +432,7 @@ func attachedRefs(rel *topology.Relationships, namespace string) []resourceid.Re
 	seen := map[resourceid.Ref]bool{}
 	// Gateways are left out: one usually fronts many unrelated Services.
 	for _, list := range [][]topology.ResourceRef{
-		rel.Services, rel.Ingresses, rel.Routes, rel.ConfigRefs, rel.Scalers, rel.PDBs, rel.NetworkPolicies, rel.StorageRefs,
+		rel.Services, rel.Ingresses, rel.Routes, rel.ConfigRefs, rel.Scalers, rel.PDBs, rel.NetworkPolicies, rel.StagedPolicies, rel.StorageRefs,
 	} {
 		for _, ref := range list {
 			if ref.Namespace != namespace || ref.Kind == "" || ref.Name == "" {

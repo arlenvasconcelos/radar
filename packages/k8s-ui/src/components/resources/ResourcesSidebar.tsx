@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, useCallback, useId, forwardRef } from 'react'
+import { useState, useMemo, useEffect, useRef, useCallback, useId, forwardRef, type ComponentType } from 'react'
 import {
   Search,
   Eye,
@@ -29,6 +29,28 @@ export interface PinnedItem {
   group: string
 }
 
+/** A task destination shown inside a category, above its exact kinds. */
+export interface SidebarCategoryDestination {
+  id: string
+  label: string
+  icon?: ComponentType<{ className?: string }>
+  /** Problem count. `undefined` renders no badge; `null` renders the unknown dash. */
+  count?: number | null
+  countTitle?: string
+  active?: boolean
+  /** The object currently open under this destination, nested beneath it. */
+  child?: { label: string; title?: string }
+  onSelect: () => void
+}
+
+export interface SidebarCategoryWorkspace {
+  destinations: SidebarCategoryDestination[]
+  /** Kinds start collapsed under a "Resource kinds" disclosure until the user opens them. */
+  defaultKindsCollapsed?: boolean
+  /** Explains what the destination counts are scoped to. */
+  scopeNote?: string
+}
+
 export interface ResourcesSidebarProps {
   selectedKind: SelectedKindInfo | null
   onSelectedKindChange: (kind: SelectedKindInfo) => void
@@ -48,10 +70,15 @@ export interface ResourcesSidebarProps {
   /** Called when a kind is selected via keyboard (Enter in the filter). Parent uses this
    *  to move focus to the next UI level (e.g., the table search input). */
   onKindNavigated?: () => void
+  /** Task destinations keyed by category name (e.g. "CloudNativePG"). A category
+   *  with a workspace stays visible even when it has no resources. */
+  categoryWorkspaces?: Record<string, SidebarCategoryWorkspace>
 }
 
 // Persisted across remounts so collapsed categories survive tab switches
 let persistedExpandedCategories: Set<string> | null = null
+// Per-category "Resource kinds" disclosure, once the user has toggled it.
+const persistedKindsOpen = new Map<string, boolean>()
 const COUNT_UNAVAILABLE_MESSAGE = 'Count unavailable. Open to view resources.'
 
 // Fallback resource types when API resources aren't loaded yet
@@ -69,6 +96,24 @@ const CORE_RESOURCE_TYPES = [
   { kind: 'cronjobs', label: 'CronJobs' },
   { kind: 'hpas', label: 'HPAs' },
 ] as const
+
+/**
+ * The workspace views a filter keeps: all of them when the term names the
+ * category or one of its API groups ("cloud", "cnpg"), otherwise the views
+ * whose label matches. The views are the way into a workspace, so a filter
+ * that finds the category's kinds must not hide them.
+ */
+export function sidebarDestinationsMatching(
+  categoryName: string,
+  resources: Pick<APIResource, 'group'>[],
+  destinations: SidebarCategoryDestination[],
+  term: string,
+): SidebarCategoryDestination[] {
+  const normalized = term.trim().toLowerCase()
+  if (!normalized) return destinations
+  if (categoryName.toLowerCase().includes(normalized) || resources.some((r) => r.group.toLowerCase().includes(normalized))) return destinations
+  return destinations.filter((d) => d.label.toLowerCase().includes(normalized))
+}
 
 export function resourceMatchesSidebarFilter(resource: Pick<APIResource, 'kind' | 'name' | 'group'>, term: string): boolean {
   const normalized = term.trim().toLowerCase()
@@ -102,10 +147,11 @@ interface ResourceTypeButtonProps {
   isPinned?: boolean
   onTogglePin?: () => void
   onClick: () => void
+  indent?: boolean
 }
 
 const ResourceTypeButton = forwardRef<HTMLButtonElement, ResourceTypeButtonProps>(
-  function ResourceTypeButton({ resource, count, isSelected, isHighlighted, isForbidden: forbidden, isPinned, onTogglePin, onClick }, ref) {
+  function ResourceTypeButton({ resource, count, isSelected, isHighlighted, isForbidden: forbidden, isPinned, onTogglePin, onClick, indent }, ref) {
     const Icon = getResourceIcon(resource.kind, resource.group)
     return (
       <button
@@ -113,6 +159,7 @@ const ResourceTypeButton = forwardRef<HTMLButtonElement, ResourceTypeButtonProps
         onClick={onClick}
         className={clsx(
           'w-full flex items-center gap-2 px-2 xl:px-3 py-1.5 rounded-lg text-sm transition-colors group/kind min-w-0',
+          indent && 'pl-5 xl:pl-6',
           isSelected
             ? 'selection-strong selection-text'
             : isHighlighted
@@ -193,6 +240,7 @@ export function ResourcesSidebar({
   onNavigate,
   basePath,
   onKindNavigated,
+  categoryWorkspaces,
 }: ResourcesSidebarProps) {
   // Wraps kind selection to also navigate when basePath/onNavigate are provided
   const selectKind = (kind: SelectedKindInfo) => {
@@ -229,8 +277,35 @@ export function ResourcesSidebar({
     }
   }, [])
 
-  // Effective selected kind — fall back to a safe default
-  const effectiveSelectedKind = selectedKind ?? { name: 'pods', kind: 'Pod', group: '' }
+  const activeDestinationCategory = useMemo(() => {
+    for (const [name, ws] of Object.entries(categoryWorkspaces ?? {})) {
+      if (ws.destinations.some(d => d.active)) return name
+    }
+    return null
+  }, [categoryWorkspaces])
+
+  // Effective selected kind — fall back to a safe default. While a workspace
+  // destination is active no kind is selected.
+  const effectiveSelectedKind = activeDestinationCategory
+    ? { name: '', kind: '', group: '\u0000' }
+    : selectedKind ?? { name: 'pods', kind: 'Pod', group: '' }
+
+  const [kindsOpenOverrides, setKindsOpenOverrides] = useState<Map<string, boolean>>(() => new Map(persistedKindsOpen))
+  const kindsOpen = (categoryName: string) => {
+    const ws = categoryWorkspaces?.[categoryName]
+    if (!ws) return true
+    const override = kindsOpenOverrides.get(categoryName)
+    if (override !== undefined) return override
+    const selectedHere = !activeDestinationCategory && categories?.find(c => c.name === categoryName)?.resources.some(
+      r => r.name === effectiveSelectedKind.name && r.group === effectiveSelectedKind.group,
+    )
+    return selectedHere || !ws.defaultKindsCollapsed
+  }
+  const toggleKinds = (categoryName: string) => {
+    const next = !kindsOpen(categoryName)
+    persistedKindsOpen.set(categoryName, next)
+    setKindsOpenOverrides(prev => new Map(prev).set(categoryName, next))
+  }
 
   // Categorize resources for sidebar
   const categories = useMemo(() => {
@@ -253,6 +328,12 @@ export function ResourcesSidebar({
       }
     }
   }, [categories, effectiveSelectedKind.kind, effectiveSelectedKind.name]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (activeDestinationCategory && !expandedCategories.has(activeDestinationCategory)) {
+      setExpandedCategories(prev => new Set([...prev, activeDestinationCategory]))
+    }
+  }, [activeDestinationCategory]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Derive counts from resourceCounts prop
   const resourcesToCount = useMemo(() => {
@@ -333,8 +414,11 @@ export function ResourcesSidebar({
       return { ...category, total, visibleResources }
     })
 
-    // Sort: categories with resources first, empty ones at bottom
+    // Sort: the category whose workspace is open first, then categories with
+    // resources, empty ones at bottom
     const sorted = withTotals.sort((a, b) => {
+      if (a.name === activeDestinationCategory) return -1
+      if (b.name === activeDestinationCategory) return 1
       if (a.total === 0 && b.total > 0) return 1
       if (a.total > 0 && b.total === 0) return -1
       return 0
@@ -342,13 +426,13 @@ export function ResourcesSidebar({
 
     // Filter out empty groups unless they have visible resources or showEmptyKinds is true.
     const visibleCategories = sorted.filter(category => {
-      const shouldShow = category.total > 0 || category.visibleResources.length > 0 || showEmptyKinds
+      const shouldShow = category.total > 0 || category.visibleResources.length > 0 || showEmptyKinds || !!categoryWorkspaces?.[category.name]
       if (!shouldShow) totalHiddenGroups++
       return shouldShow
     })
 
     return { sortedCategories: visibleCategories, hiddenKindsCount: totalHiddenKinds, hiddenGroupsCount: totalHiddenGroups }
-  }, [categories, counts, showEmptyKinds, effectiveSelectedKind.name, effectiveSelectedKind.kind, effectiveSelectedKind.group])
+  }, [categories, counts, showEmptyKinds, effectiveSelectedKind.name, effectiveSelectedKind.kind, effectiveSelectedKind.group, categoryWorkspaces, activeDestinationCategory])
 
   // Filter sidebar categories/kinds by the kind search term
   const filteredCategories = useMemo(() => {
@@ -361,14 +445,16 @@ export function ResourcesSidebar({
         // If the group name matches, show all its resources
         if (categoryMatches || rawGroupMatches) return category
         const matchingResources = category.visibleResources.filter((resource: APIResource) => resourceMatchesSidebarFilter(resource, term))
-        if (matchingResources.length === 0) return null
+        const ws = categoryWorkspaces?.[category.name]
+        const matchingViews = ws ? sidebarDestinationsMatching(category.name, category.resources, ws.destinations, term) : []
+        if (matchingResources.length === 0 && matchingViews.length === 0) return null
         return {
           ...category,
           visibleResources: matchingResources,
         }
       })
       .filter(Boolean) as typeof sortedCategories
-  }, [sortedCategories, kindFilter])
+  }, [sortedCategories, kindFilter, categoryWorkspaces])
 
   // Auto-expand all categories when filtering
   const isKindFiltering = kindFilter.trim().length > 0
@@ -389,26 +475,23 @@ export function ResourcesSidebar({
     })
   }
 
-  // --- Keyboard navigation ---
-  // Flat list of all navigable kinds in the order they appear in the sidebar.
-  const flatVisibleKinds = useMemo<SelectedKindInfo[]>(() => {
-    const kinds: SelectedKindInfo[] = []
+  const visibleResults = useMemo(() => {
+    const results: ({ type: 'kind'; kind: SelectedKindInfo } | { type: 'view'; category: string; destination: SidebarCategoryDestination })[] = []
     if (favoritesExpanded) {
-      for (const p of pinned) {
-        kinds.push({ name: p.name, kind: p.kind, group: p.group })
+      for (const kind of pinned) results.push({ type: 'kind', kind })
+    }
+    for (const cat of filteredCategories ?? []) {
+      if (!effectiveExpandedCategories.has(cat.name)) continue
+      const workspace = categoryWorkspaces?.[cat.name]
+      for (const destination of workspace ? sidebarDestinationsMatching(cat.name, cat.resources, workspace.destinations, kindFilter) : []) {
+        results.push({ type: 'view', category: cat.name, destination })
+      }
+      if (isKindFiltering || kindsOpen(cat.name)) {
+        for (const kind of workspace ? sortByGroup(cat.visibleResources) : cat.visibleResources) results.push({ type: 'kind', kind })
       }
     }
-    if (filteredCategories) {
-      for (const cat of filteredCategories) {
-        if (effectiveExpandedCategories.has(cat.name)) {
-          for (const r of cat.visibleResources) {
-            kinds.push({ name: r.name, kind: r.kind, group: r.group })
-          }
-        }
-      }
-    }
-    return kinds
-  }, [favoritesExpanded, pinned, filteredCategories, effectiveExpandedCategories])
+    return results
+  }, [favoritesExpanded, pinned, filteredCategories, effectiveExpandedCategories, kindsOpenOverrides, categoryWorkspaces, activeDestinationCategory, isKindFiltering, kindFilter]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const [highlightedIndex, setHighlightedIndex] = useState(-1)
   // Reset highlight when the filter or kind list changes
@@ -416,9 +499,11 @@ export function ResourcesSidebar({
     setHighlightedIndex(kindFilter ? 0 : -1)
   }, [kindFilter]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const highlightedKind = highlightedIndex >= 0 && highlightedIndex < flatVisibleKinds.length
-    ? flatVisibleKinds[highlightedIndex]
+  const highlightedResult = highlightedIndex >= 0 && highlightedIndex < visibleResults.length
+    ? visibleResults[highlightedIndex]
     : null
+
+  const highlightedKind = highlightedResult?.type === 'kind' ? highlightedResult.kind : null
 
   // Scroll the highlighted kind button into view
   const highlightedRef = useRef<HTMLButtonElement>(null)
@@ -435,18 +520,19 @@ export function ResourcesSidebar({
       ;(e.target as HTMLInputElement).blur()
     } else if (e.key === 'ArrowDown') {
       e.preventDefault()
-      setHighlightedIndex(prev => Math.min(prev + 1, flatVisibleKinds.length - 1))
+      setHighlightedIndex(prev => Math.min(prev + 1, visibleResults.length - 1))
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
       setHighlightedIndex(prev => Math.max(prev - 1, 0))
-    } else if (e.key === 'Enter' && highlightedKind) {
+    } else if (e.key === 'Enter' && highlightedResult) {
       e.preventDefault()
-      selectKind(highlightedKind)
+      if (highlightedResult.type === 'view') highlightedResult.destination.onSelect()
+      else selectKind(highlightedResult.kind)
       setHighlightedIndex(-1)
       setKindFilter('')
       onKindNavigated?.()
     }
-  }, [flatVisibleKinds.length, highlightedKind, selectKind, onKindNavigated]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [visibleResults.length, highlightedResult, selectKind, onKindNavigated]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const isKindHighlighted = useCallback((name: string, group: string) => {
     return highlightedKind?.name === name && highlightedKind?.group === group
@@ -550,6 +636,9 @@ export function ResourcesSidebar({
           filteredCategories.map((category) => {
             const isExpanded = effectiveExpandedCategories.has(category.name)
             const rawGroupTitle = rawCRDGroupTitle(category.resources)
+            const workspace = categoryWorkspaces?.[category.name]
+            const showKinds = isKindFiltering || kindsOpen(category.name)
+            const views = workspace ? sidebarDestinationsMatching(category.name, category.resources, workspace.destinations, kindFilter) : []
             return (
               <div key={category.name} className="mb-2">
                 <button
@@ -567,8 +656,22 @@ export function ResourcesSidebar({
                   )}
                 </button>
                 <Collapse open={isExpanded} id={disclosurePanelId(categoryPanelBase, category.name)}>
+                  {workspace && views.length > 0 && (
+                    <WorkspaceDestinations
+                      workspace={workspace}
+                      highlightedId={highlightedResult?.type === 'view' && highlightedResult.category === category.name ? highlightedResult.destination.id : undefined}
+                      highlightedRef={highlightedRef}
+                      destinations={views}
+                      filtering={isKindFiltering}
+                      hasKinds={category.visibleResources.length > 0}
+                      kindsOpen={showKinds}
+                      onToggleKinds={() => toggleKinds(category.name)}
+                      kindsPanelId={disclosurePanelId(categoryPanelBase, `${category.name}-kinds`)}
+                    />
+                  )}
+                  <Collapse open={showKinds} id={disclosurePanelId(categoryPanelBase, `${category.name}-kinds`)}>
                   <div className="space-y-0.5">
-                    {category.visibleResources.map((resource) => {
+                    {(workspace ? sortByGroup(category.visibleResources) : category.visibleResources).map((resource, index, list) => {
                       const resourceIsPinned = isPinned(resource.name, resource.group)
                       const isResourceSelected =
                         (effectiveSelectedKind.name === resource.name && effectiveSelectedKind.group === resource.group) ||
@@ -576,9 +679,13 @@ export function ResourcesSidebar({
                       // If the resource is pinned, let the Favorites section own the highlight
                       const showSelected = isResourceSelected && !resourceIsPinned
                       const highlighted = isKindHighlighted(resource.name, resource.group)
+                      const groupLabel = workspace ? groupHeaderBefore(list, index) : null
                       return (
+                      <div key={`${resource.group}/${resource.name}`}>
+                      {groupLabel && (
+                        <div className="pl-6 pr-2 pt-1.5 pb-0.5 text-[10.5px] font-mono text-theme-text-tertiary truncate" title={groupLabel}>{groupLabel}</div>
+                      )}
                       <ResourceTypeButton
-                        key={resource.name}
                         ref={highlighted ? highlightedRef : (isResourceSelected ? selectedSidebarRef : null)}
                         resource={resource}
                         count={counts[resource.group ? `${resource.group}/${resource.kind}` : resource.kind] ?? null}
@@ -588,10 +695,13 @@ export function ResourcesSidebar({
                         isPinned={resourceIsPinned}
                         onTogglePin={() => togglePin({ name: resource.name, kind: resource.kind, group: resource.group })}
                         onClick={() => selectKind({ name: resource.name, kind: resource.kind, group: resource.group })}
+                        indent={!!workspace}
                       />
+                      </div>
                       )
                     })}
                   </div>
+                  </Collapse>
                 </Collapse>
               </div>
             )
@@ -670,6 +780,113 @@ export function ResourcesSidebar({
           </button>
         ) : null}
       </nav>
+    </div>
+  )
+}
+
+function sortByGroup(resources: APIResource[]): APIResource[] {
+  const size = new Map<string, number>()
+  for (const r of resources) size.set(r.group, (size.get(r.group) ?? 0) + 1)
+  return [...resources].sort((a, b) =>
+    a.group === b.group
+      ? a.kind.localeCompare(b.kind)
+      : (size.get(b.group) ?? 0) - (size.get(a.group) ?? 0) || a.group.localeCompare(b.group),
+  )
+}
+
+function groupHeaderBefore(resources: APIResource[], index: number): string | null {
+  const groups = new Set(resources.map(r => r.group))
+  if (groups.size < 2) return null
+  const group = resources[index]?.group
+  if (index > 0 && resources[index - 1]?.group === group) return null
+  return group || 'core'
+}
+
+// While the sidebar is filtered, `destinations` are the views that match and
+// the kinds below are forced open, so they get a label rather than a toggle.
+function WorkspaceDestinations({
+  workspace,
+  destinations,
+  filtering,
+  hasKinds,
+  kindsOpen,
+  onToggleKinds,
+  kindsPanelId,
+  highlightedId,
+  highlightedRef,
+}: {
+  workspace: SidebarCategoryWorkspace
+  highlightedId?: string
+  highlightedRef: React.RefObject<HTMLButtonElement | null>
+  destinations: SidebarCategoryDestination[]
+  filtering: boolean
+  hasKinds: boolean
+  kindsOpen: boolean
+  onToggleKinds: () => void
+  kindsPanelId: string
+}) {
+  return (
+    <div className="space-y-0.5">
+      <div className="pl-5 pr-2 pt-0.5 pb-0.5 text-[10.5px] font-semibold uppercase tracking-wide text-theme-text-tertiary">Views</div>
+      {destinations.map((d) => {
+        const Icon = d.icon
+        return (
+          <div key={d.id}>
+            <button
+              ref={highlightedId === d.id ? highlightedRef : undefined}
+              onClick={d.onSelect}
+              aria-current={d.active && !d.child ? 'page' : undefined}
+              className={clsx(
+                'w-full flex items-center gap-2 pl-5 xl:pl-6 pr-2 xl:pr-3 py-1.5 rounded-lg text-sm transition-colors min-w-0',
+                d.active && !d.child
+                  ? 'selection-strong selection-text'
+                  : highlightedId === d.id
+                    ? 'bg-theme-hover text-theme-text-primary'
+                    : d.active
+                      ? 'text-theme-text-primary font-medium hover:bg-theme-elevated'
+                      : 'text-theme-text-secondary hover:bg-theme-elevated hover:text-theme-text-primary',
+              )}
+            >
+              {Icon && <Icon className="w-4 h-4 shrink-0" />}
+              <span className="flex-1 text-left truncate">{d.label}</span>
+              {d.count === null ? (
+                <Tooltip content={d.countTitle ?? COUNT_UNAVAILABLE_MESSAGE} position="left">
+                  <span className="text-xs py-0.5 rounded text-center font-mono w-8 bg-theme-elevated text-theme-text-disabled">–</span>
+                </Tooltip>
+              ) : d.count !== undefined && d.count > 0 ? (
+                <Tooltip content={d.countTitle ?? `${d.count}`} position="left">
+                  <span className="text-xs py-0.5 rounded text-center font-mono w-8 status-degraded">{d.count}</span>
+                </Tooltip>
+              ) : null}
+            </button>
+            {d.child && (
+              <div
+                className="ml-10 xl:ml-11 mr-1 my-0.5 pl-2 pr-2 py-1 rounded-md text-xs font-medium truncate selection-strong selection-text border-l-2 border-skyhook-500"
+                title={d.child.title ?? d.child.label}
+                aria-current="page"
+              >
+                {d.child.label}
+              </div>
+            )}
+          </div>
+        )
+      })}
+      {workspace.scopeNote && (
+        <div className="pl-6 pr-2 pt-0.5 text-[11px] text-theme-text-tertiary">{workspace.scopeNote}</div>
+      )}
+      {filtering ? (
+        hasKinds && <div className="pl-5 pr-2 pt-2 pb-0.5 text-[10.5px] font-semibold uppercase tracking-wide text-theme-text-tertiary">Resource kinds</div>
+      ) : (
+        <button
+          aria-expanded={kindsOpen}
+          aria-controls={kindsPanelId}
+          onClick={onToggleKinds}
+          className="w-full flex items-center gap-1.5 pl-5 pr-2 pt-2 pb-0.5 text-[10.5px] font-semibold uppercase tracking-wide text-theme-text-tertiary hover:text-theme-text-secondary"
+        >
+          <CollapseChevron open={kindsOpen} className="w-3 h-3" />
+          <span>Resource kinds</span>
+        </button>
+      )}
     </div>
   )
 }

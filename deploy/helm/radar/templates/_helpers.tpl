@@ -61,6 +61,18 @@ Create the name of the service account to use
 {{- end }}
 {{- end }}
 
+{{/*
+The URL path prefix Radar serves under: "" for root, otherwise "/<prefix>"
+with no trailing slash. Shared by the Deployment (--base-path, probes) and
+NOTES.txt (the URL printed after install).
+*/}}
+{{- define "radar.basePath" -}}
+{{- $trimmed := trimAll "/" (default "" .Values.basePath) -}}
+{{- if $trimmed -}}
+{{- printf "/%s" $trimmed -}}
+{{- end -}}
+{{- end }}
+
 {{- define "radar.operatorSettings" -}}
 {{- $settings := dict "version" 1 -}}
 {{- if .Values.audit -}}
@@ -89,7 +101,7 @@ false
 {{- end -}}
 
 {{/*
-Whether the default read grant for automatic Diagnose (radar:ai) renders.
+Whether the default read grant for automatic Diagnose (radar:ai:reader) renders.
 An absent value means OFF, as with radar.cloudSystemRbac: a
 `--reuse-values` upgrade from a release that predates the key never gains a
 new reader without someone choosing it.

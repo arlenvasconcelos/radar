@@ -70,6 +70,8 @@ relationship is not being reconciled.
 
 Every quantity carries per-value certainty (`= ≥ ≤ ?`): unavailable is never rendered as zero, partial is never rendered as exact, and **scheduling capacity is kept structurally distinct from actual usage** — Karpenter schedules on pod requests, so usage is an efficiency signal, never scheduler headroom. Issues, Pending-pod drawers, and the Home posture card deep-link into the right diagnosis. Full reference: [Capacity documentation](capacity.md).
 
+**Node removal:** Nodes marked for removal show an operational lifecycle status while keeping readiness and independent failures visible. The drawer shows current pods and a read-only drain/PDB estimate. See [Node status and removal](nodes.md) for the shared UI/API/MCP contract.
+
 **Topology:** Full provisioning chain — NodePool → NodeClaim → Node → Pod. See which NodePool owns which NodeClaims, which Nodes they provisioned, and what Pods are running on them. NodePool → NodeClass edges show the provider-specific configuration each pool uses.
 
 <p align="center">
@@ -133,6 +135,8 @@ All provider-specific NodeClass variants are automatically detected and supporte
 ### What Radar Shows
 
 **Topology:** Full CAPI ownership chain — ClusterClass → Cluster → KubeadmControlPlane → Machine → Node, and Cluster → MachineDeployment → MachineSet → Machine → Node. MachineHealthCheck → Cluster protection edges. Machine → Node edges use status.nodeRef (semantic, not owner-ref).
+
+ClusterClass links use the namespace declared by the Cluster, defaulting to the Cluster’s namespace when omitted. Both `spec.topology.classRef` and the older supported `class`/`classNamespace` API fields are read. Owner links require the declared API group as well as kind and name; same-named resources from unrelated groups remain distinct.
 
 **Cluster Detail View:**
 - Phase, version, cluster class, control plane endpoint
@@ -241,7 +245,7 @@ Radar has first-class renderers for **AWS (CAPA)**, **GCP (CAPG)**, and **Azure 
 
 ### What Radar Shows
 
-**Topology:** ScaledObject → target workload (Deployment, StatefulSet, or Rollout). See which workloads are managed by KEDA and trace the scaling relationship.
+**Topology:** ScaledObject → target workload (Deployment, StatefulSet, or Rollout). ScaledObject and ScaledJob triggers also link to observed TriggerAuthentication or ClusterTriggerAuthentication resources. Authentication is a dependency, not an autoscaler target; omitted kind defaults to a same-namespace TriggerAuthentication. Cluster-scoped targets retain per-kind read gating. These declarations do not prove credential validity or trigger readiness. Applications configuration references and counts exclude authentication objects the caller cannot read.
 
 <p align="center">
   <img src="screenshots/integrations/keda-topology.png" alt="KEDA Topology" width="800">
@@ -288,8 +292,8 @@ Radar has first-class renderers for **AWS (CAPA)**, **GCP (CAPG)**, and **Azure 
 |-----|-------|----------|-------------|------------|
 | ScaledObject | `keda.sh/v1alpha1` | Yes | Yes | Yes |
 | ScaledJob | `keda.sh/v1alpha1` | Yes | Yes | Yes |
-| TriggerAuthentication | `keda.sh/v1alpha1` | — | Yes | Yes |
-| ClusterTriggerAuthentication | `keda.sh/v1alpha1` | — | Yes | Yes |
+| TriggerAuthentication | `keda.sh/v1alpha1` | When referenced | Yes | Yes |
+| ClusterTriggerAuthentication | `keda.sh/v1alpha1` | When referenced | Yes | Yes |
 
 ---
 
@@ -319,7 +323,7 @@ Radar has first-class renderers for **AWS (CAPA)**, **GCP (CAPG)**, and **Azure 
 
 ### What Radar Shows
 
-**Topology:** Full network path — GatewayClass → Gateway → HTTPRoute/GRPCRoute/TCPRoute/TLSRoute → Service → Pod. Visualize how traffic flows from the gateway controller through routes to your backend services.
+**Topology:** Full network path — GatewayClass → Gateway → HTTPRoute/GRPCRoute/TCPRoute/TLSRoute/UDPRoute → Service → Pod. Visualize how traffic flows from the gateway controller through routes to your backend services.
 
 <p align="center">
   <img src="screenshots/integrations/gateway-topology.png" alt="Gateway API Topology" width="800">
@@ -344,6 +348,7 @@ Radar has first-class renderers for **AWS (CAPA)**, **GCP (CAPG)**, and **Azure 
 | GRPCRoute | `gateway.networking.k8s.io/v1` | Yes | Yes | Yes |
 | TCPRoute | `gateway.networking.k8s.io/v1alpha2` | Yes | Yes | Yes |
 | TLSRoute | `gateway.networking.k8s.io/v1alpha2` | Yes | Yes | Yes |
+| UDPRoute | `gateway.networking.k8s.io/v1alpha2` | Yes | Yes | Yes |
 
 ---
 
@@ -415,6 +420,8 @@ The legacy `traefik.containo.us` API group (pre-v2.11) is warm-listed alongside 
 
 **Topology:** Full Contour routing path — HTTPProxy (root) → HTTPProxy (child, via delegation) → Service, with TLS secret configuration edges. Root proxies with `spec.virtualhost` appear as entry points; child proxies referenced via `spec.includes` are connected via delegation edges. Both **Resources** and **Traffic** view modes are supported.
 
+TLS references resolve local Secret names and delegated `namespace/name` names consistently, including client CA/CRL and upstream validation bundles. Configuration graphs reuse cached Secret metadata even when general Secret display is disabled; unavailable metadata remains unknown. Declared references do not establish that Contour has accepted or authorized TLS delegation, and topology does not serialize Secret values.
+
 <p align="center">
   <img src="screenshots/integrations/contour-topology.png" alt="Contour Topology" width="800">
   <br><em>Contour in Topology View — HTTPProxy → Service routing with delegation</em>
@@ -444,7 +451,7 @@ The legacy `traefik.containo.us` API group (pre-v2.11) is warm-listed alongside 
 
 ### What Radar Shows
 
-**Topology:** Certificate → Issuer/ClusterIssuer edges show which issuer manages each certificate. The full provisioning chain (Certificate → CertificateRequest → Order → Challenge) is connected via owner references.
+**Topology:** Certificate → Issuer/ClusterIssuer edges connect each certificate to its observed built-in issuer, including ownerless issuers. Omitted `issuerRef.kind` and `issuerRef.group` use cert-manager defaults. Only referenced issuers are added; external issuer groups are not inferred. ClusterIssuer visibility uses its exact cluster-scoped read permission. Resource details and MCP context distinguish issuer dependencies from autoscaling. The full provisioning chain (Certificate → CertificateRequest → Order → Challenge) is connected via owner references.
 
 <p align="center">
   <img src="screenshots/integrations/certmanager-topology.png" alt="cert-manager Topology" width="800">
@@ -521,6 +528,23 @@ inspection of the Operator's Kubernetes resources and scrape configuration.
 | PodMonitor | `monitoring.coreos.com/v1` | Pod selection and scrape configuration | Yes | — |
 | PrometheusRule | `monitoring.coreos.com/v1` | — | Yes | — |
 | Alertmanager | `monitoring.coreos.com/v1` | — | Generic | — |
+
+---
+
+## VictoriaMetrics chart reads
+
+The Helm chart grants Radar cluster-wide `get/list/watch` on VMAgent, VMCluster
+and VMSingle (`vmagents`, `vmclusters`, `vmsingles` in
+`operator.victoriametrics.com`) whenever it grants cluster-wide Secrets reads:
+`rbac.secrets: true`, `rbac.helm: true`, auth enabled (`auth.mode != none`), or
+cloud mode. These objects can carry inline credentials, so they share the same
+grant decision as Secrets. There is no separate VictoriaMetrics setting.
+
+This rule excludes VMUser/VMAuth, alerting and scrape/probe resources, and the
+Logs, Traces, Distributed and Anomaly families. The wildcard
+`rbac.crdGroups.all: true` still grants `get/list/watch` on every API group and
+resource, including core Secrets and these excluded kinds. See the
+[chart reference](../deploy/helm/radar/README.md#crd-access).
 
 ---
 
@@ -851,6 +875,8 @@ The source contract is Strimzi's [KafkaConnector status schema](https://strimzi.
 
 [CloudNativePG](https://cloudnative-pg.io/) (CNPG) is the Kubernetes operator for PostgreSQL, covering the full lifecycle from bootstrapping to monitoring, with high availability, automated failover, and backup management.
 
+Beyond the per-kind views below, the CloudNativePG **workspace** (`/cnpg`) composes them into fleet, protection, declaration, pooling and operator screens — see [cnpg.md](cnpg.md).
+
 ### What Radar Shows
 
 **Cluster Detail View:**
@@ -1029,7 +1055,7 @@ The Helm chart's `rbac.crdGroups.crossplane: true` toggle grants read access to:
 - `crossplane.io`, `pkg.crossplane.io`, `apiextensions.crossplane.io` (Crossplane core)
 - `kubernetes.crossplane.io`, `helm.crossplane.io` (provider-kubernetes + provider-helm — useful in non-cloud installs)
 
-For Upbound provider CRDs (`s3.aws.upbound.io`, `compute.gcp.upbound.io`, etc.), list them in `rbac.additionalCrdGroups` — Kubernetes RBAC has no `apiGroups` wildcards. Alternative: set `rbac.crdGroups.all: true` to grant cluster-wide read on every CRD (simpler, broader).
+For Upbound provider CRDs (`s3.aws.upbound.io`, `compute.gcp.upbound.io`, etc.), list them in `rbac.additionalCrdGroups` — Kubernetes RBAC has no `apiGroups` wildcards. Alternative: set `rbac.crdGroups.all: true`, which grants `get/list/watch` on every API group and resource, core Secrets included (simpler, much broader).
 
 ### Supported CRDs
 
@@ -1133,6 +1159,8 @@ PolicyReport findings are policy posture, not live operational failure, so they 
 
 **Topology:** Full Knative Serving chain — Route → KnativeService → Configuration → Revision → Deployment → Pod. Eventing flow — PingSource → Broker → Trigger → subscriber target. See how traffic is split across revisions, which configurations are active, and how events flow from sources through brokers to triggers.
 
+Event destinations retain the reference’s API group, kind, namespace and name. Missing or conflicting identity remains unresolved rather than borrowing a same-named core Service. `Trigger.spec.brokerRef` uses its explicit Broker namespace and name; the older `spec.broker` field remains local to the Trigger. Channel objects and their observed backing channels are separate resources, and cached owner references establish their management links.
+
 <p align="center">
   <img src="screenshots/integrations/knative-topology.png" alt="Knative Topology" width="800">
   <br><em>Knative in Topology View — Serving chain and Eventing flow</em>
@@ -1230,16 +1258,28 @@ PolicyReport findings are policy posture, not live operational failure, so they 
 
 [OpenCost](https://www.opencost.io/) is a CNCF tool for Kubernetes cost monitoring, exposing cloud provider pricing and workload resource allocation as Prometheus metrics.
 
-Radar supports two read-only cost paths. Auto mode keeps OpenCost-compatible metrics from the
-already-discovered Prometheus when representative cost data is usable; when those metrics are
-absent, it tries the current allocation and asset APIs of a Kubecost 3 Aggregator. Source selection
-can also be pinned to `prometheus` or `kubecost` in Settings → Cost or Helm. Local CLI/Desktop
-save the choice per context in `clusters.json`; shared installations use operator configuration. When
-Auto positively finds neither source, Radar reports that state and retries discovery; it does not
-label an absent Prometheus source as active. Local Settings tests Kubecost mode, and Auto with any
-Kubecost override (URL, API key or cluster ID), before saving; a failed test blocks the save. Auto
-with no Kubecost overrides, or Prometheus mode, is a source preference, not a backend reachability
-claim.
+Radar supports two read-only cost sources. **Automatic** prefers usable OpenCost
+metrics from Prometheus, then tries a Kubecost 3 Aggregator when those metrics
+are absent. If neither source is found, Cost reports that state and retries
+discovery.
+
+If discovered Prometheus candidates are unreachable or detection times out,
+Automatic can use a working Kubecost temporarily. The next Cost request after
+one minute rechecks Prometheus and switches back when OpenCost metrics are usable.
+If Kubecost cannot be discovered either, Cost remains unavailable and retries.
+Settings → Metrics shows the Prometheus connection failure, including any
+NetworkPolicy diagnosis. Other Prometheus configuration or query failures do
+not start a new source switch; Cost shows the failure when it has no working
+fallback.
+
+Pin a source in Settings → Cost or Helm to prevent Automatic selection.
+Local CLI/Desktop saves the choice per context in `clusters.json`; shared
+installations use operator configuration.
+
+Local Settings tests Kubecost mode, and Automatic with any Kubecost override
+(URL, API key or cluster ID), before saving; a failed test blocks the save.
+Automatic without Kubecost overrides, or Prometheus mode, saves a preference
+without asserting that the backend is reachable.
 
 For Kubecost, Radar auto-discovers only an active Aggregator StatefulSet and its matching Service.
 It tries the official named `tcp-api` port 9004 first. When that port rejects unauthenticated access

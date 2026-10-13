@@ -16,7 +16,11 @@
 // and for stable, machine-friendly JSON output.
 package resourcecontext
 
-import "time"
+import (
+	"time"
+
+	"github.com/skyhook-io/radar/pkg/health"
+)
 
 // ResourceContext is the top-level enrichment block attached to a resource
 // response. Every field is optional; the zero value is a valid (empty)
@@ -34,11 +38,20 @@ type ResourceContext struct {
 	Tier            ContextTier        `json:"tier"`
 	Owner           *ContextRef        `json:"owner,omitempty"`
 	ManagedBy       []ContextRef       `json:"managedBy,omitempty"`
-	Exposes         []ContextRef       `json:"exposes,omitempty"`
+	Exposes         []ContextRef       `json:"exposes,omitempty"`        // Union of upstream routing resources and backends; retained for compatibility.
+	ExposedBy       []ContextRef       `json:"exposedBy,omitempty"`      // Upstream resources routing to this resource.
+	Backends        []ContextRef       `json:"backends,omitempty"`       // Resources this routes to.
+	Monitors        []ContextRef       `json:"monitors,omitempty"`       // Prometheus Operator monitors scraping this resource.
+	MonitorTargets  []ContextRef       `json:"monitorTargets,omitempty"` // Targets scraped by this monitor.
+	Protects        []ContextRef       `json:"protects,omitempty"`       // Targets selected by this budget or policy.
+	HealthChecks    []ContextRef       `json:"healthChecks,omitempty"`   // MachineHealthChecks associated with this Cluster.
+	StagedPolicies  []ContextRef       `json:"stagedPolicies,omitempty"` // Non-enforcing staged policy selectors.
 	SelectedBy      []ContextRef       `json:"selectedBy,omitempty"`
 	ReferencedBy    *ReferencedBy      `json:"referencedBy,omitempty"`
 	Uses            *UsesBlock         `json:"uses,omitempty"`
 	RunsOn          *ContextRef        `json:"runsOn,omitempty"`
+	Dependencies    []ContextRef       `json:"dependencies,omitempty"`
+	Dependents      []ContextRef       `json:"dependents,omitempty"`
 	ScaledBy        []ScalerRef        `json:"scaledBy,omitempty"`
 	StatusSummary   *StatusSummary     `json:"statusSummary,omitempty"`
 	Scheduling      *SchedulingSummary `json:"scheduling,omitempty"`
@@ -117,8 +130,8 @@ type ResourceSummaryContext struct {
 	IssueCount int           `json:"issueCount,omitempty"`
 }
 
-// UsesBlock groups the namespaced configuration objects a workload reads
-// at runtime (env, mounts, identity).
+// UsesBlock groups declared configuration, volume, image-pull and identity
+// references from the workload PodSpec. It does not establish current usage.
 type UsesBlock struct {
 	ConfigMaps     []ContextRef `json:"configMaps,omitempty"`
 	Secrets        []ContextRef `json:"secrets,omitempty"`
@@ -574,12 +587,13 @@ const (
 )
 
 type NodeSummary struct {
-	ReadyStatus   string            `json:"readyStatus,omitempty"`
-	Unschedulable bool              `json:"unschedulable,omitempty"`
-	Capacity      map[string]string `json:"capacity,omitempty"`
-	Allocatable   map[string]string `json:"allocatable,omitempty"`
-	Taints        []TaintSummary    `json:"taints,omitempty"`
-	Warnings      []NodeWarning     `json:"warnings,omitempty"`
+	Lifecycle     *health.NodeLifecycleState `json:"lifecycle,omitempty"`
+	ReadyStatus   string                     `json:"readyStatus,omitempty"`
+	Unschedulable bool                       `json:"unschedulable,omitempty"`
+	Capacity      map[string]string          `json:"capacity,omitempty"`
+	Allocatable   map[string]string          `json:"allocatable,omitempty"`
+	Taints        []TaintSummary             `json:"taints,omitempty"`
+	Warnings      []NodeWarning              `json:"warnings,omitempty"`
 }
 
 type TaintSummary struct {
@@ -749,6 +763,7 @@ const (
 	OmittedBudgetExceeded OmittedReason = "budget_exceeded"
 	OmittedCacheCold      OmittedReason = "cache_cold"
 	OmittedNotInstalled   OmittedReason = "not_installed"
+	OmittedUnavailable    OmittedReason = "unavailable"
 )
 
 // ReflectionContext contains declared metadata and authorized cached observations,

@@ -10,8 +10,21 @@ export interface LogStreamHandlers {
   onPodAdded?: (data: unknown) => void
   /** Called when pods are terminated during streaming (workload logs only) */
   onPodRemoved?: (data: unknown) => void
+  /** Called when the set of sources the stream cannot read changes (workload logs only) */
+  onNotice?: (data: unknown) => void
   /** Called when the server ends the stream cleanly */
   onEnd?: (data: unknown) => void
+}
+
+function errorCodeOf(event: Event): string | null {
+  if (!(event instanceof MessageEvent) || typeof event.data !== 'string') return null
+  try {
+    const data: unknown = JSON.parse(event.data)
+    if (typeof data === 'object' && data !== null && 'error_code' in data && typeof data.error_code === 'string') return data.error_code
+  } catch {
+    // Not JSON: no code.
+  }
+  return null
 }
 
 /**
@@ -22,6 +35,8 @@ export function useLogStream() {
   const [isStreaming, setIsStreaming] = useState(false)
   // Set when the connection fails (and not on a clean end — see endedRef).
   const [streamError, setStreamError] = useState<string | null>(null)
+  // The server's error_code for that failure, when it sent one.
+  const [streamErrorCode, setStreamErrorCode] = useState<string | null>(null)
   // True from a start attempt until the stream first settles (connected / end /
   // error / stop). Lets callers show a connecting spinner that won't reappear
   // after a clean end. Starts true so an auto-stream viewer paints the spinner
@@ -38,6 +53,7 @@ export function useLogStream() {
     setIsStreaming(false)
     setConnecting(false)
     setStreamError(null)
+    setStreamErrorCode(null)
   }, [])
 
   const startStreaming = useCallback((
@@ -48,6 +64,7 @@ export function useLogStream() {
     eventSourceRef.current?.close()
     endedRef.current = false
     setStreamError(null)
+    setStreamErrorCode(null)
     setConnecting(true)
     const es = create()
     // Ignore events from a superseded source: closing/replacing an EventSource
@@ -92,6 +109,15 @@ export function useLogStream() {
       }
     })
 
+    es.addEventListener('notice', (event) => {
+      if (!isCurrent()) return
+      if (handlers.onNotice) {
+        try { handlers.onNotice(JSON.parse((event as MessageEvent).data)) } catch (e) {
+          console.error('Failed to parse notice event:', e)
+        }
+      }
+    })
+
     es.addEventListener('end', (event) => {
       if (!isCurrent()) return
       endedRef.current = true
@@ -113,6 +139,7 @@ export function useLogStream() {
       // 'end'; that's not a failure, so don't log it or surface it.
       if (endedRef.current) return
       setStreamError(handleSSEError(event, errorContext, () => {}))
+      setStreamErrorCode(errorCodeOf(event))
     })
 
     eventSourceRef.current = es
@@ -121,5 +148,5 @@ export function useLogStream() {
   // Cleanup on unmount
   useEffect(() => () => { eventSourceRef.current?.close() }, [])
 
-  return { isStreaming, streamError, connecting, startStreaming, stopStreaming }
+  return { isStreaming, streamError, streamErrorCode, connecting, startStreaming, stopStreaming }
 }

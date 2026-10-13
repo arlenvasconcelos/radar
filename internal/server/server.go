@@ -84,6 +84,7 @@ type Server struct {
 	startupLog              bool
 	remoteAccessHint        bool
 	devMode                 bool
+	trustedOrigins          map[string]struct{} // normalized; see browserOriginAllowed
 	staticFS                fs.FS
 	startTime               time.Time
 	listener                net.Listener
@@ -173,12 +174,22 @@ type Server struct {
 	yamlSchemaCacheBytes  int
 	yamlSchemaFetchGroup  singleflight.Group
 
-	// aiDiagnoser drives a local agent CLI for AI investigations (nil when no
-	// CLI is on PATH — the endpoints then 501). Resolved once at startup.
+	// aiMu guards aiDiagnoser and aiRuns: refreshAIEngine turns the engine on
+	// when an agent CLI is installed while Radar runs. Read them through
+	// aiEngine / aiRunManager.
+	aiMu sync.RWMutex
+	// aiDiagnoser drives a local agent CLI for AI investigations (nil until a
+	// CLI is found; the endpoints then 501).
 	aiDiagnoser *ai.Diagnoser
 	// aiRuns owns investigations as durable server-side jobs (survive panel close
 	// / navigation / refresh). nil exactly when aiDiagnoser is.
 	aiRuns *ai.RunManager
+	// aiInvestigationRefs and aiHistoryDB are what the engine is built with,
+	// kept so it can be built after startup.
+	aiInvestigationRefs *investigationrefs.Registry
+	aiHistoryDB         string
+	// aiChecked is set after the first refreshAIEngine, at startup.
+	aiChecked bool
 }
 
 // Config holds server configuration
@@ -190,6 +201,7 @@ type Config struct {
 	StartupLog              bool                        // Emit the operator-facing startup block after a successful bind
 	RemoteAccessHint        bool                        // Explain the explicit shared-listener opt-in (native CLI only)
 	DevMode                 bool                        // Serve frontend from filesystem instead of embedded
+	TrustedOrigins          []string                    // Extra origins allowed to make changes, from ParseTrustedOrigins
 	StaticFS                embed.FS                    // Embedded frontend files
 	StaticRoot              string                      // Path within StaticFS
 	MCPHandler              http.Handler                // MCP server handler (nil = MCP disabled)
@@ -254,53 +266,24 @@ func New(cfg Config) *Server {
 		yamlSchemaPathCache:     make(map[string]yamlSchemaPathCacheEntry),
 		yamlSchemaBundleCache:   make(map[string]yamlSchemaBundleCacheEntry),
 	}
+	if len(cfg.TrustedOrigins) > 0 {
+		s.trustedOrigins = make(map[string]struct{}, len(cfg.TrustedOrigins))
+		for _, origin := range cfg.TrustedOrigins {
+			if normalized, ok := normalizeOrigin(origin); ok {
+				s.trustedOrigins[normalized] = struct{}{}
+			}
+		}
+		log.Printf("Trusting these origins to make changes in addition to Radar's own address: %s", strings.Join(cfg.TrustedOrigins, ", "))
+	}
 	opencost.PublishCurrencyResolver(s.openCostCurrency)
 	s.cloudInstall = newCloudInstallManager(cfg.CloudConnect)
 	s.cloudInstall.sharedListener = s.sharedListener
 
-	// Resolve a local agent CLI for AI investigations (keyless, on the user's own
-	// subscription). nil when none is found — the feature stays disabled.
-	//
-	// Gated to no-auth (local/standalone) Radar: the engine drives the CLI
-	// against this server's own investigation MCP mount with no
-	// credentials, which only works when MCP is unauthenticated. Under proxy/OIDC
-	// auth (team / cloud deployments) the MCP requires identity headers the local
-	// CLI can't supply, and AI investigations are the embedding host's job (e.g.
-	// Radar Hub) anyway.
-	// Also requires /mcp to be mounted — the agent reaches the cluster only
-	// through it, so with --no-mcp the feature can't work.
-	if s.configManagement() != "operator" && !s.authConfig.Enabled() && s.mcpHandler != nil &&
-		s.mcpInvestigationHandler != nil && cfg.InvestigationRefs != nil {
-		if d, err := ai.NewDetected(context.Background(), cfg.InvestigationRefs); err == nil {
-			s.aiDiagnoser = d
-			// History store opens only when the engine actually enables, so a
-			// disabled feature never creates the DB. Open failure degrades to
-			// memory-only runs (the historical behavior), never blocks startup.
-			var store ai.RunStore
-			historyBroken := false
-			if cfg.AIHistoryDB != "" {
-				if st, err := ai.OpenRunStore(cfg.AIHistoryDB); err != nil {
-					log.Printf("[ai] run history disabled — could not open %s: %v", cfg.AIHistoryDB, err)
-					historyBroken = true
-				} else {
-					store = st
-				}
-			}
-			s.aiRuns = ai.NewRunManager(d, s.ActualAddr, s.basePath, k8s.GetContextName, store)
-			s.aiRuns.MetricsAvailability = func(ctx context.Context) ai.MetricsAvailability {
-				state := prometheuspkg.Availability(ctx)
-				return ai.MetricsAvailability{
-					Connected: state.State == prometheuspkg.AvailabilityConnected,
-					Address:   state.Address,
-				}
-			}
-			if historyBroken {
-				// Persistence was requested but isn't working — the UI must say
-				// history won't survive a restart, not just a log line.
-				s.aiRuns.MarkHistoryUnavailable(cfg.AIHistoryDB)
-			}
-		}
-	}
+	// Turn on AI investigations if an agent CLI is installed. Later installs are
+	// picked up by refreshAIEngine when a client asks for the agent list.
+	s.aiInvestigationRefs = cfg.InvestigationRefs
+	s.aiHistoryDB = cfg.AIHistoryDB
+	s.refreshAIEngine(context.Background())
 
 	// Register a single context-switch callback so every PerformContextSwitch
 	// path (REST switch, CAPI connect, periodic re-auth, …) gets per-user
@@ -317,8 +300,8 @@ func New(cfg Config) *Server {
 	// Cancel + stale AI investigations BEFORE the client repoints at the new
 	// cluster, so an in-flight agent (especially an apply) can't write to it.
 	k8s.OnBeforeContextSwitch(func(_ string) {
-		if s.aiRuns != nil {
-			s.aiRuns.OnContextSwitch()
+		if runs := s.aiRunManager(); runs != nil {
+			runs.OnContextSwitch()
 		}
 		// Runtime auth-loss demotion fires ONLY this callback (quiesce in
 		// place, no switch follows), and Argo CD's private port-forward lives
@@ -517,6 +500,7 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 
 	// API routes
 	r.Route("/api", func(r chi.Router) {
+		r.Use(s.requireSameOrigin)
 		// Streaming endpoints (SSE/WebSocket) - no timeout
 		r.Get("/events/stream", s.handleSSE)
 		r.Get("/pods/{namespace}/{name}/logs/stream", s.handlePodLogsStream)
@@ -528,6 +512,7 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 		// over a slow cluster link legitimately takes longer than that.
 		r.Post("/pods/{namespace}/{name}/files/save", s.handlePodFileSave)
 		r.Get("/workloads/{kind}/{namespace}/{name}/logs/stream", s.handleWorkloadLogsStream)
+		r.Get("/cnpg/clusters/{namespace}/{name}/logs/stream", s.handleCNPGClusterLogsStream)
 		// AI investigation event stream via SSE — long-lived; lives outside the
 		// 60s timeout group. The run keeps going server-side after disconnect.
 		r.Get("/diagnose/runs/{id}/stream", s.handleDiagnoseRunStream)
@@ -588,6 +573,7 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 			r.Get("/gitops/destination/{kind}/{namespace}/{name}", s.handleGitOpsDestination)
 			r.Get("/gitops/insights/{kind}/{namespace}/{name}", s.handleGitOpsInsights)
 			r.Get("/gitops/managed-resources", s.handleGitOpsManagedResources)
+			r.Post("/gitops/write-evidence", s.handleGitOpsWriteEvidence)
 
 			// RBAC reverse-lookup endpoints. Two shapes for /subject:
 			// ServiceAccount carries a namespace (3 segments after kind);
@@ -599,8 +585,12 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 			r.Get("/rbac/role/{kind}/{namespace}/{name}", s.handleRBACRole)
 			r.Get("/rbac/namespace/{namespace}", s.handleRBACNamespace)
 			r.Get("/rbac/whoami", s.handleRBACWhoami)
+			r.Get("/cnpg/workspace", s.handleCNPGWorkspace)
+			r.Get("/cnpg/operator", s.handleCNPGOperator)
 			r.Get("/cnpg/imagecatalogs/{namespace}/{name}/clusters", s.handleCNPGCatalogUsers)
 			r.Get("/cnpg/clusterimagecatalogs/{name}/clusters", s.handleCNPGCatalogUsers)
+			r.Get("/cnpg/clusters/{namespace}/{name}/logs", s.handleCNPGClusterLogs)
+			r.Get("/cnpg/clusters/{namespace}/{name}/activity", s.handleCNPGClusterActivity)
 			r.Get("/velero/backupstoragelocations/{namespace}/{name}/backups", s.handleVeleroStoredBackups)
 			// POST: creates a DownloadRequest, which is the only supported way to
 			// read the messages behind a run's error and warning counts.
@@ -681,6 +671,8 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 			r.Get("/pods/{namespace}/{name}/logs", s.handlePodLogs)
 			r.Get("/pods/{namespace}/{name}/environment", s.handlePodEnvironment)
 			r.Post("/pods/{namespace}/{name}/environment/reveal", s.handleRevealPodEnvironment)
+
+			r.Get("/services/{namespace}/{name}/endpointslices", s.handleServiceEndpointSlices)
 
 			// Pod debug (ephemeral container)
 			r.Post("/pods/{namespace}/{name}/debug", s.handleCreateDebugContainer)
@@ -815,6 +807,7 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 			// Traffic routes (non-streaming)
 			r.Get("/traffic/sources", s.handleGetTrafficSources)
 			r.Get("/traffic/flows", s.handleGetTrafficFlows)
+			r.Get("/traffic/flows/records", s.handleGetTrafficRecords)
 			r.Get("/traffic/source", s.handleGetActiveTrafficSource)
 			r.Post("/traffic/source", s.handleSetTrafficSource)
 			r.Post("/traffic/connect", s.handleTrafficConnect)
@@ -1256,8 +1249,8 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) Stop() {
 	prometheuspkg.RightsizingScans().Invalidate()
 	StopAllLocalTermSessions()
-	if s.aiRuns != nil {
-		s.aiRuns.Shutdown() // cancel investigations so agent children don't outlive us
+	if runs := s.aiRunManager(); runs != nil {
+		runs.Shutdown() // cancel investigations so agent children don't outlive us
 	}
 	s.broadcaster.Stop()
 	if s.stopUsageData != nil {
@@ -1360,13 +1353,17 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	caps.Deployment = k8s.DeploymentInfo{Mode: deploymentMode()}
 	caps.CloudConnect = s.cloudConnectCapability()
 	caps.Features = k8s.FeatureCapabilities{
-		YAMLReview:      true,
-		YAMLSchemas:     true,
-		WorkloadImages:  true,
-		ResourceIssues:  true,
-		PodEnvironment:  true,
-		PolicyResource:  true,
-		WorkloadHistory: true,
+		YAMLReview:            true,
+		YAMLSchemas:           true,
+		WorkloadImages:        true,
+		ResourceIssues:        true,
+		ResourceIssueCoverage: true,
+		PodEnvironment:        true,
+		PolicyResource:        true,
+		WorkloadHistory:       true,
+		ServiceEndpointSlices: true,
+		TrafficRecords:        true,
+		GitOpsWriteEvidence:   true,
 	}
 	caps.AuthEnabled = s.authConfig.Enabled()
 	caps.ConfigManagement = s.configManagement()
@@ -1421,7 +1418,17 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		caps.Resources = result.Perms
 		caps.Visibility = k8s.BuildVisibilitySummary(result, r.URL.Query().Get("namespace"))
 	} else if k8s.GetResourceCache() != nil {
-		if result := k8s.CheckResourcePermissions(r.Context()); result != nil {
+		result, isCurrent := k8s.CheckResourcePermissions(r.Context())
+		// Prefer what the cache holds; fall back to the probe's own result only
+		// when it describes the cluster still in effect. A probe superseded by a
+		// context switch describes the cluster it probed, not the one being
+		// rendered, and rendering it would report the previous cluster's
+		// permissions - leaving resources unset is the "no probe data yet"
+		// signal documented above.
+		if cached := k8s.GetCachedPermissionResult(); cached != nil {
+			result, isCurrent = cached, true
+		}
+		if result != nil && isCurrent {
 			caps.Resources = result.Perms
 			caps.Visibility = k8s.BuildVisibilitySummary(result, r.URL.Query().Get("namespace"))
 		}
@@ -2030,8 +2037,9 @@ func (s *Server) handleNamespaces(w http.ResponseWriter, r *http.Request) {
 
 type apiResourceResponse struct {
 	k8score.APIResource
-	Featured    bool                                `json:"featured,omitempty"`
-	Observation *k8score.DynamicResourceObservation `json:"observation,omitempty"`
+	DefinitionName string                              `json:"definitionName,omitempty"`
+	Featured       bool                                `json:"featured,omitempty"`
+	Observation    *k8score.DynamicResourceObservation `json:"observation,omitempty"`
 }
 
 func filterDynamicObservationNamespaces(observation k8score.DynamicResourceObservation, allowed []string) k8score.DynamicResourceObservation {
@@ -2076,14 +2084,32 @@ func (s *Server) handleAPIResources(w http.ResponseWriter, r *http.Request) {
 
 	result := make([]apiResourceResponse, 0, len(resources))
 	dynamicCache := k8s.GetDynamicResourceCache()
+	// IsCRD is a discovery/category heuristic (also true for aggregated APIs).
+	// Definition links require an observed CRD, read under the existing list
+	// permission. Use only watched inventory: discovery never starts per-kind
+	// object reads or a new CRD informer for this optional navigation metadata.
+	definitionNames := make(map[string]string)
+	canReadDefinitions := dynamicCache != nil && s.canRead(r, crdGVR.Group, crdGVR.Resource, "", "list") && s.canRead(r, crdGVR.Group, crdGVR.Resource, "", "get")
+	if canReadDefinitions {
+		if definitions, err := dynamicCache.ListWatchedReadOnly(crdGVR); err == nil {
+			for _, definition := range definitions {
+				group, _, _ := unstructured.NestedString(definition.Object, "spec", "group")
+				kind, _, _ := unstructured.NestedString(definition.Object, "spec", "names", "kind")
+				plural, _, _ := unstructured.NestedString(definition.Object, "spec", "names", "plural")
+				definitionNames[group+"/"+kind+"/"+plural] = definition.GetName()
+			}
+		}
+	}
 	var visibleNamespaces []string
 	visibleNamespacesResolved := false
 	for _, resource := range resources {
 		response := apiResourceResponse{
-			APIResource: resource,
-			Featured:    isFeaturedKubernetesAPI(resource.Group, resource.Kind),
+			APIResource:    resource,
+			Featured:       isFeaturedKubernetesAPI(resource.Group, resource.Kind),
+			DefinitionName: definitionNames[resource.Group+"/"+resource.Kind+"/"+resource.Name],
 		}
-		if resource.IsCRD && dynamicCache != nil {
+		isDefinitionsInventory := resource.Group == crdGVR.Group && resource.Name == crdGVR.Resource
+		if dynamicCache != nil && ((resource.IsCRD && !isDefinitionsInventory) || (isDefinitionsInventory && canReadDefinitions)) {
 			observation := dynamicCache.Observation(schema.GroupVersionResource{
 				Group:    resource.Group,
 				Version:  resource.Version,
@@ -2100,6 +2126,11 @@ func (s *Server) handleAPIResources(w http.ResponseWriter, r *http.Request) {
 		}
 		result = append(result, response)
 	}
+	if discovery != k8s.GetResourceDiscovery() {
+		s.writeError(w, http.StatusServiceUnavailable, "Resource discovery changed, please retry shortly")
+		return
+	}
+
 	s.writeJSON(w, result)
 }
 
@@ -3494,7 +3525,12 @@ func (s *Server) handlePodMetricsHistory(w http.ResponseWriter, r *http.Request)
 	s.writeJSON(w, history)
 }
 
-func podMetricsHistoryResponse(ctx context.Context, history *k8s.PodMetricsHistory, namespace, name string, health k8s.MetricsCollectionHealth, includeAPIServiceConditionMessage bool) *k8s.PodMetricsHistory {
+type podMetricsHistoryWithAvailability struct {
+	*k8s.PodMetricsHistory
+	MetricsAPIReachable bool `json:"metricsAPIReachable"`
+}
+
+func podMetricsHistoryResponse(ctx context.Context, history *k8s.PodMetricsHistory, namespace, name string, health k8s.MetricsCollectionHealth, includeAPIServiceConditionMessage bool) *podMetricsHistoryWithAvailability {
 	if history == nil {
 		history = &k8s.PodMetricsHistory{
 			Namespace:  namespace,
@@ -3505,7 +3541,10 @@ func podMetricsHistoryResponse(ctx context.Context, history *k8s.PodMetricsHisto
 	if health.PodMetrics.ConsecutiveErrors > 0 {
 		history.CollectionError, history.RawCollectionError, history.MetricsUnavailableDiagnosis, history.MetricsUnavailable = metricsHistoryCollectionError(ctx, "Pod", health.PodMetrics.LastError, includeAPIServiceConditionMessage)
 	}
-	return history
+	return &podMetricsHistoryWithAvailability{
+		PodMetricsHistory:   history,
+		MetricsAPIReachable: health.PodMetrics.LastSuccess != "" && health.PodMetrics.ConsecutiveErrors == 0,
+	}
 }
 
 // handleNodeMetricsHistory returns historical metrics for a specific node
@@ -3894,7 +3933,7 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 
 	store := timeline.GetStore()
 	if store == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "Timeline store not available")
+		s.writeTimelineStoreUnavailable(w)
 		return
 	}
 
@@ -3965,7 +4004,7 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 
 	events, err := store.Query(r.Context(), opts)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeTimelineQueryError(w, err)
 		return
 	}
 	// Cursor progress must be derived from the page BEFORE the RBAC filter
@@ -5109,6 +5148,56 @@ func (s *Server) writeErrorCode(w http.ResponseWriter, status int, code, message
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(map[string]string{"error": message, "error_code": code}); err != nil {
+		log.Printf("Failed to encode error response: %v", err)
+	}
+}
+
+// writeTimelineStoreUnavailable answers a timeline read that found no store.
+func (s *Server) writeTimelineStoreUnavailable(w http.ResponseWriter) {
+	if reason := timeline.TimelineUnavailableReason(); reason != "" {
+		s.writeTimelineDatabaseUnreachable(w, reason)
+		return
+	}
+	s.writeError(w, http.StatusServiceUnavailable, "Timeline store not available")
+}
+
+// writeTimelineQueryError answers a timeline query that failed.
+func (s *Server) writeTimelineQueryError(w http.ResponseWriter, err error) {
+	if timeline.DatabaseUnreachable(err) {
+		s.writeTimelineDatabaseUnreachable(w, err.Error())
+		return
+	}
+	// A timeout alone can't tell a database that stopped answering from a slow
+	// query. A short ping can: only the first fails it too.
+	if errors.Is(err, context.DeadlineExceeded) {
+		ctx, cancel := context.WithTimeout(context.Background(), timelineQueryPingTimeout)
+		pingErr := timeline.Unavailable(ctx)
+		cancel()
+		if pingErr != nil {
+			s.writeTimelineDatabaseUnreachable(w, pingErr.Error())
+			return
+		}
+	}
+	s.writeError(w, http.StatusInternalServerError, err.Error())
+}
+
+// timelineQueryPingTimeout bounds the check a timed-out timeline query makes
+// before answering, so the reply is not held much past the timeout itself.
+const timelineQueryPingTimeout = 2 * time.Second
+
+// writeTimelineDatabaseUnreachable is the one answer for a PostgreSQL database
+// Radar can't connect to, whether it never answered at startup or went away later,
+// so the page says the same thing in both cases. `detail` is the driver's error
+// with the password already redacted, for the operator to act on.
+func (s *Server) writeTimelineDatabaseUnreachable(w http.ResponseWriter, detail string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	payload := map[string]string{
+		"error":      "Timeline history is unavailable because Radar can't connect to its PostgreSQL database. Radar keeps retrying. Its logs have the details: search them for [timeline].",
+		"error_code": "timeline_database_unreachable",
+		"detail":     detail,
+	}
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
 		log.Printf("Failed to encode error response: %v", err)
 	}
 }

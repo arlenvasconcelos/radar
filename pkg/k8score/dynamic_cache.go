@@ -345,6 +345,15 @@ func (d *DynamicResourceCache) ensureWatching(gvr schema.GroupVersionResource, p
 	return err
 }
 
+// HasCoveringInformer reports whether an informer serves reads of gvr in ns
+// ("" for all namespaces), synced or not.
+func (d *DynamicResourceCache) HasCoveringInformer(gvr schema.GroupVersionResource, ns string) bool {
+	if d == nil {
+		return false
+	}
+	return d.hasCoveringInformer(gvr, ns)
+}
+
 // hasCoveringInformer reports whether an existing informer already serves
 // reads for (gvr, ns), and must agree with readEntries: a cluster-wide
 // informer covers every namespace; a specific ns is also covered by its own
@@ -1423,7 +1432,10 @@ func (d *DynamicResourceCache) ListNamespaces(gvr schema.GroupVersionResource, n
 	return result, nil
 }
 
-// ListBlocking returns all resources, waiting for cache sync first.
+// ListBlocking returns all resources, waiting for cache sync first. timeout
+// bounds the sync wait as a whole, however many informers serve the read. It
+// doesn't cover starting a watch that isn't running yet, which can wait for
+// CRD discovery and scope probes.
 func (d *DynamicResourceCache) ListBlocking(gvr schema.GroupVersionResource, namespace string, timeout time.Duration) ([]*unstructured.Unstructured, error) {
 	if d == nil {
 		return nil, fmt.Errorf("dynamic resource cache not initialized")
@@ -1438,12 +1450,16 @@ func (d *DynamicResourceCache) ListBlocking(gvr schema.GroupVersionResource, nam
 		return nil, fmt.Errorf("informer not found for %v", gvr)
 	}
 
+	var pending []cache.InformerSynced
 	for _, e := range entries {
 		if !e.informer.HasSynced() {
-			ctx, cancel := context.WithTimeout(context.Background(), timeout)
-			cache.WaitForCacheSync(ctx.Done(), e.informer.HasSynced)
-			cancel()
+			pending = append(pending, e.informer.HasSynced)
 		}
+	}
+	if len(pending) > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		cache.WaitForCacheSync(ctx.Done(), pending...)
+		cancel()
 	}
 
 	items, err := indexerItems(entries, namespace)
@@ -1549,17 +1565,26 @@ func (d *DynamicResourceCache) ListWithSelector(gvr schema.GroupVersionResource,
 
 // ListDirect fetches resources directly from the API (bypasses cache).
 func (d *DynamicResourceCache) ListDirect(ctx context.Context, gvr schema.GroupVersionResource, namespace string) ([]*unstructured.Unstructured, error) {
+	items, _, err := d.ListDirectSelected(ctx, gvr, namespace, "", 0)
+	return items, err
+}
+
+// ListDirectSelected fetches one page of resources matching labelSelector
+// directly from the API (bypasses cache). A limit of 0 means no limit.
+// truncated reports that the API server returned a continue token, i.e. more
+// matching objects exist beyond the returned page.
+func (d *DynamicResourceCache) ListDirectSelected(ctx context.Context, gvr schema.GroupVersionResource, namespace, labelSelector string, limit int64) (items []*unstructured.Unstructured, truncated bool, err error) {
+	opts := metav1.ListOptions{LabelSelector: labelSelector, Limit: limit}
 	var list *unstructured.UnstructuredList
-	var err error
 
 	if namespace != "" {
-		list, err = d.config.DynamicClient.Resource(gvr).Namespace(namespace).List(ctx, metav1.ListOptions{})
+		list, err = d.config.DynamicClient.Resource(gvr).Namespace(namespace).List(ctx, opts)
 	} else {
-		list, err = d.config.DynamicClient.Resource(gvr).List(ctx, metav1.ListOptions{})
+		list, err = d.config.DynamicClient.Resource(gvr).List(ctx, opts)
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to list resources: %w", err)
+		return nil, false, fmt.Errorf("failed to list resources: %w", err)
 	}
 
 	result := make([]*unstructured.Unstructured, len(list.Items))
@@ -1567,7 +1592,7 @@ func (d *DynamicResourceCache) ListDirect(ctx context.Context, gvr schema.GroupV
 		result[i] = StripUnstructuredFields(&list.Items[i])
 	}
 
-	return result, nil
+	return result, list.GetContinue() != "", nil
 }
 
 // GetDirect fetches a single resource directly from the API (bypasses cache).

@@ -587,7 +587,7 @@ const GitOpsResourceNode = memo(function GitOpsResourceNode({ data }: NodeProps<
   const KindIcon = getTopologyIcon(kind)
   // Only unhealthy nodes carry a cause worth surfacing — a healthy node
   // matched by a stale/unrelated issue ref shouldn't show a tooltip.
-  const cause = status === 'unhealthy' || status === 'degraded' ? data.cause : undefined
+  const cause = nodeCause(node, data.cause)
   // Only declared resources can carry the controller's verdict, so only
   // there does "this one is Radar's" mean anything. Generated children
   // (ReplicaSets, Pods) are always Radar's read; marking each would be
@@ -752,10 +752,10 @@ function buildChips(node: GitOpsTreeNode): Array<{ label?: string; value: string
   // detail title row and fleet rows.
   if (isNodeTerminating(node)) {
     chips.push({ value: 'Terminating', tone: 'warning' })
-    if (typeof data.createdAt === 'string') chips.push({ label: 'age', value: formatAge(data.createdAt) })
+    if (typeof data.createdAt === 'string') chips.push({ label: 'age', value: formatCompactAge(data.createdAt) })
     return chips
   }
-  if (typeof data.createdAt === 'string') chips.push({ label: 'age', value: formatAge(data.createdAt) })
+  if (typeof data.createdAt === 'string') chips.push({ label: 'age', value: formatCompactAge(data.createdAt) })
   const revision = stringData(data.revision) || stringData(data.lastSyncRevision)
   if (revision) chips.push({ label: 'rev', value: revision })
   const attempted = stringData(data.attemptedRevision)
@@ -769,6 +769,15 @@ function buildChips(node: GitOpsTreeNode): Array<{ label?: string; value: string
   if (node.sync === 'OutOfSync') chips.push({ value: 'OutOfSync', tone: 'warning' })
   if (node.health === 'Degraded' || node.health === 'Missing') chips.push({ value: node.health, tone: 'danger' })
   return chips
+}
+
+// nodeCause returns the matched issue's cause when the node's hover should
+// show it: only on a node that is actually failing (Degraded or Missing,
+// topology 'unhealthy'). 'degraded' is also where Progressing and Suspended
+// land, and a cause there reads as "this is broken" on a rollout in flight
+// or a deliberate pause.
+export function nodeCause(node: GitOpsTreeNode, cause?: string): string | undefined {
+  return normalizeHealth(node.topologyStatus) === 'unhealthy' ? cause : undefined
 }
 
 // The subtitle is the node's one line of prose, and sync, health and the
@@ -886,6 +895,3 @@ function pluralize(kind: string): string {
   return `${kind}s`
 }
 
-function formatAge(timestamp: string): string {
-  return formatCompactAge(timestamp)
-}

@@ -8,10 +8,14 @@ import (
 	"github.com/skyhook-io/radar/pkg/k8score"
 	"github.com/skyhook-io/radar/pkg/policyreports"
 	batchv1 "k8s.io/api/batch/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes"
 	fakeclientset "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
+	clienttesting "k8s.io/client-go/testing"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
@@ -59,6 +63,7 @@ func InitLoadTestResourceCache(client kubernetes.Interface) error {
 		secretsEnabled:              true,
 		cronJobScheduleObservations: cronJobScheduleObservations,
 		secretWriteTimes:            secretWriteTimes,
+		generation:                  cacheGeneration,
 	})
 
 	cacheOnce = new(sync.Once)
@@ -107,6 +112,7 @@ func InitTestPromotedSyncingCache(client kubernetes.Interface, syncTimeout, defe
 		secretsEnabled:              true,
 		cronJobScheduleObservations: cronJobScheduleObservations,
 		secretWriteTimes:            secretWriteTimes,
+		generation:                  cacheGeneration,
 	})
 	cacheOnce = new(sync.Once)
 	cacheOnce.Do(func() {})
@@ -175,6 +181,7 @@ func initTestResourceCache(client kubernetes.Interface, scopes map[string]k8scor
 		secretsEnabled:              true,
 		cronJobScheduleObservations: cronJobScheduleObservations,
 		secretWriteTimes:            secretWriteTimes,
+		generation:                  cacheGeneration,
 	})
 
 	// Mark cacheOnce as "already executed" so InitResourceCache is a no-op.
@@ -503,7 +510,7 @@ func ResetTestState() {
 
 	// Reset resource permissions cache
 	resourcePermsMu.Lock()
-	cachedPermResult = nil
+	invalidateResourcePermissionsCacheLocked()
 	resourcePermsMu.Unlock()
 	ForceNamespaceScope = false
 	SetFallbackNamespace("")
@@ -545,5 +552,56 @@ func allTestResourceTypes() map[string]bool {
 		"ingressclasses":           true,
 		"networkpolicies":          true,
 		"limitranges":              true,
+	}
+}
+
+// SetTestPermissionProbeClient installs a dynamic client that grants every
+// list a permission probe makes, calling onList before each one answers.
+// Returns a restore func.
+//
+// Permission probes list resources this package chooses, so a test in another
+// package cannot build a fake that knows them all.
+func SetTestPermissionProbeClient(onList func()) func() {
+	gvrToListKind := map[schema.GroupVersionResource]string{}
+	for _, p := range resourceProbeTargets(&ResourcePermissions{}) {
+		for _, gvr := range resolveProbeGVRs(p) {
+			gvrToListKind[gvr] = gvr.Resource + "List"
+		}
+	}
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), gvrToListKind)
+	client.PrependReactor("list", "*", func(clienttesting.Action) (bool, runtime.Object, error) {
+		onList()
+		return false, nil, nil // fall through to the default reactor (empty list)
+	})
+
+	clientMu.Lock()
+	prev := dynamicClient
+	dynamicClient = client
+	clientMu.Unlock()
+	return func() {
+		clientMu.Lock()
+		dynamicClient = prev
+		clientMu.Unlock()
+	}
+}
+
+// SetTestPermissionResult publishes a permission probe result as if a probe had
+// just produced it. Returns a restore func.
+//
+// The cache is otherwise only writable by a real probe, so without this seam a
+// test in another package cannot reach any of the code that reads it - the
+// handlers fall through to their "no probe data yet" path and assert nothing
+// while appearing to cover the endpoint.
+func SetTestPermissionResult(result *PermissionCheckResult) func() {
+	resourcePermsMu.Lock()
+	prevResult, prevExpiry := cachedPermResult, resourcePermsExpiry
+	cachedPermResult = result
+	resourcePermsExpiry = time.Now().Add(time.Minute)
+	resourcePermsMu.Unlock()
+
+	return func() {
+		resourcePermsMu.Lock()
+		cachedPermResult, resourcePermsExpiry = prevResult, prevExpiry
+		resourcePermsMu.Unlock()
 	}
 }

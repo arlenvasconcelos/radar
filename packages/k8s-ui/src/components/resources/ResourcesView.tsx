@@ -137,20 +137,25 @@ import {
   parseColumnFilters,
   serializeColumnFilters,
   parseColumnFilterExcludes,
+  kindFiltersFromSearch,
+  kindFiltersToSearch,
+  columnFiltersParam,
+  RESOURCE_LIST_FILTER_PARAMS,
   podMatchesProblemCategory,
   SEVERITY_DOT_COLOR,
   healthColors,
 } from './resource-utils'
 import { getGenericResourceStatus } from './generic-status'
+import { ActiveFilterBar } from './ActiveFilterBar'
 import { getIstioGatewayServerCount, getIstioGatewaySelectorString } from './resource-utils-istio'
 import {
   type PrinterColumnDef, type PrinterTable, PRINTER_COLUMN_PREFIX, formatPrinterCell, printerCellSortValue,
   printerCellTone, printerColumnKey, printerColumnWidth, printerTableKey, printerTableMatchesKind, readPrinterCell,
 } from './printer-columns'
-import { SEVERITY_BADGE, EVENT_TYPE_COLORS } from '../../utils/badge-colors'
+import { SEVERITY_BADGE, SEVERITY_TEXT, healthToSeverity, EVENT_TYPE_COLORS } from '../../utils/badge-colors'
 import { pluralize } from '../../utils/pluralize'
 import { getPodGpuCount, getNodeGpuCount } from '../../utils/extended-resources'
-import { parseQuantityToNumber } from '../../utils/format'
+import { formatRelativeAgeTime, parseQuantityToNumber } from '../../utils/format'
 import { type CustomColumnDef, type CustomColumnSource, customColumnKey, readCustomColumnValue, sanitizeCustomColumnDefs } from '../../utils/custom-columns'
 import { isRolloutActivityVisible } from '../../utils/workload-rollout'
 import { FreshnessControl, type FreshnessConnection } from '../ui/FreshnessControl'
@@ -203,9 +208,9 @@ import { GCPManagedControlPlaneCell, GCPManagedMachinePoolCell, GCPMachineCell, 
 import { AzureManagedControlPlaneCell, AzureManagedMachinePoolCell, AzureMachineCell, AzureMachineTemplateCell, AzureManagedClusterCell } from './renderers/azure-capi-cells'
 import { CalicoInfraCell, CalicoPolicyCell } from './renderers/calico-cells'
 import { isCalicoPolicyResource, isCoreNetworkPolicyKind } from './resource-utils-calico'
-import { useRegisterShortcut, useRegisterShortcuts } from '../../hooks/useKeyboardShortcuts'
+import { useRegisterShortcut, useRegisterShortcuts, type KeyboardShortcut } from '../../hooks/useKeyboardShortcuts'
 import { ResourcesSidebar } from './ResourcesSidebar'
-import type { SelectedKindInfo } from './ResourcesSidebar'
+import type { SelectedKindInfo, SidebarCategoryWorkspace } from './ResourcesSidebar'
 import { CompareTray, togglePick, pickIndex, refToParam, SIDE_TONES, type CompareTrayPick, type NamespacedRef } from '../compare'
 import { ConfirmDialog } from '../ui/ConfirmDialog'
 
@@ -1452,6 +1457,15 @@ const KNOWN_COLUMNS: Record<string, Column[]> = {
     { key: 'age', label: 'Age', width: 'w-24' },
   ],
   tcproutes: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-48' },
+    { key: 'status', label: 'Status', width: 'w-28', tooltip: 'Accepted = controllers accepted this route and confirmed it can use the backends and other objects it names. Traffic has not been tested. Degraded or Not Accepted: open the route to see which Gateway or backend failed. Pending or Unknown: check the named Gateways or Services and their controllers.' },
+    { key: 'parents', label: 'Gateways', width: 'w-36' },
+    { key: 'backends', label: 'Backends', width: 'w-48', tooltip: 'Backend services receiving traffic' },
+    { key: 'rules', label: 'Rules', width: 'w-20' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
+  udproutes: [
     { key: 'name', label: 'Name' },
     { key: 'namespace', label: 'Namespace', width: 'w-48' },
     { key: 'status', label: 'Status', width: 'w-28', tooltip: 'Accepted = controllers accepted this route and confirmed it can use the backends and other objects it names. Traffic has not been tested. Degraded or Not Accepted: open the route to see which Gateway or backend failed. Pending or Unknown: check the named Gateways or Services and their controllers.' },
@@ -2884,6 +2898,7 @@ const CURATED_COLUMN_GROUPS: Record<string, readonly string[]> = {
   grpcroutes: ['gateway.networking.k8s.io'],
   httproutes: ['gateway.networking.k8s.io'],
   tcproutes: ['gateway.networking.k8s.io'],
+  udproutes: ['gateway.networking.k8s.io'],
   tlsroutes: ['gateway.networking.k8s.io'],
   helmreleases: ['helm.toolkit.fluxcd.io'],
   awsmachines: ['infrastructure.cluster.x-k8s.io'],
@@ -3411,8 +3426,15 @@ interface ResourcesViewProps {
   onSelectedKindChange?: (kind: { name: string; kind: string; group: string }) => void
   /** When true, the sidebar is not rendered. Useful when a standalone ResourcesSidebar is used externally. */
   hideSidebar?: boolean
+  /** Task destinations rendered inside sidebar categories (see ResourcesSidebar). */
+  sidebarCategoryWorkspaces?: Record<string, SidebarCategoryWorkspace>
   /** Callback when the [+] create button is clicked. Receives the currently selected kind info. */
   onCreateResource?: (kind: { name: string; kind: string; group: string } | null) => void
+  /** A kind's own view, rendered in place of the table: the sidebar, kind
+   *  selection and the drawer (`?resource=`) stay; the table, its toolbar and
+   *  its row/search/bulk shortcuts do not run. Sidebar kind navigation stays.
+   *  Return null or false to keep the table. */
+  renderKindView?: (kind: SelectedKindInfo) => React.ReactNode | null
   /** Default kind when the URL does not include one. */
   defaultKind?: SelectedKindInfo
   /** Columns prepended to KNOWN_COLUMNS for every kind. For example, a
@@ -3478,6 +3500,29 @@ interface ResourcesViewProps {
    * the switcher lives outside this component and may persist server-side.
    */
   onClearNamespaces?: () => void
+  /**
+   * A kind's saved filters, as last reported through `onKindFiltersChange`
+   * (host-owned, because this view unmounts on section switches). A user kind
+   * switch, or a URL with no list state of its own (see `hasFilterIntent`),
+   * restores that kind's column and problem filters from it. Pass undefined
+   * until the host can answer: the first defined value is still applied to a
+   * bare URL.
+   */
+  rememberedKindSearch?: (kind: { name: string; group: string }) => string | undefined
+  /**
+   * Called with a kind's serialized `filters` + `problems` query ('' when
+   * none) whenever the filters the kind shows change, including the ones a
+   * link arrives with. A list that arrives with no filters does not report
+   * '', so a link to one resource keeps what was saved.
+   */
+  onKindFiltersChange?: (kind: { name: string; group: string }, search: string) => void
+  /**
+   * Promotes the Namespace column's included values to the global namespace
+   * selection (replacing it). When wired, the column's filter dropdown offers
+   * "Apply to all sections" and clears the column filter once the returned
+   * promise resolves (a rejection keeps it).
+   */
+  onApplyNamespacesToAllSections?: (namespaces: string[]) => Promise<unknown> | void
   // Bulk operations
   onBulkDelete?: (items: BulkResourceItem[], options?: { force?: boolean; onSuccess?: () => void }) => void
   isBulkDeleting?: boolean
@@ -3601,19 +3646,24 @@ export function deriveSidebarResourceCounts(
   return results
 }
 
+const FILTER_INTENT_PARAMS = [...RESOURCE_LIST_FILTER_PARAMS, 'resource']
+
+/**
+ * Whether a URL states its own list state. Only a URL without any of these
+ * (a bare `/resources/<kind>`) gets the kind's remembered filters.
+ */
+export function hasFilterIntent(search: string): boolean {
+  const params = new URLSearchParams(search)
+  return FILTER_INTENT_PARAMS.some((key) => params.has(key))
+}
+
 // Get initial filters from URL
 function getInitialFiltersFromURL() {
   const params = new URLSearchParams(window.location.search)
-  // Parse generic column filters
-  const filtersParam = params.get('filters')
-  const columnFilters = parseColumnFilters(filtersParam)
-  const columnFilterExcludes = parseColumnFilterExcludes(filtersParam)
   const result = {
     search: params.get('search') || '',
     regex: params.get('regex') === 'true',
-    columnFilters,
-    columnFilterExcludes,
-    problemFilters: params.get('problems')?.split(',').filter(Boolean) || [],
+    ...kindFiltersFromSearch(window.location.search),
     showInactive: params.get('showInactive') === 'true',
     labelSelector: params.get('labels') || '', // e.g., "app=caretta,version=v1"
     ownerKind: params.get('ownerKind') || '', // e.g., "DaemonSet"
@@ -3653,7 +3703,9 @@ export function ResourcesView({
   onOpenWorkloadLogs,
   onSelectedKindChange,
   hideSidebar = false,
+  sidebarCategoryWorkspaces,
   onCreateResource,
+  renderKindView,
   defaultKind = DEFAULT_KIND_INFO,
   extraLeadingColumns,
   printerTable,
@@ -3662,6 +3714,9 @@ export function ResourcesView({
   onCompareSubmit,
   resolveRowCluster,
   onClearNamespaces,
+  rememberedKindSearch,
+  onKindFiltersChange,
+  onApplyNamespacesToAllSections,
   onBulkDelete,
   isBulkDeleting = false,
   onBulkRestart,
@@ -3682,16 +3737,23 @@ export function ResourcesView({
       kindFromURL.name !== prev.name || kindFromURL.group !== prev.group ? kindFromURL : prev,
     )
   }, [basePath, defaultKind, locationPathname, locationSearch])
+  const contributedKindView = renderKindView?.(selectedKind)
+  const kindView = contributedKindView === false ? null : contributedKindView ?? null
+  const tableActive = kindView === null
+
   // Notify parent of selected kind changes (including initial mount)
   useEffect(() => {
     onSelectedKindChange?.(selectedKind)
+  }, [selectedKind.name, selectedKind.group]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     setBulkMode(false)
     setCheckedResources(new Set())
     setShowBulkDeleteConfirm(false)
     setShowBulkRestartConfirm(false)
     setShowBulkScaleDialog(false)
     setBulkForceDelete(false)
-  }, [selectedKind.name, selectedKind.group]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedKind.name, selectedKind.group, tableActive])
   const [searchTerm, setSearchTerm] = useState(initialFilters.search)
   // Typing must never wait on the list or the router. The input renders raw
   // searchTerm; filtering consumes the deferred copy (React yields to keep
@@ -3709,6 +3771,30 @@ export function ResourcesView({
   const [columnFilters, setColumnFilters] = useState<Record<string, string[]>>(initialFilters.columnFilters)
   const [columnFilterExcludes, setColumnFilterExcludes] = useState<Record<string, boolean>>(initialFilters.columnFilterExcludes)
   const [problemFilters, setProblemFilters] = useState<string[]>(initialFilters.problemFilters)
+  // The kind the filter state belongs to. During a kind switch one render
+  // pairs the new kind with the old kind's filters; saving then would file
+  // them under the wrong kind.
+  const [filtersKind, setFiltersKind] = useState(() => selectedKindIdentityOf(selectedKind))
+  // Where the current filter state came from when it wasn't a user edit.
+  const filtersArrivedRef = useRef<'url' | 'restore' | null>('url')
+  // The serialized filters last restored from rememberedKindSearch ('' when none).
+  const [restoredKindSearch, setRestoredKindSearch] = useState('')
+  // A bare URL at mount takes the kind's saved filters. Adjusted during render
+  // (not in an effect) so the unfiltered list never paints, and so it still
+  // applies when the host's lookup arrives after mount.
+  const [mountRestorePending, setMountRestorePending] = useState(() => !hasFilterIntent(locationSearch ?? window.location.search))
+  if (mountRestorePending && rememberedKindSearch) {
+    setMountRestorePending(false)
+    const restored = kindFiltersToSearch(kindFiltersFromSearch(rememberedKindSearch(selectedKind)))
+    if (restored && !hasFilterIntent(locationSearch ?? window.location.search)) {
+      const remembered = kindFiltersFromSearch(restored)
+      setColumnFilters(remembered.columnFilters)
+      setColumnFilterExcludes(remembered.columnFilterExcludes)
+      setProblemFilters(remembered.problemFilters)
+      setRestoredKindSearch(restored)
+      filtersArrivedRef.current = 'restore'
+    }
+  }
   const [openColumnFilter, setOpenColumnFilter] = useState<string | null>(null)
   const [columnFilterSearch, setColumnFilterSearch] = useState('')
   const columnFilterDropdownRef = useRef<HTMLDivElement>(null)
@@ -3932,6 +4018,8 @@ export function ResourcesView({
   // depends on visibleColumns) and instantly reverts the user's hide.
   const gpuAutoShownKinds = useRef<Set<string>>(new Set())
   useEffect(() => {
+    // The table's own settings: nothing to load (or clear) while a kind view replaces it.
+    if (!tableActive) return
     // Re-arm the skip-initial-save guard per kind. This effect repopulates
     // visible/widths/custom for the new kind via async setState, so the save
     // effect (also keyed to selectedKind) that runs in this same commit still
@@ -4016,10 +4104,11 @@ export function ResourcesView({
     // identity on every refetch, and re-running this effect would reset the
     // user's in-session column choices each time the list polls. The key only
     // changes when the kind changes or an operator upgrade changes the CRD.
-  }, [selectedKind.name, selectedKind.group, extraLeadingColumns, printerColumnsKey])
+  }, [selectedKind.name, selectedKind.group, extraLeadingColumns, printerColumnsKey, tableActive])
 
   // Save column settings when they change (skip the initial load of each kind)
   useEffect(() => {
+    if (!tableActive) return
     if (visibleColumns.size === 0) return // not loaded yet
     for (const k of allColumnKeys) knownColumnKeys.current.add(k)
     if (!isColumnSettingsLoaded.current) {
@@ -4036,7 +4125,7 @@ export function ResourcesView({
     // as across sessions, so a later data refresh can't override user choices.
     hadSavedColumnSettings.current = true
     // allColumnKeysSig, not allColumnKeys: see the memo above.
-  }, [visibleColumns, columnWidths, customColumns, selectedKind.name, selectedKind.group, allColumnKeysSig])
+  }, [visibleColumns, columnWidths, customColumns, selectedKind.name, selectedKind.group, allColumnKeysSig, tableActive])
 
   // Close column picker on outside click or Escape
   useEffect(() => {
@@ -4205,6 +4294,7 @@ export function ResourcesView({
     category: 'Search',
     scope: 'resources',
     handler: () => searchInputRef.current?.focus(),
+    enabled: tableActive,
   })
 
   // Keyboard navigation: highlighted row state
@@ -4224,7 +4314,7 @@ export function ResourcesView({
   useEffect(() => {
     setComparePicks([])
     setCompareMode(false)
-  }, [selectedKind.name, selectedKind.group])
+  }, [selectedKind.name, selectedKind.group, tableActive])
 
   const exitCompareMode = useCallback(() => {
     setCompareMode(false)
@@ -4272,6 +4362,15 @@ export function ResourcesView({
     }
   }, [highlightedIndex])
 
+  useEffect(() => {
+    if (tableActive) return
+    setHighlightedIndex(-1)
+    setShowColumnPicker(false)
+    setOpenColumnFilter(null)
+    setShowProblemsDropdown(false)
+    setShowLabelsDropdown(false)
+  }, [tableActive])
+
   // Open logs for pod / workload resources — provided via props
   const openLogs = onOpenLogs
   const openWorkloadLogs = onOpenWorkloadLogs
@@ -4304,8 +4403,7 @@ export function ResourcesView({
     onResourceClick?.(isSelected ? null : stripped)
   }, [onRowSelect, onResourceClick, selectedKind.name, selectedKind.group])
 
-  // Register navigation shortcuts
-  useRegisterShortcuts([
+  useRegisterShortcuts(([
     {
       id: 'resources-nav-down',
       keys: 'j',
@@ -4481,7 +4579,7 @@ export function ResourcesView({
         else searchInputRef.current?.blur()
       },
     },
-  ])
+  ] as KeyboardShortcut[]).map((sc) => ({ ...sc, enabled: tableActive && (sc.enabled ?? true) })))
 
   // Refs for accessing filteredResources inside shortcuts (computed later in component)
   const filteredResourceCountRef = useRef(0)
@@ -4561,8 +4659,21 @@ export function ResourcesView({
     const newFilters = getInitialFiltersFromURL()
 
     // Update kind if it changed
-    if (newKind.name !== selectedKind.name || newKind.group !== selectedKind.group) {
+    const kindChanged = newKind.name !== selectedKind.name || newKind.group !== selectedKind.group
+    let restored = ''
+    if (kindChanged) {
       setSelectedKind(newKind)
+      // A bare URL for another kind links to the list, not to a state of it:
+      // take that kind's saved filters and put them in the address bar. Never
+      // for the same kind, where a bare URL is the echo of Clear filters.
+      restored = hasFilterIntent(locationSearch ?? window.location.search)
+        ? ''
+        : kindFiltersToSearch(kindFiltersFromSearch(rememberedKindSearch?.(newKind)))
+      setRestoredKindSearch(restored)
+      if (restored) {
+        Object.assign(newFilters, kindFiltersFromSearch(restored))
+        updateURL(newKind, newFilters.search, newFilters.regex, newFilters.columnFilters, newFilters.columnFilterExcludes, newFilters.problemFilters, newFilters.showInactive)
+      }
     }
 
     // Update owner filter if it changed
@@ -4601,6 +4712,13 @@ export function ResourcesView({
     const excludeKeys = (m: Record<string, boolean>) => Object.keys(m).filter(k => m[k]).sort().join(',')
     if (excludeKeys(newFilters.columnFilterExcludes) !== excludeKeys(columnFilterExcludes)) {
       setColumnFilterExcludes(newFilters.columnFilterExcludes)
+    }
+
+    if (newFilters.problemFilters.join(',') !== problemFilters.join(',')) {
+      setProblemFilters(newFilters.problemFilters)
+    }
+    if (kindChanged || kindFiltersToSearch(newFilters) !== kindFiltersSearch) {
+      filtersArrivedRef.current = restored ? 'restore' : 'url'
     }
 
     // Reset the flag after a tick to allow normal URL updates
@@ -4657,11 +4775,7 @@ export function ResourcesView({
     }
     // Write column filters as `filters` param; the exclude operator is folded
     // into each column entry, so it can never drift from the values it negates.
-    // Guard against a stale exclude flag on a column with no active values.
-    const activeExcludes = Object.fromEntries(
-      Object.entries(colExcludes).filter(([k, on]) => on && (colFilters[k]?.length ?? 0) > 0)
-    )
-    const filtersStr = serializeColumnFilters(colFilters, activeExcludes)
+    const filtersStr = columnFiltersParam(colFilters, colExcludes)
     if (filtersStr) {
       params.set('filters', filtersStr)
     } else {
@@ -4733,12 +4847,18 @@ export function ResourcesView({
     // params are out of scope here; the host's onClearNamespaces (and its
     // own state→URL sync) owns namespace cleanup.
     const params = new URLSearchParams(window.location.search)
-    for (const key of ['search', 'regex', 'filters', 'problems', 'labels', 'ownerKind', 'ownerName', 'showInactive']) {
+    for (const key of RESOURCE_LIST_FILTER_PARAMS) {
       params.delete(key)
     }
     navigate({ pathname: window.location.pathname, search: params.toString() }, { replace: true })
     onClearNamespaces?.()
   }, [navigate, onClearNamespaces])
+
+  const clearKindFilters = useCallback(() => {
+    setColumnFilters({})
+    setColumnFilterExcludes({})
+    setProblemFilters([])
+  }, [])
 
   // Update URL when any filter changes
   useEffect(() => {
@@ -4752,6 +4872,8 @@ export function ResourcesView({
       prevSelectedResourceRef.current = selectedResource ?? null
       return
     }
+    // Right after a kind switch the filters are still the previous kind's.
+    if (filtersKind !== selectedKindIdentityOf(selectedKind)) return
     // Skip URL update if selectedResource's kind doesn't match selectedKind (still syncing)
     if (selectedResource) {
       const resourceKindLower = selectedResource.kind.toLowerCase()
@@ -4777,7 +4899,12 @@ export function ResourcesView({
         : typeof window !== 'undefined'
           ? window.location.pathname
           : ''
-    const pathChanged = currentPath !== targetPath
+    // The router commits a navigation as a transition, so the injected path can
+    // still be the previous kind's right after a push to this one (e.g. the
+    // write of filters restored on a kind switch); the address bar is already
+    // there, and pushing again would add a second entry for the same visit.
+    const pathChanged = currentPath !== targetPath &&
+      !(typeof window !== 'undefined' && window.location.pathname.endsWith(targetPath))
     const prev = prevSelectedResourceRef.current
     const current = selectedResource ?? null
     const drawerSwitched =
@@ -4791,7 +4918,7 @@ export function ResourcesView({
     prevSelectedResourceRef.current = current
 
     updateURL(selectedKind, debouncedSearchTerm, regexMode, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets, selectedResource?.namespace, selectedResource?.name, pushHistory)
-  }, [selectedKind, debouncedSearchTerm, regexMode, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets, selectedResource, updateURL, basePath, locationPathname])
+  }, [selectedKind, filtersKind, debouncedSearchTerm, regexMode, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets, selectedResource, updateURL, basePath, locationPathname])
 
   // Handle resource click from URL on mount
   useEffect(() => {
@@ -4811,6 +4938,12 @@ export function ResourcesView({
     }
     // Signal that initial resource param has been processed — URL update effect can now run
     hasProcessedInitialResource.current = true
+
+    // Filters restored at mount go into the address bar (with the kind segment).
+    if (restoredKindSearch) {
+      updateURL(selectedKind, searchTerm, regexMode, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets)
+      return
+    }
 
     // If the URL has no kind segment (e.g., /resources), update to include the default kind.
     // Route through `navigate` so an onNavigate-suppressing host can opt out.
@@ -5080,7 +5213,7 @@ export function ResourcesView({
     isForbiddenError(selectedQueryError) ||
     (!selectedHasRows && !selectedQueryError && forbiddenKinds.has(selectedKindCountKey))
 
-  // Reset filters when kind changes (but not when syncing from URL navigation)
+  // On a kind change, restore that kind's remembered filters, or start empty (but not when syncing from URL navigation)
   // Track previous kind to skip on mount (where the effect fires but kind hasn't actually changed)
   // Keyed on group as well as plural: two CRDs can share a plural across API
   // groups, and their printer columns are unrelated. Resetting on the plural
@@ -5094,12 +5227,39 @@ export function ResourcesView({
     }
     prevKindRef.current = selectedKindIdentity
     setOpenColumnFilter(null)
-    if (!isSyncingFromURL.current) {
-      setColumnFilters({})
-      setColumnFilterExcludes({})
-    }
-    setProblemFilters([])
-  }, [selectedKindIdentity])
+    setFiltersKind(selectedKindIdentity)
+    // The URL sync already set this kind's filters (and restoredKindSearch).
+    if (isSyncingFromURL.current) return
+    filtersArrivedRef.current = 'restore'
+    const restored = kindFiltersToSearch(kindFiltersFromSearch(rememberedKindSearch?.(selectedKind)))
+    const remembered = kindFiltersFromSearch(restored)
+    setColumnFilters(remembered.columnFilters)
+    setColumnFilterExcludes(remembered.columnFilterExcludes)
+    setProblemFilters(remembered.problemFilters)
+    setRestoredKindSearch(restored)
+  }, [selectedKindIdentity, selectedKind, rememberedKindSearch])
+
+  const kindFiltersSearch = useMemo(
+    () => kindFiltersToSearch({ columnFilters, columnFilterExcludes, problemFilters }),
+    [columnFilters, columnFilterExcludes, problemFilters],
+  )
+  // Saved filters are the last ones chosen for a kind: by the user, or by a
+  // link that brought its own. A restore only shows what was saved (saving it
+  // again would overwrite another tab's newer choice); a list that arrives
+  // with no filters (a link to one resource, an owner's pods) keeps what was
+  // saved; Clear filters saves none.
+  const lastSeenKindFiltersRef = useRef<{ kind: string; search: string } | null>(null)
+  useEffect(() => {
+    // The host may wire saving after mount; until then nothing counts as seen.
+    if (!onKindFiltersChange || filtersKind !== selectedKindIdentity) return
+    const last = lastSeenKindFiltersRef.current
+    lastSeenKindFiltersRef.current = { kind: filtersKind, search: kindFiltersSearch }
+    const arrived = filtersArrivedRef.current
+    filtersArrivedRef.current = null
+    if (last?.kind === filtersKind && last.search === kindFiltersSearch) return
+    if (arrived === 'restore' || (arrived === 'url' && !kindFiltersSearch)) return
+    onKindFiltersChange(selectedKind, kindFiltersSearch)
+  }, [filtersKind, selectedKindIdentity, kindFiltersSearch, selectedKind, onKindFiltersChange])
 
   // Toggle sort for a column
   const handleSort = useCallback((column: string) => {
@@ -5275,7 +5435,7 @@ export function ResourcesView({
 
   // Filter resources by search term, status, problems, and sort
   const filteredResources = useMemo(() => {
-    if (!resources) return []
+    if (!tableActive || !resources) return []
 
     let result = resources
 
@@ -5461,7 +5621,7 @@ export function ResourcesView({
     }
 
     return result
-  }, [resources, deferredSearchTerm, regexMode, searchRegex, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets, labelSelector, ownerKind, ownerName, selectedKind.name, effectiveSortColumn, sortDirection, getSortValue, extraColumnsByKey, podMatchesProblemFilter])
+  }, [tableActive, resources, deferredSearchTerm, regexMode, searchRegex, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets, labelSelector, ownerKind, ownerName, selectedKind.name, effectiveSortColumn, sortDirection, getSortValue, extraColumnsByKey, podMatchesProblemFilter])
 
   // For nodes table: compute the majority minor version so outliers can be highlighted
   const majorityNodeMinorVersion = useMemo(() => {
@@ -5657,7 +5817,7 @@ export function ResourcesView({
 
   // Calculate filter options with counts based on current resources (before filtering)
   const filterOptions = useMemo(() => {
-    if (!resources || resources.length === 0) return null
+    if (!tableActive || !resources || resources.length === 0) return null
 
     const kindLower = normalizeKindToPlural(selectedKind.name, selectedKind.group)
     const cellFilterKind = getCellFilterKind(selectedKind.name, selectedKind.group)
@@ -5770,7 +5930,7 @@ export function ResourcesView({
 
     if (filterableColumns.length === 0 && !problems && labelValues.length === 0) return null
     return { columns: filterableColumns, problems, labels: labelValues }
-  }, [resources, selectedKind.name, selectedKind.group, allColumns])
+  }, [tableActive, resources, selectedKind.name, selectedKind.group, allColumns])
 
   // Map filterable columns by key for O(1) lookup in header rendering
   const filterableColumnMap = useMemo(() => {
@@ -5792,15 +5952,16 @@ export function ResourcesView({
   // Namespace contribution gated on a host-wired clearer: without it the
   // Clear filters button can't drop the namespace, so showing it would be
   // a no-op for that case.
-  const hasAnyFilter =
-    !!searchTerm ||
-    regexMode ||
-    !!labelSelector ||
-    hasOwnerFilter ||
-    problemFilters.length > 0 ||
-    Object.values(columnFilters).some((vals) => vals.length > 0) ||
-    showInactiveReplicaSets ||
-    (!!onClearNamespaces && namespaces.length > 0)
+  const activeFilterCount =
+    Object.values(columnFilters).filter((vals) => vals.length > 0).length +
+    (problemFilters.length > 0 ? 1 : 0) +
+    (labelSelector ? 1 : 0) +
+    (searchTerm || regexMode ? 1 : 0) +
+    (hasOwnerFilter ? 1 : 0) +
+    (showInactiveReplicaSets ? 1 : 0) +
+    (!!onClearNamespaces && namespaces.length > 0 ? 1 : 0)
+  const hasAnyFilter = activeFilterCount > 0
+  const filtersRestored = !!kindFiltersSearch && kindFiltersSearch === restoredKindSearch
 
 
   // Toggle problem filter
@@ -5867,6 +6028,7 @@ export function ResourcesView({
           pinned={pinned}
           togglePin={togglePin}
           isPinned={isPinned}
+          categoryWorkspaces={sidebarCategoryWorkspaces}
           onKindNavigated={() => {
             // After selecting a kind via keyboard, move focus to the table search
             // so the user can immediately filter within the selected kind.
@@ -5875,7 +6037,9 @@ export function ResourcesView({
         />
       )}
 
-      {/* Main Content - Resource Table */}
+      {kindView !== null ? (
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0 bg-theme-surface">{kindView}</div>
+      ) : (
       <div className="flex-1 flex flex-col overflow-hidden min-w-0 bg-theme-surface">
         {/* Toolbar */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-theme-border bg-theme-base shrink-0">
@@ -6115,16 +6279,16 @@ export function ResourcesView({
               <button
                 type="button"
                 onClick={clearAllFilters}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated transition-colors"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs selection selection-text hover:selection-strong transition-colors"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                <span>Clear filters</span>
+                <span>Clear filters ({activeFilterCount})</span>
               </button>
             </Tooltip>
           )}
 
           {/* Column picker */}
-          <div className="relative" ref={columnPickerRef}>
+          <div className="relative flex" ref={columnPickerRef}>
             <Tooltip content="Configure columns">
             <button
               onClick={() => setShowColumnPicker(prev => !prev)}
@@ -6350,6 +6514,21 @@ export function ResourcesView({
           </div>
         )}
 
+        {!isLoading && !isSelectedForbidden && !largeListGuard && filteredResources.length > 0 && (
+          <ActiveFilterBar
+            columnFilters={columnFilters}
+            columnFilterExcludes={columnFilterExcludes}
+            problemFilters={problemFilters}
+            labelSelector={labelSelector}
+            onClearColumn={clearColumnFilter}
+            onClearProblems={() => setProblemFilters([])}
+            onClearLabels={() => setLabelSelector('')}
+            restored={filtersRestored}
+            onClearAll={clearKindFilters}
+            className="shrink-0 px-4 py-1.5 border-b border-theme-border"
+          />
+        )}
+
         {/* Table */}
         <div
           className="flex-1 overflow-auto relative"
@@ -6426,46 +6605,17 @@ export function ResourcesView({
                 </button>
               )}
               {namespaces.length > 0 && <p className="text-sm mt-1 text-theme-text-disabled">Searching in {namespaces.length === 1 ? `namespace: ${namespaces[0]}` : `${namespaces.length} namespaces`}</p>}
-              {/* Show active filters as dismissible badges so user can clear them */}
-              {(() => {
-                const activeColEntries = Object.entries(columnFilters).filter(([, vals]) => vals.length > 0)
-                if (activeColEntries.length === 0 && problemFilters.length === 0 && !labelSelector) return null
-                return (
-                  <div className="flex flex-wrap items-center gap-1.5 mt-3">
-                    {activeColEntries.map(([key, vals]) => (
-                      <button
-                        key={key}
-                        onClick={() => clearColumnFilter(key)}
-                        className="flex items-center gap-1 px-2 py-1 text-xs selection selection-text rounded-md hover:selection-strong transition-colors"
-                      >
-                        <ListFilter className="w-3 h-3" />
-                        <span>{key}: {columnFilterExcludes[key] ? 'not ' : ''}{vals.join(', ')}</span>
-                        <X className="w-3 h-3" />
-                      </button>
-                    ))}
-                    {problemFilters.length > 0 && (
-                      <button
-                        onClick={() => setProblemFilters([])}
-                        className="flex items-center gap-1 px-2 py-1 text-xs bg-red-500/15 text-red-700 dark:text-red-300 rounded-md hover:bg-red-500/25 transition-colors"
-                      >
-                        <AlertTriangle className="w-3 h-3" />
-                        <span>Problems: {problemFilters.join(', ')}</span>
-                        <X className="w-3 h-3" />
-                      </button>
-                    )}
-                    {labelSelector && (
-                      <button
-                        onClick={() => setLabelSelector('')}
-                        className="flex items-center gap-1 px-2 py-1 text-xs bg-green-500/15 text-green-700 dark:text-green-300 rounded-md hover:bg-green-500/25 transition-colors"
-                      >
-                        <Tag className="w-3 h-3" />
-                        <span>{labelSelector}</span>
-                        <X className="w-3 h-3" />
-                      </button>
-                    )}
-                  </div>
-                )
-              })()}
+              <ActiveFilterBar
+                columnFilters={columnFilters}
+                columnFilterExcludes={columnFilterExcludes}
+                problemFilters={problemFilters}
+                labelSelector={labelSelector}
+                onClearColumn={clearColumnFilter}
+                onClearProblems={() => setProblemFilters([])}
+                onClearLabels={() => setLabelSelector('')}
+                restored={filtersRestored}
+                className="mt-3"
+              />
               {hasAnyFilter && (
                 <button
                   type="button"
@@ -6693,6 +6843,22 @@ export function ResourcesView({
                                   <div className="px-3 py-2 text-xs text-theme-text-disabled">No matches</div>
                                 )}
                               </div>
+                              {col.key === 'namespace' && onApplyNamespacesToAllSections && activeFilterValues.length > 0 && !columnFilterExcludes[col.key] && (
+                                <div className="p-1 border-t border-theme-border">
+                                  <button
+                                    onClick={() => {
+                                      setOpenColumnFilter(null)
+                                      // Keep the column filter until the scope change lands; a failed one keeps the user's filter.
+                                      Promise.resolve(onApplyNamespacesToAllSections(activeFilterValues))
+                                        .then(() => clearColumnFilter(col.key), () => {})
+                                    }}
+                                    className="w-full text-left px-2 py-1.5 text-xs rounded text-theme-text-secondary hover:bg-theme-elevated hover:text-theme-text-primary transition-colors"
+                                    title="Scope every section to these namespaces in the header namespace picker"
+                                  >
+                                    Apply to all sections
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           )
                         })()}
@@ -6771,11 +6937,12 @@ export function ResourcesView({
           />
         )}
       </div>
+      )}
     </div>
 
     {/* Bulk delete confirmation */}
     <ConfirmDialog
-      open={showBulkDeleteConfirm}
+      open={tableActive && showBulkDeleteConfirm}
       onClose={() => { setShowBulkDeleteConfirm(false); setBulkForceDelete(false) }}
       onConfirm={() => {
         onBulkDelete?.(checkedBulkItems, {
@@ -6806,7 +6973,7 @@ export function ResourcesView({
       </label>
     </ConfirmDialog>
     <ConfirmDialog
-      open={showBulkRestartConfirm}
+      open={tableActive && showBulkRestartConfirm}
       onClose={() => setShowBulkRestartConfirm(false)}
       onConfirm={() => {
         onBulkRestart?.(checkedBulkItems, {
@@ -6825,7 +6992,7 @@ export function ResourcesView({
       isClosable
     />
     <ConfirmDialog
-      open={showBulkScaleDialog}
+      open={tableActive && showBulkScaleDialog}
       onClose={() => setShowBulkScaleDialog(false)}
       onConfirm={() => {
         onBulkScale?.(checkedBulkItems, bulkScaleReplicas, {
@@ -7231,6 +7398,7 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
     case 'grpcroutes':
     case 'tcproutes':
     case 'tlsroutes':
+    case 'udproutes':
       return <RouteCell resource={resource} column={column} />
     case 'gatewayclasses':
       return <GatewayClassCell resource={resource} column={column} />
@@ -8718,7 +8886,7 @@ function NodeCell({ resource, column, majorityNodeMinorVersion }: { resource: an
           </span>
           {problems.length > 0 && (
             <Tooltip content={problems.join(', ')}>
-              <span className="text-red-400">
+              <span className={SEVERITY_TEXT[healthToSeverity(status.level ?? 'unknown')]}>
                 <AlertTriangle className="w-3.5 h-3.5" />
               </span>
             </Tooltip>
@@ -8731,7 +8899,8 @@ function NodeCell({ resource, column, majorityNodeMinorVersion }: { resource: an
       return <span className="text-sm text-theme-text-secondary">{roles}</span>
     }
     case 'conditions': {
-      const { problems, healthy } = getNodeConditions(resource)
+      const { problems, healthy, readinessLabel } = getNodeConditions(resource)
+      if (problems.length === 0 && !healthy) return <span className="text-theme-text-secondary">{readinessLabel}</span>
       if (healthy) {
         return <span className="text-sm text-green-400">Healthy</span>
       }
@@ -9125,7 +9294,7 @@ function GatewayClassCell({ resource, column }: { resource: any; column: string 
   }
 }
 
-// Shared cell renderer for all Gateway API route types (HTTPRoute, GRPCRoute, TCPRoute, TLSRoute)
+// Shared cell renderer for all Gateway API route types (HTTPRoute, GRPCRoute, TCPRoute, TLSRoute, UDPRoute)
 function RouteCell({ resource, column }: { resource: any; column: string }) {
   switch (column) {
     case 'status': {
@@ -9314,9 +9483,7 @@ function LeaseCell({ resource, column }: { resource: any; column: string }) {
       const elapsed = (Date.now() - new Date(renewTime).getTime()) / 1000
       const duration = resource.spec?.leaseDurationSeconds || 0
       const isStale = duration > 0 && elapsed > duration
-      const diff = Date.now() - new Date(renewTime).getTime()
-      const seconds = Math.floor(diff / 1000)
-      const label = seconds < 60 ? `${seconds}s ago` : seconds < 3600 ? `${Math.floor(seconds / 60)}m ago` : seconds < 86400 ? `${Math.floor(seconds / 3600)}h ago` : `${Math.floor(seconds / 86400)}d ago`
+      const label = formatRelativeAgeTime(renewTime)
       return <span className={clsx('text-sm', isStale ? 'text-red-400' : 'text-green-400')} title={new Date(renewTime).toLocaleString()}>{label}</span>
     }
     default:

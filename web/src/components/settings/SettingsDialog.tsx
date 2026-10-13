@@ -23,7 +23,7 @@ import { AISettingsSection, type AIDraft } from '../diagnose/AISettings'
 import { MyPermissionsContent } from './MyPermissionsDialog'
 import { PrivacySection } from './PrivacySection'
 import { ConfigToggle, SubHeading } from './controls'
-import { useDiagnose } from '../diagnose/DiagnoseContext'
+import { useDiagnose, type DiagnoseSetup } from '../diagnose/DiagnoseContext'
 import { currencyOptionsForValue } from './currency-options'
 import { UpdateNotification } from '../ui/UpdateNotification'
 import {
@@ -856,11 +856,8 @@ export function SettingsDialog({
                 anonymous={argoSectionStatus?.connected && argoSectionStatus.anonymous}
                 connectedAddress={argoSectionStatus?.connected && !argoSectionStatus.anonymous ? argoSectionStatus.address : undefined}
                 active={section === 'argocd'}
-                statusReason={
-                  argoSectionStatus?.configured && !argoSectionStatus.connected
-                    ? argoSectionStatus.reason
-                    : undefined
-                }
+                statusReason={argoSectionStatus?.configured ? argoSectionStatus.reason : undefined}
+                connecting={argoSectionStatus?.connecting}
                 onChangeUrl={(v) => updateConfigField('argoCdUrl', v || undefined)}
                 onChangeInsecureTls={(v) => updateConfigField('argoCdInsecureTls', v || undefined)}
                 onApplied={({ url, insecureTls, tokenSet }) => {
@@ -924,7 +921,13 @@ export function SettingsDialog({
                   )}
                 </div>
               ) : (
-                <AIUnavailableNotice />
+                <AIUnavailableNotice
+                  setupState={diag.setupState}
+                  cliOverride={diag.cliOverride}
+                  checkingAgents={diag.checkingAgents}
+                  agentsCheckFailed={diag.agentsCheckFailed}
+                  recheckAgents={diag.recheckAgents}
+                />
               )}
             </div>
 
@@ -1212,7 +1215,7 @@ function OperatorSettingsSummary({ section, config }: { section: SettingsSection
       break
     case 'argocd':
       rows = [
-        ['Status', argoError ? 'Status unavailable' : !argo ? 'Checking…' : argo.connected ? 'Connected' : 'Not connected'],
+        ['Status', argoError ? 'Status unavailable' : !argo ? 'Checking…' : argo.connected ? 'Connected' : argo.connecting ? 'Connecting…' : 'Not connected'],
         ['Endpoint', argo?.address || c.argoCdUrl || 'Auto-discovery'],
         ['Token', config.argoCdTokenSet ? 'Configured' : 'None configured'],
         ['TLS verification', c.argoCdInsecureTls ? 'Disabled' : 'Enabled'],
@@ -1311,7 +1314,7 @@ function OverviewPanel({ active, onNavigate }: { active: boolean; onNavigate: (s
       : cost?.reason === 'access_denied'
         ? 'Your current permissions do not allow cost data.'
         : cost?.reason
-          ? costIntegrationUnavailableMessage(cost.reason) ?? 'The active cost source query failed.'
+          ? costIntegrationUnavailableMessage(cost.reason) ?? 'The active cost source could not provide data.'
           : undefined
 
   const rows: OverviewRow[] = [
@@ -1341,9 +1344,9 @@ function OverviewPanel({ active, onNavigate }: { active: boolean; onNavigate: (s
     },
     {
       id: 'argocd', icon: GitBranch, label: 'Argo CD',
-      tone: argo?.connected ? 'ok' : argo?.configured || argo?.reason ? 'warn' : 'off',
-      value: argo?.connected ? (argo.anonymous ? 'Connected · no token needed' : 'Connected') : 'Not connected',
-      detail: argo?.connected ? argo.address : argo?.reason ? 'Open Argo CD for connection details.' : undefined,
+      tone: argo?.connected ? (argo.reason ? 'warn' : 'ok') : argo?.connecting ? 'unknown' : argo?.configured || argo?.reason ? 'warn' : 'off',
+      value: argo?.connected ? (argo.anonymous ? 'Connected · no token needed' : 'Connected') : argo?.connecting ? 'Connecting…' : 'Not connected',
+      detail: argo?.reason ? 'Open Argo CD for connection details.' : argo?.connected ? argo.address : undefined,
     },
     {
       id: 'advanced', icon: Zap, label: 'MCP',
@@ -1354,8 +1357,7 @@ function OverviewPanel({ active, onNavigate }: { active: boolean; onNavigate: (s
     },
     {
       id: 'ai', icon: Sparkles, label: 'AI investigations',
-      tone: aiAvailable ? 'ok' : 'off',
-      value: aiAvailable ? 'Ready' : 'No agent CLI',
+      ...aiOverviewStatus(aiAvailable, diag.setupState, diag.cliOverride, diag.agentsCheckFailed),
       detail: aiAvailable ? agentLabel : undefined,
     },
   ]
@@ -1408,6 +1410,33 @@ function OverviewPanel({ active, onNavigate }: { active: boolean; onNavigate: (s
   )
 }
 
+// aiOverviewStatus says which reason applies, for the same reason
+// AIUnavailableNotice does: "No agent CLI" is a claim about the user's machine,
+// and it is false when RADAR_AI_CLI_BIN is what's broken, when an agent is
+// reported but off, when this deployment can't run investigations at all, or
+// when the agents probe hasn't answered.
+function aiOverviewStatus(
+  aiAvailable: boolean,
+  setupState: DiagnoseSetup,
+  cliOverride: boolean,
+  checkFailed: boolean,
+): Pick<OverviewRow, 'tone' | 'value'> {
+  if (aiAvailable) return { tone: 'ok', value: 'Ready' }
+  if (cliOverride && (setupState === 'needs-install' || setupState === 'needs-restart')) {
+    return { tone: 'warn', value: "RADAR_AI_CLI_BIN can't be run" }
+  }
+  switch (setupState) {
+    case 'unknown':
+      return checkFailed ? { tone: 'warn', value: "Couldn't check" } : { tone: 'unknown', value: 'Checking…' }
+    case 'needs-restart':
+      return { tone: 'warn', value: 'Not available right now' }
+    case 'off':
+      return { tone: 'off', value: 'Not available in this deployment' }
+    default:
+      return { tone: 'off', value: 'No agent CLI' }
+  }
+}
+
 function OverviewStatus({ tone }: { tone: OverviewTone }) {
   const cls =
     tone === 'ok' ? 'bg-green-500'
@@ -1417,23 +1446,94 @@ function OverviewStatus({ tone }: { tone: OverviewTone }) {
   return <span className={clsx('w-2 h-2 rounded-full shrink-0', cls)} />
 }
 
-// AIUnavailableNotice is the body of the AI investigations tab when no supported agent
-// CLI is installed — the heading/description are provided by the tab itself, so
-// this is just the enable explainer (keeping the feature discoverable to whoever
-// would set it up).
-function AIUnavailableNotice() {
-  return (
+// AIUnavailableNotice is the body of the AI investigations tab when the agent,
+// model and effort controls have nothing to configure. The tab supplies the
+// heading, so this is just the explainer.
+//
+// It must say WHICH of the reasons applies. "No supported agent CLI found" is a
+// claim about the user's machine, and when a CLI was found but investigations
+// didn't start it is false.
+function AIUnavailableNotice({
+  setupState,
+  cliOverride,
+  checkingAgents,
+  agentsCheckFailed,
+  recheckAgents,
+}: {
+  setupState: DiagnoseSetup
+  cliOverride: boolean
+  checkingAgents: boolean
+  agentsCheckFailed: boolean
+  recheckAgents: () => Promise<void>
+}) {
+  // The state the tab was in when a check started. "Still…" is only true when
+  // the finished check left it there.
+  const [checkedState, setCheckedState] = useState<DiagnoseSetup | null>(null)
+  const unchanged = checkedState === setupState && !checkingAgents && !agentsCheckFailed
+  const checkAgain = (
+    <button
+      type="button"
+      disabled={checkingAgents}
+      onClick={() => void recheckAgents().then(() => setCheckedState(setupState))}
+      className="mt-3 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium btn-brand rounded-md disabled:opacity-50"
+    >
+      <RotateCw className={clsx('w-3.5 h-3.5', checkingAgents && 'animate-spin')} />
+      {checkingAgents ? 'Checking…' : 'Check again'}
+    </button>
+  )
+  const panel = (title: string, body?: ReactNode, action?: ReactNode) => (
     <div className="rounded-md border border-theme-border bg-theme-elevated/50 p-3">
-      <p className="text-sm font-medium text-theme-text-primary">No supported agent CLI found</p>
-      <p className="mt-1 text-xs text-theme-text-tertiary">
-        Install <span className="text-theme-text-secondary">Claude Code</span>,{' '}
-        <span className="text-theme-text-secondary">Codex</span>,{' '}
-        <span className="text-theme-text-secondary">Cursor</span> (
-        <span className="font-mono">cursor-agent</span>), or{' '}
-        <span className="text-theme-text-secondary">OpenCode</span>, then restart Radar — this tab
-        will show the agent, model, and effort controls.
-      </p>
+      <p className="text-sm font-medium text-theme-text-primary">{title}</p>
+      {body && <p className="mt-1 text-xs text-theme-text-tertiary">{body}</p>}
+      {action}
     </div>
+  )
+  if (setupState === 'unknown') {
+    // The agent probe hasn't answered. Saying anything about the CLI or the
+    // deployment here would be a guess.
+    return agentsCheckFailed && !checkingAgents
+      ? panel("Couldn't check for agent CLIs", 'Try again.', checkAgain)
+      : panel('Checking…')
+  }
+  if (setupState === 'off') {
+    return panel(
+      'Not available in this deployment',
+      'They need Radar running on your own computer, with MCP on and sign-in off.',
+    )
+  }
+  if (cliOverride) {
+    return panel(
+      "Radar can't run your RADAR_AI_CLI_BIN",
+      <>
+        Fix the path, or remove it and restart Radar.
+        {unchanged && " Still can't run it."}
+      </>,
+      checkAgain,
+    )
+  }
+  if (setupState === 'needs-restart') {
+    return panel(
+      "AI investigations aren't available right now",
+      <>
+        {agentsCheckFailed && !checkingAgents ? "Couldn't check. Try again." : 'Try again in a moment.'}
+        {unchanged && ' Still not available.'}
+      </>,
+      checkAgain,
+    )
+  }
+  return panel(
+    'No supported agent CLI found',
+    <>
+      Install <span className="text-theme-text-secondary">Claude Code</span>,{' '}
+      <span className="text-theme-text-secondary">Codex</span>,{' '}
+      <span className="text-theme-text-secondary">Cursor</span> (
+      <span className="font-mono">cursor-agent</span>), or{' '}
+      <span className="text-theme-text-secondary">OpenCode</span>, and this tab will show the
+      agent, model, and effort controls.
+      {agentsCheckFailed && !checkingAgents && " Couldn't check. Try again."}
+      {unchanged && ' Still not found.'}
+    </>,
+    checkAgain,
   )
 }
 
@@ -2125,6 +2225,7 @@ function ArgoCDConfigField({
   envError,
   cliSession,
   statusReason,
+  connecting,
   anonymous,
   connectedAddress,
   active,
@@ -2139,6 +2240,7 @@ function ArgoCDConfigField({
   envError?: string
   cliSession?: { server: string; user: string; insecure?: boolean }
   statusReason?: string
+  connecting?: boolean
   anonymous?: boolean
   connectedAddress?: string
   active?: boolean
@@ -2147,7 +2249,7 @@ function ArgoCDConfigField({
   onApplied?: (v: { url: string; insecureTls: boolean; tokenSet: boolean }) => void
 }) {
   if (envManaged) {
-    return <ArgoCDEnvManagedField url={url} insecureTls={insecureTls} envError={envError} connectedAddress={connectedAddress} statusReason={statusReason} />
+    return <ArgoCDEnvManagedField url={url} insecureTls={insecureTls} envError={envError} connectedAddress={connectedAddress} statusReason={statusReason} connecting={connecting} />
   }
   return (
     <ArgoCDEditableField
@@ -2156,6 +2258,7 @@ function ArgoCDConfigField({
       tokenSet={tokenSet}
       cliSession={cliSession}
       statusReason={statusReason}
+      connecting={connecting}
       anonymous={anonymous}
       connectedAddress={connectedAddress}
       active={active}
@@ -2176,6 +2279,7 @@ function ArgoCDEnvManagedField({
   envError,
   connectedAddress,
   statusReason,
+  connecting,
 }: {
   url: string
   insecureTls: boolean
@@ -2185,6 +2289,7 @@ function ArgoCDEnvManagedField({
   // so this is the one thing on it that can change after deploy.
   connectedAddress?: string
   statusReason?: string
+  connecting?: boolean
 }) {
   if (envError) {
     return (
@@ -2241,10 +2346,15 @@ function ArgoCDEnvManagedField({
             <dt className="w-24 shrink-0 text-theme-text-tertiary">Status</dt>
             <dd className="min-w-0 truncate text-theme-text-secondary">
               {connectedAddress ? (
-                <span className="inline-flex items-center gap-1">
-                  <Check className="w-3 h-3 shrink-0 text-green-600 dark:text-green-400/80" />
-                  Connected at {connectedAddress}
-                </span>
+                <>
+                  <span className="inline-flex items-center gap-1">
+                    <Check className="w-3 h-3 shrink-0 text-green-600 dark:text-green-400/80" />
+                    Connected at {connectedAddress}
+                  </span>
+                  {statusReason && <span className="block whitespace-normal text-warning-text">{statusReason}</span>}
+                </>
+              ) : connecting ? (
+                'Connecting…'
               ) : statusReason ? (
                 <span className="text-warning-text">Not connected — {statusReason}</span>
               ) : (
@@ -2274,6 +2384,7 @@ function ArgoCDEditableField({
   tokenSet,
   cliSession,
   statusReason,
+  connecting: serverConnecting,
   anonymous,
   connectedAddress,
   active,
@@ -2286,6 +2397,7 @@ function ArgoCDEditableField({
   tokenSet: boolean
   cliSession?: { server: string; user: string; insecure?: boolean }
   statusReason?: string
+  connecting?: boolean
   anonymous?: boolean
   connectedAddress?: string
   active?: boolean
@@ -2412,6 +2524,10 @@ function ArgoCDEditableField({
             <>Connected to Argo CD at {connectedAddress}.</>
           )}
         </p>
+      )}
+
+      {serverConnecting && state.status === 'idle' && !anonymous && !connectedAddress && (
+        <p className="mb-3 text-xs text-theme-text-secondary">Connecting to Argo CD…</p>
       )}
 
       {statusReason && state.status !== 'connected' && (

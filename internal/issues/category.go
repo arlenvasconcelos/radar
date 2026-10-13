@@ -110,7 +110,7 @@ func Classify(in classifyInput) issuesapi.Category {
 			switch in.Kind {
 			case "GatewayClass", "Gateway":
 				return issuesapi.CategoryGatewayNotReady
-			case "HTTPRoute", "GRPCRoute", "TCPRoute", "TLSRoute":
+			case "HTTPRoute", "GRPCRoute", "TCPRoute", "TLSRoute", "UDPRoute":
 				return issuesapi.CategoryGatewayRouteInvalid
 			}
 			return issuesapi.CategoryOperatorConditionFail
@@ -278,10 +278,12 @@ func classifyProblem(in classifyInput) issuesapi.Category {
 
 	case "Node":
 		switch in.Reason {
-		case "NotReady", "MemoryPressure", "DiskPressure", "PIDPressure":
+		case "NotReady", "MemoryPressure", "DiskPressure", "PIDPressure", "NetworkUnavailable":
 			return issuesapi.CategoryNodeNotReady
 		}
-		// "Cordoned" is an intentional admin action, not a failure → unknown.
+		if in.Reason == "Removal delayed" {
+			return issuesapi.CategoryTerminationStuck
+		}
 		return issuesapi.CategoryUnknown
 
 	case "PersistentVolumeClaim":

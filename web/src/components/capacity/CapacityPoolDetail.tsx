@@ -19,59 +19,10 @@ import {
 } from "../../api/client";
 import type { SelectedResource } from "../../types";
 import { refToSelectedResource } from "../../utils/navigation";
-import {
-  ActualUsageDetail,
-  ActualUsageInline,
-  CapacityFreshness,
-  CapacityIssueEvidence,
-  CertaintyGlyph,
-  ClaimStageBadge,
-  conditionSummary,
-  ConditionBadge,
-  coverageHasObservations,
-  coverageIsDenied,
-  coverageIsLowerBound,
-  coverageMessage,
-  DeniedBadge,
-  EmptyState,
-  errorMessage,
-  formatQuantity,
-  formatTaint,
-  humanizeCode,
-  identityKey,
-  identityToSelectedResource,
-  InlineEmpty,
-  integrationBlock,
-  KeyValueRows,
-  LinkButton,
-  memberCoverageSource,
-  MiniCount,
-  NodeReadyBadge,
-  Notice,
-  observationTitle,
-  PoolReadyBadge,
-  POOL_SECTIONS,
-  PressureDetail,
-  quantityResourceRank,
-  QuantityInline,
-  RefreshError,
-  resourceLabel,
-  ResourceLink,
-  ROW_HOVER,
-  ScopeBadges,
-  ScrollableContent,
-  SectionCard,
-  TABLE_HEAD,
-  TABLE_WRAP,
-  TBODY,
-  TD,
-  TH,
-  TokenGroup,
-  useCapacityCursorRecovery,
-  useCapacityPagination,
-  type CapacityConnectionState,
-  type PoolSection,
-} from "./shared";
+import { ActualUsageDetail, ActualUsageInline, CapacityFreshness, CapacityIssueEvidence, ClaimStageBadge, conditionSummary, ConditionBadge, coverageHasObservations, coverageIsDenied, coverageIsLowerBound, coverageMessage, DeniedBadge, errorMessage, formatQuantity, formatTaint, humanizeCode, identityKey, identityToSelectedResource, InlineEmpty, integrationBlock, KeyValueRows, LinkButton, memberCoverageSource, MiniCount, NodeReadyBadge, observationTitle, PoolReadyBadge, POOL_SECTIONS, PressureDetail, quantityResourceRank, QuantityInline, RefreshError, resourceLabel, ResourceLink, ScopeBadges, ScrollableContent, SectionCard, TokenGroup, useCapacityCursorRecovery, useCapacityPagination, type CapacityConnectionState, type PoolSection } from "./shared";
+import { CertaintyGlyph } from "@skyhook-io/k8s-ui";
+import { Notice, ScreenEmptyState } from "../workspace/layout";
+import { ROW_HOVER, TABLE_HEAD, TABLE_WRAP, TBODY, TD, TH } from "../workspace/table";
 
 export function CapacityPoolDetail({
   name,
@@ -123,7 +74,7 @@ export function CapacityPoolDetail({
   const response = query.data;
   if (response && !coverageHasObservations(response.coverage.nodePools)) {
     return (
-      <EmptyState
+      <ScreenEmptyState
         icon={Layers3}
         title="NodePool inventory unavailable"
         detail={coverageMessage(
@@ -136,7 +87,7 @@ export function CapacityPoolDetail({
   const pool = response?.pool;
   if (!response || !pool) {
     return (
-      <EmptyState
+      <ScreenEmptyState
         icon={CircleHelp}
         title="NodePool unavailable"
         detail="The Capacity API did not return an observation for this NodePool."
@@ -676,12 +627,23 @@ function LifecycleGrid({
           Nodes
         </div>
         {pool.nodes ? (
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <MiniCount label="Ready" value={pool.nodes.ready} />
-            <MiniCount label="Not ready" value={pool.nodes.notReady} />
-            <MiniCount label="Cordoned" value={pool.nodes.cordoned} />
-            <MiniCount label="Terminating" value={pool.nodes.terminating} />
-          </div>
+          <>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <MiniCount label="Ready" value={pool.nodes.operational ? pool.nodes.operational.ready : pool.nodes.ready} />
+              <MiniCount label="Not ready" value={pool.nodes.operational ? pool.nodes.operational.notReady : pool.nodes.notReady} />
+              <MiniCount label="Cordoned" value={pool.nodes.operational ? pool.nodes.operational.cordoned : pool.nodes.cordoned} />
+              {pool.nodes.operational ? (
+                <MiniCount label="Removing" value={pool.nodes.operational.removing} />
+              ) : (
+                <MiniCount label="Terminating" value={pool.nodes.terminating} />
+              )}
+            </div>
+            {pool.nodes.operational ? pool.nodes.operational.removingUnhealthy > 0 && (
+              <p className="mt-2 text-xs text-theme-text-secondary">{pool.nodes.operational.removingUnhealthy} removing {pool.nodes.operational.removingUnhealthy === 1 ? "node has" : "nodes have"} critical pressure or prolonged removal.</p>
+            ) : (
+              <p className="mt-2 text-xs text-theme-text-secondary">Readiness counts only; removal status is unavailable from this Radar.</p>
+            )}
+          </>
         ) : (
           <p className="text-sm text-theme-text-secondary">
             {coverageMessage(pool.coverage.nodes, "Node lifecycle")}
@@ -1353,7 +1315,7 @@ function PoolMembersTab({
                 />
               </td>
               <td className={TD}>
-                <NodeReadyBadge ready={node.ready} cordoned={node.cordoned} />
+                <NodeReadyBadge ready={node.ready} cordoned={node.cordoned} lifecycle={node.lifecycle} />
               </td>
               <td className={`${TD} font-mono text-xs`}>
                 {node.instanceType ?? "—"}

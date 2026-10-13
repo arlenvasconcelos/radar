@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/skyhook-io/radar/pkg/resourceid"
+	"github.com/skyhook-io/radar/pkg/timeutil"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	corev1 "k8s.io/api/core/v1"
@@ -131,6 +133,7 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 			"Kubernetes-shaped spec/status/metadata plus resourceContext when available " +
 			"(relationships, refs, controller observations, issue/audit/policy rollups; " +
 			"use include=issues for bounded failures and diagnostic facts, or diagnose for a bundle; " +
+			"for a Node's current read-only pod/PDB drain estimate use include=drain-plan; " +
 			"audit findings are static posture and remediation priority, not evidence " +
 			"of an active outage; auditSummary.highestSeverity uses the Checks ladder " +
 			"(critical|high|medium|low; current built-ins are high|medium), separate " +
@@ -284,7 +287,8 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 			"capabilities, hostPath/hostNetwork, secret-in-ConfigMap), Reliability (single " +
 			"replicas, missing PDB, missing TopologySpread, podHARisk, Service/Ingress " +
 			"without matching backends, stuckTerminating, deprecatedAPIVersion), and " +
-			"Efficiency (missing resource requests/limits, orphaned ConfigMaps/Secrets). " +
+			"Efficiency (missing resource requests/limits, orphaned ConfigMaps/Secrets, " +
+			"stale PVCs/PVs). " +
 			"Each finding has remediation guidance. " +
 			"INDEPENDENT of operational health: a healthy pod can have many audit findings " +
 			"(badly configured but working), a crashing pod can have zero (cleanly " +
@@ -385,9 +389,12 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 			"grouped critical/warning failures across workloads, Jobs/CronJobs, HPAs, " +
 			"PVCs, Nodes, references, pod startup, native Helm, and False controller conditions. " +
 			"Use CEL `filter` for source/taxonomy slices; no source parameter. " +
+			"`unchecked_sources` lists sources Radar couldn't check, so their issues may be " +
+			"missing; don't call them healthy. `helm` means failed or stuck Helm releases. " +
 			"`diagnostic_context.role` marks roots, rollups, symptoms, or context; " +
 			"`related_issues[].count` is the root's affected subset, not the linked issue total. " +
 			"Confidence: `high` declared edge, `medium` lead to verify, `low` heuristic. " +
+			"`conditional_cleanup` is never the next step: propose it only after the user confirms its `condition`, per `agent_guidance`. " +
 			"`incident_parent` is one unambiguous best root; absence may mean competing roots. " +
 			"When present, `timing_summary` reconciles timing fields whose scopes differ; otherwise " +
 			"read `first_seen` as 'active at least since' and `issue_timing` as timing evidence, " +
@@ -661,7 +668,7 @@ type getResourceInput struct {
 	Group     string `json:"group,omitempty" jsonschema:"API group when the kind is ambiguous (e.g. cluster.x-k8s.io for CAPI Cluster vs CNPG Cluster)"`
 	Namespace string `json:"namespace,omitempty" jsonschema:"namespace for namespaced kinds. Leave empty for cluster-scoped kinds (Node, ClusterRole, ClusterRoleBinding, IngressClass, PriorityClass, StorageClass, etc.)."`
 	Name      string `json:"name" jsonschema:"resource name"`
-	Include   string `json:"include,omitempty" jsonschema:"optional supplemental data after narrowing to this object: events, metrics, changes, revisions, issues. Comma-separated. include=issues returns up to 3 relatedIssues with diagnostic_context and total/truncated indicators; pod/template differences are context, not proof of admission mutation. Separate from context. include=revisions lists rollback targets for Deployment/StatefulSet/DaemonSet/Rollout (number, image, isCurrent; Rollouts also mark isStable, the revision an abort reverts to) — fetch before manage_workload rollback. For logs use get_pod_logs / get_workload_logs (container, previous, since, grep) or diagnose for the full workload bundle."`
+	Include   string `json:"include,omitempty" jsonschema:"optional supplemental data after narrowing to this object: events, metrics, changes, revisions, issues, drain-plan. Comma-separated. drain-plan is Node-only: a read-only current pod/PDB estimate with explicit options, up to 100 pods and total/truncated indicators; not controller eviction history. include=issues returns up to 3 relatedIssues with diagnostic_context and total/truncated indicators; pod/template differences are context, not proof of admission mutation. Separate from context. include=revisions lists rollback targets for Deployment/StatefulSet/DaemonSet/Rollout (number, image, isCurrent; Rollouts also mark isStable, the revision an abort reverts to) — fetch before manage_workload rollback. For logs use get_pod_logs / get_workload_logs (container, previous, since, grep) or diagnose for the full workload bundle."`
 	Context   string `json:"context,omitempty" jsonschema:"resourceContext tier: 'basic' (default; attaches relationships and available resource-specific summaries) or 'none' (bare minified resource). issueSummary uses live-operational critical|warning; auditSummary uses the Checks posture-remediation ladder critical|high|medium|low (current built-ins high|medium) and is not evidence of an active outage. For full diagnostic tier with logs + events bundled, use the diagnose tool for supported kinds."`
 }
 
@@ -963,7 +970,7 @@ func handleListResources(ctx context.Context, req *mcp.CallToolRequest, input li
 		if clusterScoped {
 			idxNamespaces = nil
 		}
-		if builder := newResourceSummaryContextBuilder(idxNamespaces); builder != nil {
+		if builder := newResourceSummaryContextBuilder(ctx, idxNamespaces); builder != nil {
 			summarycontext.AttachToTypedList(results, objs, builder)
 		}
 	}
@@ -1003,7 +1010,7 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 		if clusterScoped {
 			idxNamespaces = nil
 		}
-		if builder := newResourceSummaryContextBuilder(idxNamespaces); builder != nil {
+		if builder := newResourceSummaryContextBuilder(ctx, idxNamespaces); builder != nil {
 			summarycontext.AttachToUnstructuredList(allItems, rawItems, builder)
 		}
 	}
@@ -1297,6 +1304,37 @@ func buildMCPResourceContextWithStaleChecks(ctx context.Context, obj runtime.Obj
 // the result map based on the includes set. relationship synthesis moved to
 // resourceContext via Build and is no longer routed through this function.
 func attachResourceExtras(ctx context.Context, cache *k8s.ResourceCache, result map[string]any, includes map[string]bool, kind, group, namespace, name string) {
+	if includes["drain-plan"] {
+		if normalizeDisplayKind(kind) != "Node" || group != "" {
+			result["drainPlanError"] = "drain-plan is available only for core Nodes"
+		} else if client := k8s.ClientFromContext(ctx); client == nil {
+			result["drainPlanError"] = "cluster client unavailable"
+		} else if plan, err := k8s.PlanNodeDrainWithClient(ctx, name, k8s.DrainOptions{IgnoreDaemonSets: true, DeleteEmptyDirData: true, Force: true}, client); err != nil {
+			log.Printf("[mcp] Failed to plan drain for node/%s: %v", name, err)
+			result["drainPlanError"] = err.Error()
+		} else {
+			const podLimit = 100
+			result["drainPlanTotalPods"] = len(plan.Pods)
+			result["drainPlanPodsTruncated"] = len(plan.Pods) > podLimit
+			if len(plan.Pods) > podLimit {
+				priority := func(pod k8score.PodDrainDecision) int {
+					if pod.Outcome == k8score.DrainOutcomeMayBlock {
+						return 0
+					}
+					if pod.Outcome == k8score.DrainOutcomeSkip {
+						return 3
+					}
+					if pod.Terminating {
+						return 2
+					}
+					return 1
+				}
+				sort.SliceStable(plan.Pods, func(i, j int) bool { return priority(plan.Pods[i]) < priority(plan.Pods[j]) })
+				plan.Pods = plan.Pods[:podLimit]
+			}
+			result["drainPlan"] = plan
+		}
+	}
 	if includes["events"] {
 		if eventLister := cache.Events(); eventLister != nil {
 			var events []*corev1.Event
@@ -1371,14 +1409,14 @@ func attachResourceExtras(ctx context.Context, cache *k8s.ResourceCache, result 
 	var unknown []string
 	for tok := range includes {
 		switch tok {
-		case "events", "metrics", "logs", "changes", "revisions", "issues":
+		case "events", "metrics", "logs", "changes", "revisions", "issues", "drain-plan":
 		default:
 			unknown = append(unknown, tok)
 		}
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
-		result["includeError"] = fmt.Sprintf("unknown include value(s): %s (valid: events, metrics, changes, revisions, issues)", strings.Join(unknown, ", "))
+		result["includeError"] = fmt.Sprintf("unknown include value(s): %s (valid: events, metrics, changes, revisions, issues, drain-plan)", strings.Join(unknown, ", "))
 	}
 
 }
@@ -2037,6 +2075,9 @@ func handleGetPodLogs(ctx context.Context, req *mcp.CallToolRequest, input podLo
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to read logs: %w", err)
 	}
+	if k8score.IsLogsUnavailableNotice(string(data)) {
+		return nil, nil, fmt.Errorf("logs for %s/%s: %w. The node usually answers this way after the container or its log file has been removed; it can also mean its container runtime was briefly unreachable", input.Namespace, input.Name, k8score.ErrLogsUnavailable)
+	}
 
 	// Warning and narrowing heuristics operate on the fetched stream,
 	// independently of response filtering.
@@ -2256,8 +2297,11 @@ type mcpDashboard struct {
 	TotalProblems      int              `json:"totalProblems"`                // count before the dashboard cap was applied
 	ProblemsBySeverity map[string]int   `json:"problemsBySeverity,omitempty"` // critical/high/medium/warning counts across the full set
 	RecentChanges      []mcpChange      `json:"recentChanges,omitempty"`
-	WarningEvents      int              `json:"warningEvents"`
-	WarningGroups      []mcpWarning     `json:"warningGroups"`
+	// RecentChangesError is set when the changes could not be read, so a
+	// missing recentChanges is not taken for "nothing changed".
+	RecentChangesError string       `json:"recentChangesError,omitempty"`
+	WarningEvents      int          `json:"warningEvents"`
+	WarningGroups      []mcpWarning `json:"warningGroups"`
 	// TotalWarningGroups counts distinct deduped groups before the
 	// dashboardWarningGroupCap; WarningGroupsTruncated flags that groups
 	// beyond the cap exist, so the consumer knows to narrow via get_events
@@ -2287,12 +2331,7 @@ type mcpClusterInfo struct {
 	Version  string `json:"version"`
 }
 
-type mcpNodeSummary struct {
-	Total    int `json:"total"`
-	Ready    int `json:"ready"`
-	NotReady int `json:"notReady"`
-	Cordoned int `json:"cordoned"`
-}
+type mcpNodeSummary = health.NodeFleetCounts
 
 type mcpHealthSummary struct {
 	HealthyPods int `json:"healthyPods"`
@@ -2314,6 +2353,10 @@ type mcpProblem struct {
 	// ageSeconds is for sort tiebreak; not serialized so it doesn't widen
 	// the wire shape callers depend on.
 	ageSeconds int64 `json:"-"`
+	// requiredReads are the detection's evidence, checked like an issue's;
+	// degraded is what a caller who can't make them sees instead.
+	requiredReads []issues.EvidenceRead
+	degraded      *issues.DegradedFinding
 }
 
 // problemSeverityRank maps the Problem.Severity vocabulary onto sort order.
@@ -2502,7 +2545,7 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 					Name:                 pod.Name,
 					Severity:             severity,
 					Reason:               health.PodProblemReason(pod, now),
-					Age:                  k8s.FormatAge(ageDur),
+					Age:                  timeutil.FormatAgeShort(ageDur),
 					RestartCount:         restarts,
 					LastTerminatedReason: lastTermReason,
 					ageSeconds:           int64(ageDur.Seconds()),
@@ -2536,6 +2579,8 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 			RestartCount:         p.RestartCount,
 			LastTerminatedReason: p.LastTerminatedReason,
 			ageSeconds:           p.AgeSeconds,
+			requiredReads:        p.RequiredReads,
+			degraded:             p.Degraded,
 		})
 	}
 
@@ -2585,15 +2630,17 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 			continue
 		}
 		allProblems = append(allProblems, mcpProblem{
-			Kind:       p.Kind,
-			Namespace:  p.Namespace,
-			Name:       p.Name,
-			Group:      p.Group,
-			Severity:   p.Severity,
-			Reason:     p.Reason,
-			Message:    p.Message,
-			Age:        p.Age,
-			ageSeconds: p.AgeSeconds,
+			Kind:          p.Kind,
+			Namespace:     p.Namespace,
+			Name:          p.Name,
+			Group:         p.Group,
+			Severity:      p.Severity,
+			Reason:        p.Reason,
+			Message:       p.Message,
+			Age:           p.Age,
+			ageSeconds:    p.AgeSeconds,
+			requiredReads: p.RequiredReads,
+			degraded:      p.Degraded,
 		})
 	}
 
@@ -2616,6 +2663,28 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 	// Without this, the cap drops critical missing-refs in favour of
 	// medium-severity workload problems that happened to be appended
 	// earlier — the agent gets a non-representative subset.
+	// Problems follow the issues' read rules: a cluster-scoped problem needs
+	// list on its kind, and a Secret's own problem and one drawn from Secrets
+	// need Secret access.
+	canReadClusterScoped := issueClusterScopedAccess(ctx)
+	canReadSubject, canReadEvidence := issueSubjectAccess(ctx), issueEvidenceAccess(ctx)
+	readable := allProblems[:0]
+	for _, p := range allProblems {
+		if p.Namespace == "" && !canReadClusterScoped(p.Kind, p.Group) {
+			continue
+		}
+		if p.Namespace != "" && !canReadSubject(issues.Ref{Group: p.Group, Kind: p.Kind, Namespace: p.Namespace, Name: p.Name}) {
+			continue
+		}
+		switch issues.ViewEvidence(p.requiredReads, p.degraded, canReadEvidence, false) {
+		case issues.EvidenceWithheld:
+			continue
+		case issues.EvidenceDegraded:
+			p.Message = p.degraded.Message
+		}
+		readable = append(readable, p)
+	}
+	allProblems = readable
 	sortMCPDashboardProblems(allProblems)
 	d.TotalProblems = len(allProblems)
 	d.ProblemsBySeverity = countBySeverity(allProblems)
@@ -2641,20 +2710,7 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 		if nodeLister := cache.Nodes(); nodeLister != nil {
 			nodes, _ := nodeLister.List(labels.Everything())
 			d.ResourceCounts["nodes"] = len(nodes)
-			d.Nodes.Total = len(nodes)
-
-			for _, node := range nodes {
-				h := health.Node(node)
-				if h.Ready {
-					if h.Unschedulable {
-						d.Nodes.Cordoned++
-					} else {
-						d.Nodes.Ready++
-					}
-				} else {
-					d.Nodes.NotReady++
-				}
-			}
+			d.Nodes = health.CountNodeFleet(nodes, time.Now())
 
 			// Version skew
 			if skew := k8s.DetectVersionSkew(nodes); skew != nil {
@@ -2727,13 +2783,15 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 		if namespaces != nil && len(namespaces) == 0 {
 			// No namespace access: leave the zero-value Helm summary.
 		} else {
-			releases, err := helmClient.ListReleasesAcrossNamespaces(namespaces, username, groups)
+			releases, err := helmClient.ListReleasesAcrossNamespaces(ctx, namespaces, username, groups)
 			if err != nil {
 				// Not fatal for the dashboard — a viewer with no helm access
 				// still sees everything else. Surface to LLM consumers via
 				// Unavailable so they don't confidently report "Total=0
 				// releases" when in fact the read failed.
-				log.Printf("[mcp] Dashboard helm list failed: %v", err)
+				if !errors.Is(ctx.Err(), context.Canceled) {
+					log.Printf("[mcp] Dashboard helm list failed: %v", err)
+				}
 				d.HelmReleases.Unavailable = true
 				if helm.IsForbiddenError(err) {
 					d.HelmReleases.UnavailableReason = "RBAC denied: caller cannot list Helm release secrets in this scope."
@@ -2858,7 +2916,11 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 	}
 
 	// Correlate recent changes with problems — only show changes for broken resources
-	if store := timeline.GetStore(); store != nil && len(d.Problems) > 0 {
+	store := timeline.GetStore()
+	if store == nil && len(d.Problems) > 0 {
+		d.RecentChangesError = timeline.StoreMissingError().Error()
+	}
+	if store != nil && len(d.Problems) > 0 {
 		problemKeys := make(map[string]bool, len(d.Problems))
 		for _, p := range d.Problems {
 			problemKeys[fmt.Sprintf("%s/%s/%s", p.Kind, p.Namespace, p.Name)] = true
@@ -2876,6 +2938,7 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 		changes, err := store.Query(ctx, queryOpts)
 		if err != nil {
 			log.Printf("[mcp] Failed to query timeline for dashboard changes: %v", err)
+			d.RecentChangesError = err.Error()
 		}
 		if err == nil {
 			// Per-kind RBAC: correlation gates by problem match + namespace, not
@@ -3012,7 +3075,9 @@ func handleIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, input issuesI
 		CanReadClusterScoped: func(kind, group string) bool {
 			return canReadClusterScopedKind(ctx, kind, group, "list")
 		},
-		CanReadRelated: issueRelatedResourceAccess(ctx),
+		CanReadRelated:  issueRelatedResourceAccess(ctx),
+		CanReadSubject:  issueSubjectAccess(ctx),
+		CanReadEvidence: issueEvidenceAccess(ctx),
 	}
 	if input.Filter != "" {
 		f, err := filter.CachedIssueFilter(input.Filter)
@@ -3025,21 +3090,28 @@ func handleIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, input issuesI
 	composeFilters.Limit = issues.NoLimit
 	composeFilters.Filter = nil
 	out, stats := issues.ComposeWithStats(provider, composeFilters)
-	out, stats = issues.MergeExternalIssues(out, stats, filters, nativeHelmIssuesForContext(ctx, allowedNamespaces, filters))
+	helmIssues, helmUnchecked := nativeHelmIssuesForContext(ctx, allowedNamespaces, filters)
+	out, stats = issues.MergeExternalIssues(out, stats, filters, helmIssues)
 	// Shared base response shape (issues.ListResponse), then MCP-specific
 	// enrichments below.
 	resp := issues.NewListResponse(out, stats)
+	if helmUnchecked {
+		resp.UncheckedSources = []issuesapi.UncheckedSource{{Source: issuesapi.UncheckedSourceHelm, Reason: issuesapi.UncheckedReasonReadFailed}}
+	}
 	resp.ClusterContext = provider.ClusterContextForIssues(allowedNamespaces, func(group, resource string) bool {
 		return canReadInNamespace(ctx, group, resource, "kube-system", "list")
 	})
 	if len(allowedNamespaces) == 1 && stats.TotalMatched == len(out) && meaningfulchanges.IssueChangesQueryEligible(input.Kind, input.Filter, input.Severity) {
 		if recentChangesReason := meaningfulchanges.IssueChangesReason(out); recentChangesReason != "" {
-			if recentResult, err := meaningfulchanges.Recent(ctx, meaningfulchanges.Query{
+			recentResult, err := meaningfulchanges.Recent(ctx, meaningfulchanges.Query{
 				Namespaces: []string{allowedNamespaces[0]},
 				Since:      meaningfulchanges.DefaultSince,
 				Limit:      meaningfulchanges.IssueChangesFetchLimit(recentChangesReason),
 				FieldLimit: meaningfulchanges.DefaultFieldLimit,
-			}); err == nil && len(recentResult.Changes) > 0 {
+			})
+			if err != nil {
+				resp.RecentChangesError = err.Error()
+			} else if len(recentResult.Changes) > 0 {
 				// Per-kind RBAC before ranking, so priority/recap see the visible set.
 				recentResult.Changes = filterRecentChangesRBAC(ctx, recentResult.Changes)
 				changes, guidance, recapped := meaningfulchanges.PrioritizeIssueChanges(
@@ -3086,27 +3158,27 @@ func handleIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, input issuesI
 	return toJSONResult(resp)
 }
 
-func nativeHelmIssuesForContext(ctx context.Context, namespaces []string, filters issues.Filters) []issues.Issue {
+func nativeHelmIssuesForContext(ctx context.Context, namespaces []string, filters issues.Filters) (found []issues.Issue, unchecked bool) {
 	if !issues.KindFilterIncludes(filters.Kinds, "HelmRelease", "helmreleases") {
-		return nil
+		return nil, false
 	}
 	helmClient := helm.GetClient()
 	if helmClient == nil {
-		return nil
+		return nil, false
 	}
 	username, groups := userFromContext(ctx)
 	helmNamespaces := namespaces
 	if helmNamespaces == nil {
 		helmNamespaces = resolveHelmListNamespaces(ctx, "")
 	}
-	releases, err := helmClient.ListReleasesAcrossNamespaces(helmNamespaces, username, groups)
+	releases, err := helmClient.ListIssueReleasesAcrossNamespaces(ctx, helmNamespaces, username, groups)
 	if err != nil {
-		if !helm.IsForbiddenError(err) {
+		if !errors.Is(ctx.Err(), context.Canceled) && !helm.IssueReadDenied(err) {
 			log.Printf("[mcp] Failed to list Helm releases for issue stream: %v", err)
 		}
-		return nil
+		return nil, helm.IssueReadUnchecked(ctx, err)
 	}
-	return issues.NativeHelmReleaseIssues(releases, time.Now())
+	return issues.NativeHelmReleaseIssues(releases, time.Now()), false
 }
 
 func parseSeverityList(v string) ([]issues.Severity, error) {
@@ -3327,7 +3399,7 @@ func handleSearch(ctx context.Context, req *mcp.CallToolRequest, input searchInp
 	// builder routes per-hit by scope; CanReadClusterScoped above
 	// already gates which cluster-scoped kinds are reachable.
 	if input.Context != "none" {
-		if builder := newSearchSummaryContextBuilder(scanNamespaces); builder != nil {
+		if builder := newSearchSummaryContextBuilder(ctx, scanNamespaces); builder != nil {
 			opts.SummaryBuilder = search.SummaryBuilderFunc(builder)
 		}
 	}
