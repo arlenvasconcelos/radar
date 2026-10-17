@@ -57,12 +57,12 @@ var secretsResource = schema.GroupVersionResource{Version: "v1", Resource: "secr
 //
 // Unlike ListReleasesAcrossNamespaces, a namespace whose read fails does not
 // discard the others: their releases come back with a *PartialReadError.
-func (c *Client) ListIssueReleasesAcrossNamespaces(ctx context.Context, namespaces []string, username string, groups []string) ([]HelmRelease, error) {
+func (c *Client) ListIssueReleasesAcrossNamespaces(ctx context.Context, namespaces []string, user *pkgauth.User) ([]HelmRelease, error) {
 	if namespaces != nil && len(namespaces) == 0 {
 		return []HelmRelease{}, nil
 	}
 	contextName := k8s.GetContextName()
-	client, labelsClient, err := c.issueStorageClients(username, groups)
+	client, labelsClient, err := c.issueStorageClients(user)
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +207,7 @@ func listIssueReleasesWithClients(ctx context.Context, client kubernetes.Interfa
 // so a context switch between the two lists can't send them to different
 // clusters. Like storageClient, it uses c's own rest.Config when it has one,
 // else Radar's current cluster.
-func (c *Client) issueStorageClients(username string, groups []string) (kubernetes.Interface, metadata.Interface, error) {
+func (c *Client) issueStorageClients(user *pkgauth.User) (kubernetes.Interface, metadata.Interface, error) {
 	c.mu.RLock()
 	restConfig := c.restConfig
 	c.mu.RUnlock()
@@ -217,8 +217,8 @@ func (c *Client) issueStorageClients(username string, groups []string) (kubernet
 	if restConfig == nil {
 		return nil, nil, fmt.Errorf("kubernetes config not initialized for release storage lookup")
 	}
-	if username != "" {
-		restConfig = pkgauth.ImpersonatedConfig(restConfig, username, groups)
+	if user != nil {
+		restConfig = k8s.UserRESTConfig(restConfig, user)
 	}
 	client, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {

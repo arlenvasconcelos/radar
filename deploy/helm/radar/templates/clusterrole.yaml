@@ -1,3 +1,12 @@
+{{- if and (eq (.Values.auth.kubernetesCredentials | default "impersonate") "user-token") (not .Values.cloud.enabled) }}
+{{- fail "auth.kubernetesCredentials=user-token requires cloud.enabled=true: the user's token reaches Radar only through the Radar Cloud tunnel" }}
+{{- end }}
+{{- if and (eq (.Values.auth.kubernetesCredentials | default "impersonate") "user-token") (or .Values.cloud.insecureSkipVerify (hasPrefix "ws://" (toString .Values.cloud.url))) }}
+{{- fail "auth.kubernetesCredentials=user-token needs a verified tunnel: people's tokens travel over it, so cloud.insecureSkipVerify must be false and cloud.url must be wss://. Give the control plane a certificate the cluster trusts." }}
+{{- end }}
+{{- if and (eq (.Values.auth.kubernetesCredentials | default "impersonate") "user-token") .Values.cloud.defaultRbac.create }}
+{{- fail "auth.kubernetesCredentials=user-token requires cloud.defaultRbac.create=false: the Hub-role bindings (radar:owner/member/viewer) would grant cluster access to any token whose IdP groups include one of those names. People's access comes from your own RBAC in this mode." }}
+{{- end }}
 {{- if .Values.rbac.create -}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -193,7 +202,7 @@ rules:
     verbs: ["get"]
   {{- end }}
 
-  {{- if .Values.rbac.podExec }}
+  {{- if and .Values.rbac.podExec (ne (.Values.auth.kubernetesCredentials | default "impersonate") "user-token") }}
   # Pod exec (opt-in - enables terminal feature)
   - apiGroups: [""]
     resources:
@@ -201,7 +210,7 @@ rules:
     verbs: ["create"]
   {{- end }}
 
-  {{- if .Values.rbac.portForward }}
+  {{- if and .Values.rbac.portForward (ne (.Values.auth.kubernetesCredentials | default "impersonate") "user-token") }}
   # Port forwarding (opt-in - enables port forward feature)
   - apiGroups: [""]
     resources:
@@ -567,12 +576,14 @@ rules:
   {{- end }}
 
   {{- if or (ne .Values.auth.mode "none") .Values.cloud.enabled }}
+  {{- if ne (.Values.auth.kubernetesCredentials | default "impersonate") "user-token" }}
   # Auth: Impersonation permissions for user-scoped operations.
   # Required under cloud-mode too — the binary forces --auth-mode=proxy there
   # and impersonates Cloud-injected identities to the K8s API.
   - apiGroups: [""]
     resources: ["users", "groups"]
     verbs: ["impersonate"]
+  {{- end }}
   # Auth: SubjectAccessReview for per-user permission checks
   - apiGroups: ["authorization.k8s.io"]
     resources: ["subjectaccessreviews"]

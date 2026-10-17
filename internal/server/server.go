@@ -5389,7 +5389,7 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		// Pre-compute the Cloud role so the frontend doesn't have to
 		// re-parse `cloud:<tier>` group prefixes. Empty string means
 		// "not running under Cloud" (OSS deploy or no role group).
-		if role := auth.CloudRoleFromGroups(user.Groups); role != auth.RoleNone {
+		if role := auth.CloudRoleFromContext(r.Context()); role != auth.RoleNone {
 			resp["cloudRole"] = string(role)
 		}
 		// Lets the shell explain an empty cluster: every read is filtered to
@@ -5425,7 +5425,7 @@ func (s *Server) getDynamicClientForRequest(r *http.Request) dynamic.Interface {
 
 func (s *Server) getDynamicClientSnapshotForRequest(r *http.Request) (dynamic.Interface, string) {
 	if user := auth.UserFromContext(r.Context()); user != nil {
-		client, contextName, err := k8s.ImpersonatedDynamicClientSnapshot(user.Username, user.Groups)
+		client, contextName, err := k8s.UserDynamicClientSnapshot(user)
 		if err != nil {
 			log.Printf("[auth] Impersonation failed for %s: %v", k8s.SanitizeForLog(user.Username), err)
 			return nil, contextName
@@ -5445,7 +5445,7 @@ func (s *Server) getConfigForRequest(r *http.Request) *rest.Config {
 
 func (s *Server) getConfigSnapshotForRequest(r *http.Request) (*rest.Config, string) {
 	if user := auth.UserFromContext(r.Context()); user != nil {
-		cfg, contextName, err := k8s.ImpersonatedConfigSnapshot(user.Username, user.Groups)
+		cfg, contextName, err := k8s.UserConfigSnapshot(user)
 		if err != nil {
 			log.Printf("[auth] Impersonation failed for %s: %v", k8s.SanitizeForLog(user.Username), err)
 			return nil, contextName
@@ -5460,7 +5460,7 @@ func (s *Server) getConfigSnapshotForRequest(r *http.Request) (*rest.Config, str
 // (never falls back to the ServiceAccount client). Callers must handle nil.
 func (s *Server) getClientForRequest(r *http.Request) kubernetes.Interface {
 	if user := auth.UserFromContext(r.Context()); user != nil {
-		client, err := k8s.ImpersonatedClient(user.Username, user.Groups)
+		client, err := k8s.UserClient(user)
 		if err != nil {
 			log.Printf("[auth] Impersonation failed for %s: %v", k8s.SanitizeForLog(user.Username), err)
 			return nil
@@ -5479,7 +5479,7 @@ func (s *Server) getClientForRequest(r *http.Request) kubernetes.Interface {
 
 func (s *Server) getClientSafetySnapshotForRequest(r *http.Request) (kubernetes.Interface, string) {
 	if user := auth.UserFromContext(r.Context()); user != nil {
-		client, binding, err := k8s.ImpersonatedClientSafetySnapshot(user.Username, user.Groups)
+		client, binding, err := k8s.UserClientSafetySnapshot(user)
 		if err != nil {
 			log.Printf("[auth] Impersonation failed for %s: %v", k8s.SanitizeForLog(user.Username), err)
 			return nil, binding
