@@ -131,7 +131,7 @@ func (t *systemReviewTransport) RoundTrip(req *http.Request) (*http.Response, er
 type userTokenRequiredTransport struct{}
 
 func (userTokenRequiredTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	return deny(req, "Live actions need a single sign-on session with a Kubernetes token; this request has none.", metav1.StatusReason(pkgauth.UserTokenRequiredReason))
+	return deny(req, "Live actions need a user token, which only single sign-on sessions carry; this request has none.", metav1.StatusReason(pkgauth.UserTokenRequiredReason))
 }
 
 // deny refuses a request without sending it. A REST call gets the API
