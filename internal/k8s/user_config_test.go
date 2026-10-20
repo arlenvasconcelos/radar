@@ -2,7 +2,10 @@ package k8s
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +13,9 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	authv1 "k8s.io/api/authorization/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -277,6 +282,64 @@ func TestReviewUserToken_SendsOnlyTheTokenAndCaches(t *testing.T) {
 	defer mu.Unlock()
 	if len(auths) != 1 || auths[0] != "Bearer alice-token" {
 		t.Fatalf("API calls = %v, want one SelfSubjectReview with only the user's token", auths)
+	}
+}
+
+func TestReviewUserToken_ConcurrentCallsShareOneReview(t *testing.T) {
+	var calls atomic.Int32
+	arrived, release := make(chan struct{}), make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			close(arrived)
+		}
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"kind":"SelfSubjectReview","apiVersion":"authentication.k8s.io/v1","status":{"userInfo":{"username":"oidc:bob"}}}`))
+	}))
+	t.Cleanup(srv.Close)
+	swapGlobals(t, &rest.Config{Host: srv.URL, ContentConfig: rest.ContentConfig{ContentType: "application/json"}})
+	tokenReviewMu.Lock()
+	tokenReviewCache = map[[sha256.Size]byte]tokenReviewEntry{}
+	tokenReviewMu.Unlock()
+
+	// The first caller starts the review, then leaves.
+	ctx, cancel := context.WithCancel(context.Background())
+	firstErr := make(chan error, 1)
+	go func() {
+		_, err := ReviewUserToken(ctx, "bob-burst-token")
+		firstErr <- err
+	}()
+	<-arrived
+	cancel()
+	if err := <-firstErr; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled caller err = %v, want context.Canceled", err)
+	}
+
+	// Later callers join the review still in flight and get its answer.
+	var wg sync.WaitGroup
+	errs := make(chan error, 4)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			u, err := ReviewUserToken(context.Background(), "bob-burst-token")
+			if err == nil && u.Username != "oidc:bob" {
+				err = fmt.Errorf("username = %q", u.Username)
+			}
+			errs <- err
+		}()
+	}
+	time.Sleep(50 * time.Millisecond) // let them reach the in-flight call
+	close(release)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("API calls = %d, want 1", n)
 	}
 }
 

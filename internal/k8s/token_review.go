@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	authnv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -28,6 +29,8 @@ type tokenReviewEntry struct {
 var (
 	tokenReviewMu    sync.Mutex
 	tokenReviewCache = map[[sha256.Size]byte]tokenReviewEntry{}
+	// Collapses the burst of identical reviews a page load sends with one token.
+	tokenReviewGroup singleflight.Group
 )
 
 // ReviewUserToken asks the API server who a user token belongs to
@@ -44,23 +47,43 @@ func ReviewUserToken(ctx context.Context, token string) (*pkgauth.User, error) {
 	}
 	tokenReviewMu.Unlock()
 
+	// Detached from the caller so one cancelled request does not fail the
+	// others waiting on the same review.
+	ch := tokenReviewGroup.DoChan(string(key[:]), func() (any, error) {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		return reviewUserToken(ctx, token, key)
+	})
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		u := res.Val.(pkgauth.User)
+		return &u, nil
+	}
+}
+
+func reviewUserToken(ctx context.Context, token string, key [sha256.Size]byte) (pkgauth.User, error) {
 	base := GetConfig()
 	if base == nil {
-		return nil, fmt.Errorf("K8s config not initialized")
+		return pkgauth.User{}, fmt.Errorf("K8s config not initialized")
 	}
 	cfg := rest.AnonymousClientConfig(base)
 	cfg.BearerToken = token
 	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return nil, err
+		return pkgauth.User{}, err
 	}
 	review, err := client.AuthenticationV1().SelfSubjectReviews().Create(ctx, &authnv1.SelfSubjectReview{}, metav1.CreateOptions{})
 	if err != nil {
-		return nil, err
+		return pkgauth.User{}, err
 	}
 	info := review.Status.UserInfo
 	if info.Username == "" {
-		return nil, fmt.Errorf("the API server returned no username for this token")
+		return pkgauth.User{}, fmt.Errorf("the API server returned no username for this token")
 	}
 	user := pkgauth.User{Username: info.Username, Groups: info.Groups, UID: info.UID}
 	if len(info.Extra) > 0 {
@@ -70,6 +93,7 @@ func ReviewUserToken(ctx context.Context, token string) (*pkgauth.User, error) {
 		}
 	}
 
+	now := time.Now()
 	expires := now.Add(tokenReviewTTL)
 	if exp, ok := jwtExpiry(token); ok && exp.Before(expires) {
 		expires = exp
@@ -80,7 +104,7 @@ func ReviewUserToken(ctx context.Context, token string) (*pkgauth.User, error) {
 	}
 	tokenReviewCache[key] = tokenReviewEntry{user: user, expires: expires}
 	tokenReviewMu.Unlock()
-	return &user, nil
+	return user, nil
 }
 
 // jwtExpiry reads exp from a JWT without verifying it. Only used to bound a
