@@ -128,10 +128,19 @@ func (t *systemReviewTransport) RoundTrip(req *http.Request) (*http.Response, er
 	return t.next.RoundTrip(req)
 }
 
+const userTokenRequiredMessage = "Live actions need a user token, which only single sign-on sessions carry; this request has none."
+
+// IsUserTokenRequired reports whether msg carries the refusal of a live call
+// made without a user token. It matches the text because handlers and Helm
+// flatten the API error into their own messages.
+func IsUserTokenRequired(msg string) bool {
+	return strings.Contains(msg, userTokenRequiredMessage)
+}
+
 type userTokenRequiredTransport struct{}
 
 func (userTokenRequiredTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	return deny(req, "Live actions need a user token, which only single sign-on sessions carry; this request has none.", metav1.StatusReason(pkgauth.UserTokenRequiredReason))
+	return deny(req, userTokenRequiredMessage, metav1.StatusReason(pkgauth.UserTokenRequiredReason))
 }
 
 // deny refuses a request without sending it. A REST call gets the API

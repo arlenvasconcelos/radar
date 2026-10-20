@@ -127,6 +127,9 @@ func TestUserRESTConfig_HumanWithoutTokenMakesNoLiveCall(t *testing.T) {
 	if status, ok := err.(apierrors.APIStatus); !ok || string(status.Status().Reason) != pkgauth.UserTokenRequiredReason {
 		t.Fatalf("reason = %v, want %s", err, pkgauth.UserTokenRequiredReason)
 	}
+	if !IsUserTokenRequired(err.Error()) {
+		t.Fatalf("IsUserTokenRequired(%q) = false", err.Error())
+	}
 	if got := seen(); len(got) != 0 {
 		t.Fatalf("request reached the API server: %+v", got)
 	}

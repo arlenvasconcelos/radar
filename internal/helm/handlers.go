@@ -1439,6 +1439,10 @@ func writeError(w http.ResponseWriter, status int, message string) {
 
 func writeErrorPayload(w http.ResponseWriter, status int, payload map[string]string) {
 	message := payload["error"]
+	if k8s.IsUserTokenRequired(message) {
+		writeUserTokenRequired(w, message)
+		return
+	}
 	if status >= 500 && k8s.MarkDisconnectedIfClusterUnreachable(message) {
 		status = http.StatusServiceUnavailable
 	}
@@ -1448,6 +1452,12 @@ func writeErrorPayload(w http.ResponseWriter, status int, payload map[string]str
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(payload)
+}
+
+func writeUserTokenRequired(w http.ResponseWriter, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	json.NewEncoder(w).Encode(map[string]string{"error": message, "reason": pkgauth.UserTokenRequiredReason})
 }
 
 func writeErrorCode(w http.ResponseWriter, status int, code, message string) {

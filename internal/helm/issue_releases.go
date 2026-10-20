@@ -80,9 +80,11 @@ func IssueReadDenied(err error) bool {
 // ReleaseReadDeniedForCaller reports whether err is Kubernetes refusing the
 // caller's own read of release storage, as opposed to a failure of Radar's
 // access: rejected credentials (401), or a ServiceAccount without the
-// impersonate permission, which refuses every user the same way.
+// impersonate permission, which refuses every user the same way. Radar's own
+// refusal of a request without a user token isn't either: the caller's RBAC
+// was never asked.
 func ReleaseReadDeniedForCaller(err error) bool {
-	return err != nil && isReleaseReadForbidden(err) && !isImpersonationDenied(err)
+	return err != nil && isReleaseReadForbidden(err) && !isImpersonationDenied(err) && !k8s.IsUserTokenRequired(err.Error())
 }
 
 // isImpersonationDenied matches the API server refusing Radar's identity

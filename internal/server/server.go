@@ -63,6 +63,7 @@ import (
 	"github.com/skyhook-io/radar/internal/usagedata"
 	"github.com/skyhook-io/radar/internal/version"
 	"github.com/skyhook-io/radar/pkg/argoapi"
+	pkgauth "github.com/skyhook-io/radar/pkg/auth"
 	"github.com/skyhook-io/radar/pkg/conditions"
 	"github.com/skyhook-io/radar/pkg/hpadiag"
 	"github.com/skyhook-io/radar/pkg/k8score"
@@ -5207,9 +5208,14 @@ func (s *Server) writeJSON(w http.ResponseWriter, data any) {
 }
 
 func (s *Server) writeError(w http.ResponseWriter, status int, message string) {
+	body := map[string]string{"error": message}
+	if k8s.IsUserTokenRequired(message) {
+		status = http.StatusForbidden
+		body["reason"] = pkgauth.UserTokenRequiredReason
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(map[string]string{"error": message}); err != nil {
+	if err := json.NewEncoder(w).Encode(body); err != nil {
 		log.Printf("Failed to encode error response: %v", err)
 	}
 }
