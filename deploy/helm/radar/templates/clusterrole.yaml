@@ -7,6 +7,13 @@
 {{- if and (include "radar.userTokenMode" . | eq "true") .Values.cloud.defaultRbac.create }}
 {{- fail "auth.kubernetesCredentials=user-token requires cloud.defaultRbac.create=false: the Hub-role bindings (radar:owner/member/viewer) would grant cluster access to any token whose IdP groups include one of those names. People's access comes from your own RBAC in this mode." }}
 {{- end }}
+{{- /* A pinned image older than the mode would ignore it and keep impersonating,
+       while this chart drops the impersonate grant: every call would 403.
+       Only release-style tags are checked; others can't be compared. */}}
+{{- $tag := toString .Values.image.tag }}
+{{- if and (include "radar.userTokenMode" . | eq "true") (regexMatch "^v?[0-9]+\\.[0-9]+\\.[0-9]+" $tag) (semverCompare "<1.18.0-0" $tag) }}
+{{- fail (printf "auth.kubernetesCredentials=user-token requires Radar 1.18.0 or later, but image.tag pins %s. Unset image.tag to use the chart's version, or pin 1.18.0 or later." $tag) }}
+{{- end }}
 {{- if .Values.rbac.create -}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
