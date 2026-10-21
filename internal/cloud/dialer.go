@@ -3,11 +3,9 @@ package cloud
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"time"
 
@@ -44,8 +42,6 @@ func dial(ctx context.Context, cfg Config, selfUpgrade bool) (*yamux.Session, er
 	dialer.HandshakeTimeout = 10 * time.Second
 	if cfg.InsecureSkipVerify {
 		dialer.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // user-requested via --cloud-insecure-skip-verify for a self-signed hub
-	} else if cfg.RootCAs != nil {
-		dialer.TLSClientConfig = &tls.Config{RootCAs: cfg.RootCAs}
 	}
 	ws, resp, err := dialer.DialContext(ctx, u.String(), headers)
 	if err != nil {
@@ -64,24 +60,6 @@ func dial(ctx context.Context, cfg Config, selfUpgrade bool) (*yamux.Session, er
 		return nil, fmt.Errorf("yamux server setup: %w", err)
 	}
 	return mux, nil
-}
-
-// LoadCAPool returns the system roots plus every certificate in the PEM file
-// at path, so a hub behind a private CA verifies without breaking hubs with
-// publicly trusted certificates.
-func LoadCAPool(path string) (*x509.CertPool, error) {
-	pemBytes, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read Cloud CA cert: %w", err)
-	}
-	pool, err := x509.SystemCertPool()
-	if err != nil {
-		pool = x509.NewCertPool()
-	}
-	if !pool.AppendCertsFromPEM(pemBytes) {
-		return nil, fmt.Errorf("Cloud CA cert %s: no PEM certificates found", path)
-	}
-	return pool, nil
 }
 
 // cloudHandshakeHeaders builds the metadata Radar advertises when opening a

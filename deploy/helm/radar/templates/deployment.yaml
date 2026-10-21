@@ -208,13 +208,7 @@ spec:
             - --cloud-url={{ required "cloud.url is required when cloud.enabled=true" .Values.cloud.url }}
             - --cluster-name={{ required "cloud.clusterName is required when cloud.enabled=true" .Values.cloud.clusterName }}
             {{- if .Values.cloud.insecureSkipVerify }}
-            {{- if .Values.cloud.caCert.existingConfigMap }}
-            {{- fail "cloud.caCert and cloud.insecureSkipVerify are mutually exclusive: drop insecureSkipVerify to verify the hub against the CA" }}
-            {{- end }}
             - --cloud-insecure-skip-verify
-            {{- end }}
-            {{- if .Values.cloud.caCert.existingConfigMap }}
-            - --cloud-ca-cert=/etc/radar/cloud-ca/ca.crt
             {{- end }}
             {{- /* cloud.token is injected via RADAR_CLOUD_TOKEN env var below, not the command line */}}
             {{- end }}
@@ -406,11 +400,6 @@ spec:
             - name: data
               mountPath: /data
             {{- end }}
-            {{- if and .Values.cloud.enabled .Values.cloud.caCert.existingConfigMap }}
-            - name: cloud-ca
-              mountPath: /etc/radar/cloud-ca
-              readOnly: true
-            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -428,14 +417,6 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: {{ include "radar.fullname" . }}
-        {{- end }}
-        {{- if and .Values.cloud.enabled .Values.cloud.caCert.existingConfigMap }}
-        - name: cloud-ca
-          configMap:
-            name: {{ .Values.cloud.caCert.existingConfigMap }}
-            items:
-              - key: {{ .Values.cloud.caCert.key }}
-                path: ca.crt
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}

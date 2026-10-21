@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -199,7 +198,6 @@ func main() {
 	cloudToken := flag.String("cloud-token", os.Getenv("RADAR_CLOUD_TOKEN"), "Connection token from the Radar install flow (rhc_<random>). Env: RADAR_CLOUD_TOKEN")
 	cloudClusterName := flag.String("cluster-name", os.Getenv("RADAR_CLOUD_CLUSTER_NAME"), "Human-readable cluster name shown in Radar (required with --cloud-url). Env: RADAR_CLOUD_CLUSTER_NAME")
 	cloudInsecureSkipVerify := flag.Bool("cloud-insecure-skip-verify", os.Getenv("RADAR_CLOUD_INSECURE_SKIP_VERIFY") == "true", "Skip TLS verification on the Radar Hub tunnel — for trials against a Radar Cloud Self-Managed control plane with a self-signed cert (insecure: encrypted but not authenticated). Env: RADAR_CLOUD_INSECURE_SKIP_VERIFY")
-	cloudCACert := flag.String("cloud-ca-cert", os.Getenv("RADAR_CLOUD_CA_CERT"), "Path to a PEM file of CA certificates to trust, in addition to the system roots, on the Radar Hub tunnel — for a hub whose certificate comes from a private CA. Env: RADAR_CLOUD_CA_CERT")
 	k8sCredentials := flag.String("auth-k8s-credentials", os.Getenv("RADAR_AUTH_K8S_CREDENTIALS"), "How Radar authenticates the Kubernetes calls it makes for a user: impersonate (default; Radar's ServiceAccount impersonates the user) or user-token (the user's own token, received with each request through the Radar Cloud tunnel; no impersonation). user-token requires RADAR_CLOUD_MODE and a verified tunnel. Env: RADAR_AUTH_K8S_CREDENTIALS")
 	// Tunable deadlines for slow / high-latency / SSH-tunneled clusters.
 	// Defaults preserve the original behavior. Each flag falls back to an
@@ -250,17 +248,6 @@ func main() {
 		*authUserHeader = "X-Forwarded-User"
 		*authGroupsHeader = "X-Forwarded-Groups"
 		log.Printf("[cloud] RADAR_CLOUD_MODE=true: auth-mode forced to proxy, trusting tunnel-supplied identity headers")
-	}
-	var cloudRootCAs *x509.CertPool
-	if *cloudCACert != "" {
-		if *cloudInsecureSkipVerify {
-			log.Fatalf("--cloud-ca-cert and --cloud-insecure-skip-verify are mutually exclusive: drop --cloud-insecure-skip-verify to verify the hub against the CA")
-		}
-		pool, err := cloud.LoadCAPool(*cloudCACert)
-		if err != nil {
-			log.Fatalf("--cloud-ca-cert: %v", err)
-		}
-		cloudRootCAs = pool
 	}
 	credentialMode, err := pkgauth.ParseCredentialMode(*k8sCredentials)
 	if err != nil {
@@ -612,7 +599,6 @@ func main() {
 				Release:            helmRelease,
 				APIServerURL:       apiServerURL,
 				InsecureSkipVerify: *cloudInsecureSkipVerify,
-				RootCAs:            cloudRootCAs,
 				// Ask the apiserver whether this ServiceAccount may actually
 				// patch its own Deployment. Env presence is NOT the signal:
 				// identity ships on every install for read-only

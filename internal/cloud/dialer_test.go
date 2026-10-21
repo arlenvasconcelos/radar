@@ -2,13 +2,9 @@ package cloud
 
 import (
 	"context"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -291,75 +287,5 @@ func TestCloudHandshakeHeadersAdvertiseKubernetesCredentials(t *testing.T) {
 	t.Cleanup(func() { pkgauth.SetCredentialMode(pkgauth.CredentialsImpersonate) })
 	if got := cloudHandshakeHeaders(Config{Token: "rhc_test"}, false).Get(kubernetesCredentialsHeader); got != "user-token" {
 		t.Fatalf("user-token mode = %q", got)
-	}
-}
-
-func TestDialTrustsTheCustomCA(t *testing.T) {
-	// A 401 is an answered handshake, which proves TLS verification passed.
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer srv.Close()
-	cfg := Config{
-		URL:       "wss://" + srv.Listener.Addr().String() + "/agent",
-		Token:     "rhc_test",
-		ClusterID: "c1",
-		Handler:   http.NewServeMux(),
-	}
-
-	_, err := dial(context.Background(), cfg, false)
-	var answered *handshakeStatusError
-	if err == nil || errors.As(err, &answered) || !strings.Contains(err.Error(), "certificate") {
-		t.Fatalf("without the CA, dial must fail TLS verification; got %v", err)
-	}
-
-	path := filepath.Join(t.TempDir(), "ca.crt")
-	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
-	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg.RootCAs, err = LoadCAPool(path)
-	if err != nil {
-		t.Fatalf("LoadCAPool: %v", err)
-	}
-	_, err = dial(context.Background(), cfg, false)
-	if !errors.As(err, &answered) {
-		t.Fatalf("with the CA, the handshake must reach the server; got %v", err)
-	}
-}
-
-func TestLoadCAPoolRejectsUnusableFiles(t *testing.T) {
-	dir := t.TempDir()
-	empty := filepath.Join(dir, "empty.crt")
-	if err := os.WriteFile(empty, []byte("not a certificate"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for name, path := range map[string]string{
-		"missing file": filepath.Join(dir, "missing.crt"),
-		"no certs":     empty,
-	} {
-		if _, err := LoadCAPool(path); err == nil {
-			t.Errorf("%s: LoadCAPool succeeded", name)
-		}
-	}
-}
-
-func TestLoadCAPoolKeepsSystemRoots(t *testing.T) {
-	sys, err := x509.SystemCertPool()
-	if err != nil || len(sys.Subjects()) == 0 { //nolint:staticcheck // only counting, not matching
-		t.Skip("no system roots on this host")
-	}
-	srv := httptest.NewTLSServer(http.NotFoundHandler())
-	srv.Close()
-	path := filepath.Join(t.TempDir(), "ca.crt")
-	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	pool, err := LoadCAPool(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := len(pool.Subjects()), len(sys.Subjects())+1; got != want { //nolint:staticcheck // only counting, not matching
-		t.Fatalf("pool has %d subjects, want system roots + 1 = %d", got, want)
 	}
 }

@@ -13,7 +13,6 @@ package cloud
 
 import (
 	"context"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"log"
@@ -33,10 +32,6 @@ type Config struct {
 	// authenticated, so a network attacker could impersonate the hub. Leave
 	// false for any hub with a publicly trusted certificate.
 	InsecureSkipVerify bool
-
-	// RootCAs verifies the hub's certificate when set (system roots plus a
-	// custom CA, from --cloud-ca-cert); nil uses the system roots.
-	RootCAs *x509.CertPool
 
 	// Token is the cluster bearer token issued by the Cloud install wizard.
 	// Format: rhc_<random>.
