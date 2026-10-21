@@ -467,6 +467,12 @@ cloud:
   # encrypted but is NOT authenticated (a network attacker could impersonate
   # the hub), so leave false for any hub with a publicly trusted certificate.
   insecureSkipVerify: false
+  # Trust a private CA for the hub's certificate, in addition to the system
+  # roots: name a ConfigMap in the release namespace holding the PEM bundle
+  # under `key`. Mutually exclusive with insecureSkipVerify.
+  caCert:
+    existingConfigMap: ""
+    key: "ca.crt"
   # Default ClusterRoleBindings for Radar Cloud identity groups.
   #
   # How it works: Cloud injects X-Forwarded-Groups: radar:<role>,

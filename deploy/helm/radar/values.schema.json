@@ -338,7 +338,15 @@
         },
         "systemRbac": { "type": "boolean" },
         "aiRbac": { "type": "boolean" },
-        "insecureSkipVerify": { "type": "boolean" }
+        "insecureSkipVerify": { "type": "boolean" },
+        "caCert": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "existingConfigMap": { "type": "string" },
+            "key": { "type": "string", "minLength": 1 }
+          }
+        }
       }
     },
     "usageReporting": {
